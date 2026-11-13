@@ -345,7 +345,7 @@ def computed_style_object(element, *, rendered=True, layout_snapshot):
     if 'background' not in values:
         values.setdefault('background-color', 'rgba(0, 0, 0, 0)')
     box = boxes.get(element)
-    if values.get('display') == 'inline':
+    if values.get('display') == 'inline' or (box is None and element.isConnected):
         values.setdefault('width', 'auto')
         values.setdefault('height', 'auto')
     if (box is not None and element.isConnected and values.get('display') != 'none'

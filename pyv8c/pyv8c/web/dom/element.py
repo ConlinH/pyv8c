@@ -133,6 +133,9 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
         settings = ({} if is_nullish(options) or options is MISSING
                     or not isinstance(options, (dict, pyv8.JSObject))
                     else dictionary(options))
+        from .layout import document_has_layout
+        if not document_has_layout(self.ownerDocument):
+            return False
         from ..css.cascade import computed_style
         node = self
         while isinstance(node, Element):
@@ -322,11 +325,13 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
         if value is None: value = self._attributes_view = NamedNodeMap(self)
         return value
     def get_clientWidth(self):
+        from .layout import document_has_layout, layout
         document = self.ownerDocument
+        if not document_has_layout(document):
+            return 0
         if (self.localName == 'html' and self.isConnected and document is not None
                 and document.get_documentElement() is self):
             return document.get_defaultView().get_innerWidth()
-        from .layout import layout
         box = layout(self)
         width = box.padding_box_width
         # Chromium exposes the editable viewport, excluding padding, for text
@@ -337,11 +342,13 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
             width = max(0.0, width - box.padding.get('left', 0.0) - box.padding.get('right', 0.0))
         return int(round(width))
     def get_clientHeight(self):
+        from .layout import document_has_layout, layout
         document = self.ownerDocument
+        if not document_has_layout(document):
+            return 0
         if (self.localName == 'html' and self.isConnected and document is not None
                 and document.get_documentElement() is self):
             return document.get_defaultView().get_innerHeight()
-        from .layout import layout
         return int(round(layout(self).padding_box_height))
     def get_scrollWidth(self):
         """Everything inside the box, overflow included, never less than the client box."""
@@ -739,7 +746,8 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
 
     def fn_getClientRects(self, *_extra):
         from .rect import DOMRectList
-        if not self.isConnected:
+        from .layout import document_has_layout
+        if not self.isConnected or not document_has_layout(self.ownerDocument):
             return DOMRectList(values=())
         node = self
         while isinstance(node, Element):

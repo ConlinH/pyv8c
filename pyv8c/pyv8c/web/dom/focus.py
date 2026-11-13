@@ -81,6 +81,11 @@ def _move_focus(document, element):
     ``focusin`` to the one taking it; with nothing previously focused, only the
     second pair fires.
     """
+    if element is not None:
+        window = getattr(getattr(document, '_services', None), 'window', None)
+        frame = getattr(window, '_frame_element', None)
+        if frame is not None:
+            _move_focus(frame.ownerDocument, frame)
     previous = getattr(document, "_focused_element", None)
     if previous is element:
         return True
@@ -98,6 +103,9 @@ def focus(element):
     """Focus *element* if it is a focusable area; returns whether it took focus."""
     document = getattr(element, "ownerDocument", None)
     if document is None or not focusable(element):
+        return False
+    visible = getattr(element, 'fn_checkVisibility', None)
+    if visible is not None and not visible({'visibilityProperty': True}):
         return False
     return _move_focus(document, element)
 

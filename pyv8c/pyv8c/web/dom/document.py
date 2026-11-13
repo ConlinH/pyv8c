@@ -119,8 +119,15 @@ class Document(_ParentNodeMixin, Node):
         from .focus import active_element
         return active_element(self)
     def fn_hasFocus(self, *_extra):
-        """A page in this DOM is always the focused document: one document per realm
-        and no window manager to take focus away."""
+        """A child document has focus only along its ancestors' focused frame chain."""
+        if self.hidden:
+            return False
+        window = getattr(getattr(self, '_services', None), 'window', None)
+        frame = getattr(window, '_frame_element', None)
+        if frame is not None:
+            parent = frame.ownerDocument
+            return bool(frame.isConnected and parent is not None
+                        and parent.get_activeElement() is frame and parent.fn_hasFocus())
         return True
     def fn_elementFromPoint(self, x=MISSING, y=MISSING, *_extra):
         if x is MISSING:

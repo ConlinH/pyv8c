@@ -1368,6 +1368,25 @@ def _grid_children(element, style, walk, containing, positioned):
     return cursor + row_height
 
 
+def document_has_layout(document):
+    """An embedding display:none subtree suppresses the child document's boxes.
+
+    Check embedding styles before consulting the child cache: a parent style
+    change does not increment the child's layout version.
+    """
+    window = getattr(getattr(document, '_services', None), 'window', None)
+    frame = getattr(window, '_frame_element', None)
+    while frame is not None:
+        node = frame
+        while isinstance(node, Element):
+            if computed_style(node).get('display') == 'none':
+                return False
+            node = node.parentElement
+        parent = getattr(getattr(frame, '_services', None), 'window', None)
+        frame = getattr(parent, '_frame_element', None)
+    return True
+
+
 def layout(element, containing_width=None, top=0.0, rules=None, style=None, collected=None,
            styles=None):
     """*element*'s border box in viewport coordinates, laying the document out.
@@ -1377,7 +1396,7 @@ def layout(element, containing_width=None, top=0.0, rules=None, style=None, coll
     every recorded box carries its own viewport coordinates.
     """
     document = getattr(element, "ownerDocument", None)
-    if document is None:
+    if document is None or not document_has_layout(document):
         return Box()
     if (rules is None and style is None and collected is None and styles is None
             and containing_width is None and top == 0.0):
@@ -1395,6 +1414,8 @@ def layout(element, containing_width=None, top=0.0, rules=None, style=None, coll
 
 def layout_snapshot(document):
     """The current document's boxes and styles, shared by geometry and hit testing."""
+    if not document_has_layout(document):
+        return {}, {}
     root = document.get_documentElement()
     if not isinstance(root, Element):
         return {}, {}
@@ -1422,6 +1443,8 @@ def positioned_box(element):
 def offset_parent(element, styles=None):
     """The box an element's ``offsetLeft`` is measured against, or ``None``."""
     if not getattr(element, "isConnected", False):
+        return None
+    if not document_has_layout(getattr(element, 'ownerDocument', None)):
         return None
     own = styles.get(element) if styles is not None else None
     if own is None:
