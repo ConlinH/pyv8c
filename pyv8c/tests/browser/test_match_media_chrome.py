@@ -88,3 +88,49 @@ def test_dpcm_rounds_to_hundredths_of_dppx():
         ]""") == [True, False, True, False]
     finally:
         browser.close()
+
+
+def test_aspect_ratio_compares_cross_products_for_zero_size_frames():
+    browser = Browser(real_network=False)
+    try:
+        page = browser.new_profile().new_page()
+        page.set_content('<body></body>')
+        assert page.evaluate("""(() => {
+          const queries = ['(aspect-ratio:0.25)', '(aspect-ratio:4)',
+            '(min-aspect-ratio:2.125)', '(max-aspect-ratio:2.125)',
+            '(aspect-ratio:1/0)', '(aspect-ratio:0/0)', '(aspect-ratio:0/1)'];
+          return [[0,0], [100,0], [0,100], [640,360]].map(([width,height]) => {
+            const frame = document.createElement('iframe');
+            frame.style.cssText = `width:${width}px;height:${height}px;border:0`;
+            document.body.appendChild(frame);
+            const result = queries.map(q => frame.contentWindow.matchMedia(q).matches);
+            frame.remove();
+            return result;
+          });
+        })()""") == [
+            [True, True, True, True, True, True, True],
+            [False, False, True, False, True, True, False],
+            [False, False, False, True, False, False, True],
+            [False, False, False, True, False, False, False],
+        ]
+    finally:
+        browser.close()
+
+
+def test_resolution_rounds_fractional_device_scale_factor_to_binary32():
+    browser = Browser(real_network=False, environment={
+        'viewport.device_scale_factor': 1.0000000149011612,
+    })
+    try:
+        page = browser.new_profile().new_page()
+        assert page.evaluate("""[
+          matchMedia('(resolution:96dpi)').matches,
+          matchMedia('(resolution:1dppx)').matches,
+          matchMedia('(min-resolution:96dpi)').matches,
+          matchMedia('(max-resolution:96dpi)').matches,
+          matchMedia('(min-resolution:96.01dpi)').matches,
+          matchMedia('(min-resolution:1e100dpi)').matches,
+          matchMedia('(max-resolution:1e100dpi)').matches
+        ]""") == [True, True, True, True, False, False, True]
+    finally:
+        browser.close()

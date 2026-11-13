@@ -6,6 +6,7 @@ Screen.  A viewport that never resizes never fires a change.
 
 import math
 import re
+import struct
 
 
 from ...idl import interface
@@ -63,12 +64,16 @@ def _resolution(value):
     return amount * {"dppx": 1, "dpi": 1 / 96, "dpcm": 2.54 / 96}[match.group(2).lower()]
 
 
+def _resolution_float(value):
+    return struct.unpack('f', struct.pack('f', min(value, 3.4028234663852886e38)))[0]
+
+
 def _ratio(value):
     match = _RATIO_RE.fullmatch(value)
     if match is None:
         return None
     denominator = float(match.group(2)) if match.group(2) else 1.0
-    return float(match.group(1)) / denominator if denominator else None
+    return float(match.group(1)) / denominator if denominator else math.inf
 
 
 def _compare(name, actual, wanted):
@@ -91,15 +96,27 @@ def _matches_feature(name, value, width, height, screen_width, screen_height,
         return _compare(name, dimensions[base], _pixels(value))
     if base == "resolution":
         wanted = _resolution(value)
+        # Blink compares resolution in binary32 even when devicePixelRatio
+        # exposes a double (e.g. 1.0000000149011612 on Windows).
+        actual = _resolution_float(dpr)
+        if wanted is not None:
+            wanted = _resolution_float(wanted)
         if wanted is not None and value.endswith("dpcm"):
             # Blink compares dpcm values at two decimal places in dppx.
-            return _compare(name, math.floor(0.5 + 100 * dpr) / 100,
+            return _compare(name, math.floor(0.5 + 100 * actual) / 100,
                             math.floor(0.5 + 100 * wanted) / 100)
-        return _compare(name, dpr, wanted)
+        return _compare(name, actual, wanted)
     if base in ("aspect-ratio", "device-aspect-ratio"):
         numerator, denominator = ((width, height) if base == "aspect-ratio"
                                   else (screen_width, screen_height))
-        return denominator > 0 and _compare(name, numerator / denominator, _ratio(value))
+        wanted = _ratio(value)
+        if wanted is None:
+            return None
+        if math.isinf(wanted):
+            return True if name.startswith('max-') else denominator == 0
+        # Cross products also define comparisons for a zero-height viewport;
+        # in particular both sides are zero for a hidden 0x0 frame.
+        return _compare(name, numerator, denominator * wanted)
     if base in ('color', 'color-index', 'monochrome'):
         return _compare(name, color_depth // 3 if base == 'color' else 0, integer_math(value))
     if name == "orientation":
