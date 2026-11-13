@@ -171,6 +171,11 @@ class ChromeBindings:
             "tran": _TRANSITIONS.get(str(record.get("type")), _TRANSITION_OTHER),
         })
 
+    # Chromium's legacy metrics use anonymous, constructible FunctionTemplates.
+    # Declare their JS identity without renaming the Python methods.
+    loadTimes.__v8_idl_spec__ = pyv8.IdlSpec(name="", constructor_behavior=1)
+    csi.__v8_idl_spec__ = pyv8.IdlSpec(name="", constructor_behavior=1)
+
     def _app_call(self, name, arguments):
         limit, parameters = _APP_MAX_ARGUMENTS[name]
         if len(arguments) > limit:

@@ -68,10 +68,10 @@ def test_chrome_members_are_native_functions():
             chrome.csi.name, chrome.loadTimes.name,
             /native code/.test(String(chrome.csi)),
         ]""") == [
-            "function csi() { [native code] }",
-            "function loadTimes() { [native code] }",
+            "function () { [native code] }",
+            "function () { [native code] }",
             "function getDetails() { [native code] }",
-            "csi", "loadTimes", True,
+            "", "", True,
         ]
     finally:
         browser.close()
@@ -246,7 +246,8 @@ def test_installing_chrome_is_invisible_to_trace():
         assert [event for event in events if event[2:3] == ("chrome",)] == []
         # Tracing is still attached once the page runs its own script.
         page.evaluate("chrome.csi().tran")
-        assert [event[2] for event in events if event[2] in ("chrome", "csi")] == ["chrome", "csi"]
+        # Native function calls carry their JS name; csi is anonymous in Chromium.
+        assert [event[2] for event in events if event[2] in ("chrome", "")] == ["chrome", ""]
     finally:
         browser.close()
 
@@ -267,7 +268,7 @@ def test_chrome_method_calls_are_reported_with_their_results():
         events.clear()
         page.evaluate("chrome.loadTimes().navigationType")
         assert _messages(events)[-1].startswith(
-            "[TOP] method: ChromeBindings.loadTimes() -> ")
+            "[TOP] method: ChromeBindings.() -> ")
     finally:
         browser.close()
 
