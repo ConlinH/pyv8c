@@ -27,7 +27,7 @@ from ..dom.events import EventTarget
 from ..dom.fonts import font_entries
 from ..fetch.cache import CacheStorage
 from ..fetch.request import Request
-from ..fetch.response import Response
+from ..fetch.response import Response, filtered_network_response
 from .accessories import (
     CrashReportContext,
     External,
@@ -226,6 +226,7 @@ def fetch_like(services, interface_name, request, options, initiator_url=None):
         if error is not None:
             reject(js_error_value(_fetch_failure(error)))
             return
+        redirect_crossed = getattr(response, '_redirect_crossed', False)
         if services is not getattr(response, "_services", None):
             try:
                 response = Response(response.body, {
@@ -236,7 +237,9 @@ def fetch_like(services, interface_name, request, options, initiator_url=None):
             except BaseException as exc:  # a rebuild that fails must be seen, not swallowed
                 reject(js_error_value(exc))
                 return
-        resolve(response)
+        resolve(filtered_network_response(response, origin=realm.origin, initial_url=req.get_url(),
+                                          credentials=req._credentials,
+                                          redirect_crossed=redirect_crossed))
 
     handle = loader.load_resource_async(req.get_url(), {
         "method": req.get_method(), "headers": req.get_headers(), "body": req._body,

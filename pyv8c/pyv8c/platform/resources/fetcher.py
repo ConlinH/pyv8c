@@ -146,7 +146,7 @@ class ResourceFetchController:
     def response_object(self, raw):
         if isinstance(raw, Response):
             return raw
-        return Response(
+        response = Response(
             raw.body,
             {
                 "status": raw.status, "statusText": raw.status_text, "url": raw.url,
@@ -154,6 +154,8 @@ class ResourceFetchController:
             },
             services=self.page.services,
         )
+        response._redirect_crossed = bool(getattr(raw, 'redirect_crossed', False))
+        return response
 
     @staticmethod
     def _request_mode(request):
@@ -294,7 +296,8 @@ class ResourceFetchController:
         payload = {"body": response.body, "status": response.status,
                    "statusText": response.status_text, "url": response.url or load.target,
                    "headers": dict(response.headers._data), "redirected": response.redirected,
-                   "type": response.type}
+                   "type": response.type,
+                   "redirectCrossed": bool(getattr(response, '_redirect_crossed', False))}
         self.cache.put(load.cache_key, payload)
 
     def network_request(self, target, request, load, backend):
@@ -343,16 +346,18 @@ class ResourceFetchController:
         target_origin = tuple(self.page.profile._blob_origins.get(str(target), origin_tuple(target)))
         check_origin(load.origin, target_origin, self._request_mode(load.options))
 
-    def apply_response_policy(self, response, load):
+    def apply_response_policy(self, response, load, *, redirect_crossed=False):
         mode = self._request_mode(load.options)
-        if mode == "navigate" or self.same_origin_response(response.url, load):
+        same_origin = self.same_origin_response(response.url, load)
+        if mode == "navigate" or (same_origin and not (mode == "no-cors" and redirect_crossed)):
             return response
         self.check_request_origin(response.url, load)
         if mode == "no-cors" and self._destination(load.options) == "empty":
             # A script, style or image loader still consumes the bytes of a
             # cross-origin no-CORS response.  Only a script-visible fetch gets
             # the opaque view.
-            response.status, response.body, response.headers, response.type = 0, "", Headers(), "opaque"
+            response.status, response.status_text, response.body = 0, "", None
+            response.headers, response.type, response.url = Headers(), "opaque", ""
         elif mode == "cors":
             self.check_cors(response, load)
         return response
@@ -376,9 +381,9 @@ class ResourceFetchController:
             return None
         if decision.opaque:
             return self.opaque_redirect(carrier.url)
-        response = self.apply_response_policy(response, load)
+        response = self.apply_response_policy(response, load, redirect_crossed=carrier.crossed)
         if carrier.hops:
-            response.redirected = True
+            response.redirected = response.type != 'opaque'
             response._redirect_hops = carrier.hops
             response._redirect_crossed = carrier.crossed
             response._redirect_span = (carrier.redirected_at - carrier.started) * 1000.0

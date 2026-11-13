@@ -1,5 +1,7 @@
 """Fetch header collection; conversion precedes validation and mutation."""
 
+import re
+
 from pyv8c import pyv8
 
 from ...idl import interface
@@ -14,6 +16,7 @@ from ...foundation.arguments import (
     sequence,
 )
 from ...foundation.cors import NO_CORS_HEADER_NAMES, safelisted_header
+from ...foundation.urls import origin_tuple
 from ..page_errors import PageTypeError
 
 _FORBIDDEN_REQUEST_HEADERS = frozenset({
@@ -23,6 +26,40 @@ _FORBIDDEN_REQUEST_HEADERS = frozenset({
     "referer", "set-cookie", "te", "trailer",
     "transfer-encoding", "upgrade", "via",
 })
+
+_FORBIDDEN_RESPONSE_HEADERS = frozenset(('set-cookie', 'set-cookie2'))
+_CORS_SAFE_RESPONSE_HEADERS = frozenset((
+    'cache-control', 'content-language', 'content-length', 'content-type',
+    'expires', 'last-modified', 'pragma',
+))
+_HEADER_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+
+
+def response_is_cors(origin, initial_url, final_url, redirect_crossed=False):
+    """Whether the request or an inspected redirect crossed the caller's origin."""
+    if origin is None:
+        return False
+    origin = tuple(origin)
+    return (origin_tuple(initial_url, inherited=origin) != origin
+            or origin_tuple(final_url or initial_url, inherited=origin) != origin
+            or redirect_crossed)
+
+
+def readable_response_header_names(headers, *, cors=False, credentials=False):
+    """Names visible to web APIs, leaving the underlying network headers intact."""
+    names = set(headers) - _FORBIDDEN_RESPONSE_HEADERS
+    if not cors:
+        return names
+    raw = headers.get('access-control-expose-headers', '')
+    if isinstance(raw, (tuple, list)):
+        raw = ','.join(str(item) for item in raw)
+    tokens = [token.strip(' \t').lower() for token in str(raw).split(',')
+              if token.strip(' \t')]
+    if any(not _HEADER_TOKEN.fullmatch(token) for token in tokens):
+        tokens = []
+    if '*' in tokens and not credentials:
+        return names
+    return names & (_CORS_SAFE_RESPONSE_HEADERS | set(tokens))
 
 
 def forbidden_request_header(name, value=""):
@@ -63,6 +100,7 @@ class Headers:
         self._data = {}
         self._request_guard = False
         self._no_cors_guard = False
+        self._immutable = False
         if init is pyv8.Undefined:
             return
         if isinstance(init, Headers):
@@ -116,6 +154,8 @@ class Headers:
         key = byte_string(key, prefix="Failed to execute 'set' on 'Headers': ")
         value = byte_string(value, prefix="Failed to execute 'set' on 'Headers': ")
         key, value = header_name(key), header_value(value)
+        if self._immutable:
+            raise PageTypeError('Headers are immutable')
         if ((self._request_guard and forbidden_request_header(key, value)) or
                 (self._no_cors_guard and (key not in NO_CORS_HEADER_NAMES or not safelisted_header(key, value)))):
             return
@@ -129,6 +169,8 @@ class Headers:
         key = byte_string(key, prefix="Failed to execute 'append' on 'Headers': ")
         value = byte_string(value, prefix="Failed to execute 'append' on 'Headers': ")
         key, value = header_name(key), header_value(value)
+        if self._immutable:
+            raise PageTypeError('Headers are immutable')
         combined = self._data[key] + ", " + value if key in self._data else value
         if ((self._request_guard and forbidden_request_header(key, combined)) or
                 (self._no_cors_guard and (key not in NO_CORS_HEADER_NAMES or not safelisted_header(key, combined)))):
@@ -140,6 +182,8 @@ class Headers:
             raise missing_error('Headers', 'delete', 1, 0)
         key = byte_string(key, prefix="Failed to execute 'delete' on 'Headers': ")
         key = header_name(key)
+        if self._immutable:
+            raise PageTypeError('Headers are immutable')
         if ((not self._request_guard or not forbidden_request_header(key)) and
                 (not self._no_cors_guard or key in NO_CORS_HEADER_NAMES)):
             self._data.pop(key, None)

@@ -100,6 +100,8 @@ class NetworkResponse:
     type: str = "basic"
     #: Wall-clock seconds spent, when the transport reports it.
     elapsed: float | None = None
+    #: Whether an inspected redirect chain crossed an origin.
+    redirect_crossed: bool = False
 
     @property
     def ok(self): return 200 <= int(self.status) < 300

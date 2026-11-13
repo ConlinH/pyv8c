@@ -72,3 +72,106 @@ def test_a_worker_fetches_and_reads_its_response():
         assert seen == ["status:200", "body:from-the-answer"], seen
     finally:
         _bounded(browser.close)
+
+
+def test_worker_fetch_filters_cross_origin_response_headers():
+    def loader(url, request):
+        if str(url).startswith('https://api.test/'):
+            return {'body': 'ok', 'headers': {
+                'Access-Control-Allow-Origin': 'https://worker.test',
+                'Access-Control-Expose-Headers': 'X-Public',
+                'X-Public': 'visible', 'X-Private': 'hidden',
+                'Content-Type': 'text/plain'}}
+        return {'body': '<body></body>', 'headers': {'Content-Type': 'text/html'}}
+
+    browser = Browser(stub_logging='off', threaded_loaders=True, real_network=False,
+                      resource_loader=loader)
+    try:
+        page = browser.new_profile().new_page()
+        page.set_content('<body></body>', url=PROBE_URL)
+        page.evaluate('''window.__worker_result = null;
+            const source = `fetch('https://api.test/data').then(r => {
+                const c = r.clone();
+                postMessage([r.type, r.headers.get('x-public'),
+                             r.headers.get('x-private'), c.headers.get('x-private')]);
+            }).catch(e => postMessage(['error', e.name]));`;
+            const worker = new Worker(URL.createObjectURL(new Blob([source],
+                {type: 'text/javascript'})));
+            worker.onmessage = e => { window.__worker_result = e.data; };''')
+        _pump(page, 1.0)
+        assert json.loads(page.evaluate('JSON.stringify(__worker_result)')) == [
+            'cors', 'visible', None, None]
+    finally:
+        _bounded(browser.close)
+
+
+def test_worker_no_cors_cross_origin_redirect_back_to_source_is_opaque():
+    def loader(url, request):
+        if str(url) == 'https://worker.test/start':
+            return {'status': 302, 'body': '', 'headers': {'Location': 'https://api.test/hop'}}
+        if str(url) == 'https://api.test/hop':
+            return {'status': 302, 'body': '', 'headers': {'Location': 'https://worker.test/final'}}
+        return {'body': 'secret', 'headers': {'Content-Type': 'text/plain'}}
+
+    browser = Browser(stub_logging='off', threaded_loaders=True, real_network=False,
+                      resource_loader=loader)
+    try:
+        page = browser.new_profile().new_page()
+        page.set_content('<body></body>', url=PROBE_URL)
+        page.evaluate('''window.__worker_result = null;
+            const source = `fetch('https://worker.test/start', {mode:'no-cors'})
+                .then(async r => postMessage([r.type, r.status, r.url, r.redirected,
+                                              r.body === null, await r.text()]))
+                .catch(e => postMessage(['error', e.name]));`;
+            const worker = new Worker(URL.createObjectURL(new Blob([source],
+                {type: 'text/javascript'})));
+            worker.onmessage = e => { window.__worker_result = e.data; };''')
+        _pump(page, 1.0)
+        assert json.loads(page.evaluate('JSON.stringify(__worker_result)')) == [
+            'opaque', 0, '', False, True, '']
+    finally:
+        _bounded(browser.close)
+
+
+def test_worker_fetch_retains_redirect_taint_from_cache(tmp_path):
+    calls = []
+
+    def loader(url, request):
+        url = str(url)
+        calls.append(url)
+        if url == 'https://worker.test/start':
+            return {'status': 302, 'body': '', 'headers': {'Location': 'https://api.test/hop'}}
+        if url == 'https://api.test/hop':
+            return {'status': 302, 'body': '', 'headers': {
+                'Location': 'https://worker.test/final',
+                'Access-Control-Allow-Origin': 'https://worker.test'}}
+        if url == 'https://worker.test/final':
+            return {'body': 'ok', 'headers': {'Content-Type': 'text/plain',
+                                               'Cache-Control': 'public, max-age=300',
+                                               'X-Private': 'hidden'}}
+        return {'body': '<body></body>', 'headers': {'Content-Type': 'text/html'}}
+
+    browser = Browser(stub_logging='off', threaded_loaders=True, real_network=False,
+                      resource_loader=loader, cache_dir=tmp_path / 'cache')
+    try:
+        page = browser.new_profile().new_page()
+        page.set_content('<body></body>', url=PROBE_URL)
+        page.evaluate('''window.__worker_result = null;
+            const source = `async function run() {
+                const result = [];
+                for (let i = 0; i < 2; ++i) {
+                    const r = await fetch('https://worker.test/start');
+                    result.push([r.type, r.headers.get('x-private')]);
+                }
+                postMessage(result);
+            } run().catch(e => postMessage(['error', e.name]));`;
+            const worker = new Worker(URL.createObjectURL(new Blob([source],
+                {type: 'text/javascript'})));
+            worker.onmessage = e => { window.__worker_result = e.data; };''')
+        _pump(page, 1.5)
+        assert json.loads(page.evaluate('JSON.stringify(__worker_result)')) == [
+            ['cors', None], ['cors', None]]
+        assert calls == ['https://worker.test/start', 'https://api.test/hop',
+                         'https://worker.test/final']
+    finally:
+        _bounded(browser.close)

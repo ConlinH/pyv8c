@@ -16,7 +16,7 @@ from ..page_errors import (InvalidStateError, InvalidAccessError, NetworkError,
 from ..dom.events import Event, EventTarget
 from ..fileapi.blob import Blob
 from .events import ProgressEvent
-from .headers import Headers
+from .headers import Headers, readable_response_header_names, response_is_cors
 
 
 @interface('XMLHttpRequestEventTarget', 'EventTarget')
@@ -50,6 +50,7 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
         self.response_type = ""
         self.timeout = 0
         self.withCredentials = False
+        self._request_include_credentials = False
         #: The load in flight and the deadline armed for it, so a timeout can drop it.
         self._handle = None
         self._timer = None
@@ -194,7 +195,19 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
         name = dom_string(name)
         if not self._response:
             return pyv8.Null
-        return self._response.headers.fn_get(name)
+        value = self._response.headers.fn_get(name)
+        allowed = self._readable_response_header_names()
+        return value if name.lower() in allowed else pyv8.Null
+
+    def _readable_response_header_names(self):
+        """Header names exposed to this XHR, without altering the network response."""
+        headers = self._response.headers._data
+        realm = getattr(self._services, 'realm_services', None)
+        origin = getattr(realm, 'origin', None)
+        cors = response_is_cors(origin, self._url, self.response_url,
+                                getattr(self._response, '_redirect_crossed', False))
+        return readable_response_header_names(
+            headers, cors=cors, credentials=self._request_include_credentials)
 
     def _default_content_type(self, body):
         """What ``send`` puts in ``Content-Type`` when the author set none.
@@ -233,6 +246,7 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
             "timeout": self.timeout / 1000 if self.timeout else None,
             "resource_type": "xhr",
         }
+        self._request_include_credentials = self.withCredentials
         content_type = self._default_content_type(body)
         if content_type is not None:
             request["content_type"] = content_type
@@ -333,13 +347,14 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
 
     def fn_getAllResponseHeaders(self, *_extra):
         """The response's headers as one block, lower-case and sorted as Chrome writes
-        it.  ``Set-Cookie`` is not in it: a page may not read that header.
+        it. Cookie-setting headers are not exposed to a page.
         """
         if not self._response:
             return ""
         lines = []
+        allowed = self._readable_response_header_names()
         for name, value in self._response.headers._indexed_items():
-            if name == "set-cookie":
+            if name not in allowed:
                 continue
             if isinstance(value, (list, tuple)):
                 value = ", ".join(str(item) for item in value)

@@ -155,6 +155,7 @@ class WorkerResourceCapability:
                     'url': payload.url, 'status': payload.status, 'statusText': payload.status_text,
                     'headers': payload.headers, 'redirected': payload.redirected, 'type': payload.type,
                 }, services=self.worker.services)
+                response._redirect_crossed = payload.redirect_crossed
             except control_exceptions():
                 raise
             except BaseException as exc:
