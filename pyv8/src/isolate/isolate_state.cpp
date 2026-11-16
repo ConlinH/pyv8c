@@ -17,6 +17,13 @@
 #include <new>
 #include <limits>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 using namespace v8;
 
 IsolateState::IsolateState()
@@ -146,6 +153,16 @@ IsolateState::initialize()
 
     Isolate::CreateParams create_params;
     create_params.array_buffer_allocator = allocator_.get();
+#if defined(_WIN32)
+    // Chromium configures V8 from the host's physical and virtual memory.
+    // Leave V8's defaults in place if Windows cannot provide the information;
+    // explicit V8 heap flags still take precedence over these constraints.
+    MEMORYSTATUSEX memory_status = {};
+    memory_status.dwLength = sizeof(memory_status);
+    if (GlobalMemoryStatusEx(&memory_status))
+        create_params.constraints.ConfigureDefaults(memory_status.ullTotalPhys,
+                                                    memory_status.ullTotalVirtual);
+#endif
     isolate_ = Isolate::New(create_params);
     if (isolate_ == nullptr)
     {

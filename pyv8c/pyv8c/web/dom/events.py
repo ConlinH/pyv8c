@@ -932,10 +932,6 @@ class EventTarget:
         if event._services is None and self._services is not None:
             # A host-built event is stamped where it is delivered: its clock is the target's.
             event._services = self._services
-        # Every event a page receives passes through here, trusted or not.
-        logger.debug("dispatch {} on {} (trusted={}, listeners={})", event.type,
-                     type(self).__name__, event._trusted,
-                     len(self._listeners.get(event.type, ())))
         if event._dispatching:
             raise dom_exception("InvalidStateError", "The event is already being dispatched.")
         if event._trusted:
@@ -989,23 +985,50 @@ class EventTarget:
                     if node is not None:
                         path.append(node)
             event._path = list(path)
+            kind = event.type
+            on_kind = "on" + kind
+            # Most nodes on a dispatch path listen for nothing. Check before the
+            # phase writes and retargeting: those are only ever observed by a
+            # listener, so an inactive node costs two dict reads and nothing else.
+            saw_active = False
             for target in reversed(path[1:]):
+                if not (target._listeners.get(kind) or target._handlers.get(on_kind)):
+                    continue
+                saw_active = True
                 event.eventPhase, event.currentTarget = 1, target
                 #: Each ancestor sees the target its own tree is allowed to name.
                 event.target = _retarget_event(original_target, target)
                 target._invoke(event, capture=True)
                 if event._stop:
                     return not event.defaultPrevented
-            event.eventPhase, event.currentTarget = 2, self
             event.target = original_target
-            self._invoke(event, capture=True)
-            if not event._immediate: self._invoke(event, capture=False)
+            if self._listeners.get(kind) or self._handlers.get(on_kind):
+                saw_active = True
+                event.eventPhase, event.currentTarget = 2, self
+                self._invoke(event, capture=True)
+                if not event._immediate: self._invoke(event, capture=False)
+            if not saw_active:
+                # No callback ran, so nothing could have added a listener or
+                # prevented the default mid-dispatch: leave the end state the
+                # phase walks would have left, without the per-node writes.
+                if event.bubbles and len(path) > 1:
+                    event.target = _retarget_event(original_target, path[-1])
+                return not event.defaultPrevented
             if event.bubbles and not event._stop:
+                last_bubble = None
                 for target in path[1:]:
+                    last_bubble = target
+                    if not (target._listeners.get(kind) or target._handlers.get(on_kind)):
+                        continue
                     event.eventPhase, event.currentTarget = 3, target
                     event.target = _retarget_event(original_target, target)
                     target._invoke(event, capture=False)
                     if event._stop: break
+                if last_bubble is not None:
+                    event.target = _retarget_event(original_target, last_bubble)
+            logger.debug("dispatch {} on {} (trusted={}, listeners={})", kind,
+                         type(self).__name__, event._trusted,
+                         len(self._listeners.get(kind, ())))
             event.eventPhase, event.currentTarget = 0, None
             return not event.defaultPrevented
         finally:

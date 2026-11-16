@@ -70,15 +70,15 @@ def _bytes_of(value, method, position):
     """The bytes behind a ``BufferSource``: a view, an ArrayBuffer or raw bytes."""
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value)
-    if isinstance(value, pyv8.JSTypeArray):
-        return bytes(int(value[index]) for index in range(int(value._get("byteLength"))))
-    name = (getattr(value._get("constructor"), "name", None)
-            if isinstance(value, pyv8.JSObject) else None)
-    if name != "ArrayBuffer":
-        raise PageTypeError(f"Failed to execute '{method}' on 'SubtleCrypto': parameter"
-                          f" {position} is not of type 'BufferSource'.")
-    view = pyv8.JSTypeArray(value, pyv8.ArrayType.Uint8Array)
-    return bytes(int(view[index]) for index in range(int(view._get("byteLength"))))
+    if isinstance(value, pyv8.JSObject):
+        kind = value._buffer_kind()
+        if kind in ('buffer', 'nontransferable', 'view', 'detached'):
+            return value._bytes()
+        if kind == 'shared-view':
+            raise PageTypeError(f"Failed to execute '{method}' on 'SubtleCrypto': "
+                                "The provided ArrayBufferView value must not be shared.")
+    raise PageTypeError(f"Failed to execute '{method}' on 'SubtleCrypto': parameter"
+                        f" {position} is not of type 'BufferSource'.")
 
 
 def _checked_usages(name, usages):
@@ -397,7 +397,22 @@ class Crypto:
     def fn_getRandomValues(self, array=MISSING, *_extra):
         if array is MISSING:
             raise missing_error('Crypto', 'getRandomValues', 1, 0, constructor=False)
-        length = int(getattr(array, "length", 0) or 0)
+        info = array._array_buffer_view_info() if isinstance(array, pyv8.JSObject) else None
+        if info is None:
+            raise PageTypeError("Failed to execute 'getRandomValues' on 'Crypto': parameter 1 "
+                                "is not of type 'ArrayBufferView'.")
+        if array._buffer_kind() == 'shared-view':
+            raise PageTypeError("Failed to execute 'getRandomValues' on 'Crypto': "
+                                "The provided ArrayBufferView value must not be shared.")
+        kind, length = info
+        if kind not in ('Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array',
+                        'Uint16Array', 'Int32Array', 'Uint32Array', 'BigInt64Array',
+                        'BigUint64Array'):
+            raise dom_exception(
+                'TypeMismatchError',
+                "Failed to execute 'getRandomValues' on 'Crypto': The provided "
+                f"ArrayBufferView is of type '{kind.removesuffix('Array')}', "
+                "which is not an integer array type.")
         if length > _RANDOM_QUOTA:
             # Chrome caps one call at the entropy it is willing to hand out.
             raise dom_exception(
@@ -405,8 +420,9 @@ class Crypto:
                 "Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte"
                 f" length ({length}) exceeds the number of bytes of entropy available via"
                 f" this API ({_RANDOM_QUOTA}).")
-        for index, byte in enumerate(os.urandom(length)):
-            array[index] = byte
+        if length:
+            data = os.urandom(length)
+            array._write_buffer_bytes(data)
         return array
 
 __all__ = ["Crypto", "CryptoKey", "SubtleCrypto"]

@@ -1,5 +1,6 @@
 """Fetch response model."""
 import json
+from copy import copy
 
 from pyv8c import pyv8
 
@@ -10,7 +11,23 @@ from ..page_errors import PageRangeError, PageTypeError
 from ..page_errors import js_error_value
 from ..fileapi.blob import Blob, _array_buffer_bytes
 from ..bom.compression_streams import ReadableStream
-from .headers import Headers
+from .headers import Headers, readable_response_header_names, response_is_cors
+
+
+def filtered_network_response(response, *, origin, initial_url, credentials='same-origin',
+                              redirect_crossed=False):
+    """Give a network response its script-visible headers and immutable guard."""
+    response = copy(response)
+    cors = response_is_cors(origin, initial_url, response.url, redirect_crossed)
+    names = readable_response_header_names(
+        response.headers._data, cors=cors, credentials=credentials == 'include')
+    response._visible_headers = Headers()
+    response._visible_headers._data = {name: value for name, value in response.headers._data.items()
+                                      if name in names}
+    response._visible_headers._immutable = True
+    if response.type not in ('opaque', 'opaqueredirect', 'error'):
+        response.type = 'cors' if cors and not initial_url.startswith('data:') else 'basic'
+    return response
 
 
 @interface('Response', None)
@@ -41,6 +58,7 @@ class Response:
         self.body = body
         self._body_stream = body if isinstance(body, ReadableStream) else None
         self.headers = Headers(options.get("headers"))
+        self._visible_headers = None
         self.status = integer(options.get("status", 200), bits=16)
         self.status_text = byte_string(options.get("statusText", options.get("reason", "")))
         if _realm is not None and not 200 <= self.status <= 599:
@@ -62,7 +80,8 @@ class Response:
     def get_url(self): return self.url
     def get_redirected(self): return self.redirected
     def get_type(self): return self.type
-    def get_headers(self): return self.headers
+    def get_headers(self):
+        return self.headers if self._visible_headers is None else self._visible_headers
     def get_bodyUsed(self):
         return self.body_used or (self._body_stream is not None and self._body_stream._pipe.disturbed)
     def get_body(self):
@@ -82,10 +101,12 @@ class Response:
         """
         if self.get_bodyUsed():
             raise PageTypeError("Body has already been consumed.")
-        return Response(self.body, {"status": self.status, "statusText": self.status_text,
-                                    "headers": self.headers, "url": self.url,
-                                    "redirected": self.redirected, "type": self.type},
-                        services=self._services)
+        result = Response(self.body, {"status": self.status, "statusText": self.status_text,
+                                      "headers": self.get_headers(), "url": self.url,
+                                      "redirected": self.redirected, "type": self.type},
+                          services=self._services)
+        result.headers._immutable = self.get_headers()._immutable
+        return result
 
     def body_text(self):
         if is_nullish(self.body):

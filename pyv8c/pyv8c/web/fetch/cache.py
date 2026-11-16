@@ -18,7 +18,7 @@ from ..page_errors import PageTypeError
 from ..page_errors import js_error_value
 from ...foundation.urls import origin_string
 from .request import Request
-from .response import Response
+from .response import Response, filtered_network_response
 
 
 #: ``origin -> cache name -> entries``: the caches each origin has opened.
@@ -71,22 +71,24 @@ def _method_of(request):
 def _body_of(response):
     body = getattr(response, "body", None)
     if body is None:
-        return b""
+        return None
     return body if isinstance(body, bytes) else str(body).encode("utf-8")
 
 
 def _entry_of(request, response):
     """One stored pair, as data no realm owns."""
+    headers = response.get_headers()
     return {
         "url": str(getattr(request, "_url", "") or ""),
         "method": _method_of(request),
         "body": _body_of(response),
-        "status": int(getattr(response, "status", 200) or 200),
+        "status": int(getattr(response, "status", 200)),
         "status_text": str(getattr(response, "status_text", "") or ""),
         "response_url": str(getattr(response, "url", "") or ""),
         "type": str(getattr(response, "type", "default") or "default"),
         "redirected": bool(getattr(response, "redirected", False)),
-        "headers": dict(getattr(getattr(response, "headers", None), "_data", {}) or {}),
+        "headers": dict(headers._data),
+        "headers_immutable": headers._immutable,
     }
 
 
@@ -100,6 +102,7 @@ def _response_from(entry, services):
         "url": entry["response_url"], "type": entry["type"],
         "redirected": entry["redirected"]}, services=services)
     response.headers._data.update(entry["headers"])
+    response.headers._immutable = entry.get("headers_immutable", False)
     return response
 
 
@@ -214,13 +217,18 @@ class Cache:
             if error is not None:
                 reject(js_error_value(error))
                 return
-            if not response.ok:
+            if not response.get_ok():
                 reject(js_error_value(PageTypeError(
                     "Failed to execute 'add' on 'Cache': Request failed with status"
                     f" {response.status}.")))
                 return
             try:
-                self._store(Request(urls[index], services=self._services), response)
+                request = Request(urls[index], services=self._services)
+                response = filtered_network_response(
+                    response, origin=self._services.realm_services.origin,
+                    initial_url=request.get_url(),
+                    redirect_crossed=getattr(response, '_redirect_crossed', False))
+                self._store(request, response)
             except (PageTypeError, IdlArgumentError) as refusal:
                 reject(js_error_value(refusal))
                 return

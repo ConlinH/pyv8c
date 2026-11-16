@@ -1,6 +1,7 @@
 """堆上限与外部内存记账；上限行为在独立进程里验证，越界终止脚本而不是进程。"""
 
 import gc
+import ctypes
 import subprocess
 import sys
 import textwrap
@@ -34,6 +35,35 @@ class TestHeapLimits(unittest.TestCase):
             text=True,
             timeout=timeout,
         )
+
+    @unittest.skipUnless(sys.platform == "win32" and sys.maxsize > 2**32,
+                         "Windows x64 host memory configuration")
+    def test_default_heap_scales_with_host_memory_and_explicit_flag_wins(self):
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_uint32), ("load", ctypes.c_uint32)] + [
+                (name, ctypes.c_uint64) for name in (
+                    "total_phys", "avail_phys", "total_page_file", "avail_page_file",
+                    "total_virtual", "avail_virtual", "avail_extended_virtual")]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            self.skipTest("Windows memory information unavailable")
+        if status.total_phys < 8 * 1024**3:
+            self.skipTest("high-memory host required for this comparison")
+        default = self.run_code("""
+            from pyv8c import pyv8
+            print(pyv8.Context(object).heap_statistics()['limit'])
+        """)
+        limited = self.run_code("""
+            from pyv8c import pyv8
+            pyv8.configure(params=['--max-old-space-size=64'])
+            print(pyv8.Context(object).heap_statistics()['limit'])
+        """)
+        self.assertEqual(default.returncode, 0, default.stderr)
+        self.assertEqual(limited.returncode, 0, limited.stderr)
+        self.assertGreater(int(default.stdout), 3 * 1024**3)
+        self.assertLess(int(limited.stdout), 256 * 1024**2)
 
     def test_a_script_that_stays_inside_the_budget_runs(self):
         """预算之内照常：64MB 预算下持有 32MB 存活对象仍然成功。"""

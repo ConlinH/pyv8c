@@ -2,6 +2,7 @@
 #include "bridge_base.h"
 #include "buffer_range.h"
 #include <Python.h>
+#include <cstring>
 #include "entry.h"
 #include "execution.h"
 #include "runtime.h"
@@ -122,6 +123,57 @@ static PyObject* js_object_buffer_kind(js_object* self, PyObject*) {
 static PyObject* js_object_is_uint8_array(js_object* self, PyObject*) {
     JS_OBJECT_ENTER(self, isolate, object);
     return PyBool_FromLong(object->IsUint8Array());
+}
+
+static PyObject* js_object_array_buffer_view_info(js_object* self, PyObject*) {
+    JS_OBJECT_ENTER(self, isolate, object);
+    if (!object->IsArrayBufferView()) Py_RETURN_NONE;
+    const char* kind = nullptr;
+    if (object->IsDataView()) kind = "DataView";
+    else if (object->IsUint8Array()) kind = "Uint8Array";
+    else if (object->IsUint8ClampedArray()) kind = "Uint8ClampedArray";
+    else if (object->IsInt8Array()) kind = "Int8Array";
+    else if (object->IsUint16Array()) kind = "Uint16Array";
+    else if (object->IsInt16Array()) kind = "Int16Array";
+    else if (object->IsUint32Array()) kind = "Uint32Array";
+    else if (object->IsInt32Array()) kind = "Int32Array";
+    else if (object->IsBigInt64Array()) kind = "BigInt64Array";
+    else if (object->IsBigUint64Array()) kind = "BigUint64Array";
+    else if (object->IsFloat16Array()) kind = "Float16Array";
+    else if (object->IsFloat32Array()) kind = "Float32Array";
+    else if (object->IsFloat64Array()) kind = "Float64Array";
+    else kind = "unknown";
+    return Py_BuildValue("(sK)", kind,
+                         static_cast<unsigned long long>(object.As<ArrayBufferView>()->ByteLength()));
+}
+
+static PyObject* js_object_write_buffer_bytes(js_object* self, PyObject* value) {
+    char* data = nullptr;
+    Py_ssize_t length = 0;
+    if (PyBytes_AsStringAndSize(value, &data, &length) < 0) return nullptr;
+    JS_OBJECT_ENTER(self, isolate, object);
+    if (!object->IsArrayBufferView()) {
+        PyErr_SetString(PyExc_TypeError, "value is not an ArrayBufferView");
+        return nullptr;
+    }
+    auto range = buffer_range(object);
+    if (range.length != static_cast<size_t>(length)) {
+        PyErr_SetString(PyExc_ValueError, "buffer view length changed");
+        return nullptr;
+    }
+    if (range.store && range.store->IsShared()) {
+        PyErr_SetString(PyExc_ValueError, "shared buffers require indexed writes");
+        return nullptr;
+    }
+    if (length) {
+        if (!range.store || !range.store->Data()) {
+            PyErr_SetString(PyExc_RuntimeError, "buffer view has no backing storage");
+            return nullptr;
+        }
+        std::memcpy(static_cast<char*>(range.store->Data()) + range.offset,
+                    data, static_cast<size_t>(length));
+    }
+    Py_RETURN_NONE;
 }
 
 static PyObject* js_object_freeze(js_object* self, PyObject*) {
@@ -269,6 +321,8 @@ PyMethodDef js_object_methods[] = {
     {"_bytes", (PyCFunction)PythonBoundary<js_object_bytes>::call, METH_NOARGS, "The bytes a buffer holds or a view looks at, in one read."},
     {"_buffer_kind", (PyCFunction)PythonBoundary<js_object_buffer_kind>::call, METH_NOARGS, "Native buffer brand and detached state without property access."},
     {"_is_uint8_array", (PyCFunction)PythonBoundary<js_object_is_uint8_array>::call, METH_NOARGS, "Check the native Uint8Array brand without property access."},
+    {"_array_buffer_view_info", (PyCFunction)PythonBoundary<js_object_array_buffer_view_info>::call, METH_NOARGS, "Native ArrayBufferView brand and byte length without property access."},
+    {"_write_buffer_bytes", (PyCFunction)PythonBoundary<js_object_write_buffer_bytes>::call, METH_O, "Copy bytes into a non-shared ArrayBufferView."},
     {"freeze", (PyCFunction)PythonBoundary<js_object_freeze>::call, METH_NOARGS, "Freeze this object in its owning V8 context."},
     {"_detach_buffer", (PyCFunction)PythonBoundary<js_object_detach_buffer>::call, METH_NOARGS, "Detach an ArrayBuffer without calling page code."},
     {"__bytes__", (PyCFunction)PythonBoundary<js_object_as_bytes>::call, METH_NOARGS, "The bytes a buffer or a view holds; anything else holds none."},

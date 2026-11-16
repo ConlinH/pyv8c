@@ -73,6 +73,11 @@ class ResourceCache:
             return None
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
+            # Older cache records do not say whether a redirect crossed an
+            # origin. Refetch them rather than exposing potentially CORS-filtered
+            # response headers as though the whole chain were same-origin.
+            if record.get("redirected") and "redirectCrossed" not in record:
+                return None
             body = base64.b64decode(record["body"])
             if record.get("body_encoding") != "bytes":
                 body = body.decode("utf-8")
@@ -83,6 +88,7 @@ class ResourceCache:
                 "url": str(record.get("url", "")),
                 "headers": dict(record.get("headers", {})),
                 "redirected": bool(record.get("redirected", False)),
+                "redirectCrossed": bool(record.get("redirectCrossed", False)),
                 "type": str(record.get("type", "basic")),
             }
         except (OSError, ValueError, KeyError, TypeError):

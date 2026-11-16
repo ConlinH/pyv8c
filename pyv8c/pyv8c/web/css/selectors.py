@@ -366,6 +366,8 @@ def select(root, selector, *, first=False):
             return root._find_element_by_id(simple.ids[0])
         if first:
             return next((node for node in candidates if _simple_match(node, simple)), None)
+        if simple.tag != "*":
+            candidates = root._tag_index_snapshot().get(simple.tag, ())
         return [node for node in candidates if _simple_match(node, simple)]
     if len(ast) == 1:
         group = ast[0]

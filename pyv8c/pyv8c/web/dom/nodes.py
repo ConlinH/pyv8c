@@ -308,12 +308,32 @@ class Node(EventTarget):
             self.__dict__["_descendants_cache"] = cached
         return cached
 
+    def _tag_index_snapshot(self):
+        """Descendant elements grouped by local name, reused until the tree changes.
+
+        A tag query reads the same groups far more often than it changes the tree,
+        and filtering the whole snapshot for one name visits every text node besides.
+        Built from the descendant snapshot, so it keeps tree order and the same
+        shadow-including reach; a local name never changes, so only tree edits
+        invalidate it.
+        """
+        cached = self.__dict__.get("_tag_index_cache")
+        if cached is None:
+            index = {}
+            for node in self._descendant_snapshot():
+                if node.nodeType == Node.ELEMENT_NODE:
+                    index.setdefault(node.localName, []).append(node)
+            cached = index
+            self.__dict__["_tag_index_cache"] = cached
+        return cached
+
     def _invalidate_tree(self):
         # Only this subtree and its ancestors changed. Discard cached references
         # immediately, including removed nodes, rather than retaining old snapshots.
         node = self
         while node is not None:
             node.__dict__.pop('_descendants_cache', None)
+            node.__dict__.pop('_tag_index_cache', None)
             node.__dict__.pop('_id_index', None)
             node = node.parentNode
         self._invalidate_layout()

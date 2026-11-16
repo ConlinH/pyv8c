@@ -564,10 +564,9 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
             raise missing_error('Element', 'getElementsByTagName', 1, 0, constructor=False)
         tag_name = dom_string(tag_name)
         wanted = str(tag_name).lower()
-        return HTMLCollection(owner=self, getter=lambda: [
-            node for node in self._descendant_elements()
-            if wanted == "*" or node.localName == wanted
-        ])
+        if wanted == "*":
+            return HTMLCollection(owner=self, getter=self._descendant_elements)
+        return HTMLCollection(owner=self, getter=lambda: list(self._tag_index_snapshot().get(wanted, ())))
     def fn_getElementsByClassName(self, class_names=MISSING, *_extra):
         if class_names is MISSING:
             raise missing_error('Element', 'getElementsByClassName', 1, 0, constructor=False)

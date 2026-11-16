@@ -511,7 +511,9 @@ class Document(_ParentNodeMixin, Node):
             raise missing_error('Document', 'getElementsByTagName', 1, 0, constructor=False)
         value = dom_string(value)
         value = str(value).lower()
-        return HTMLCollection(owner=self, getter=lambda: [x for x in self._descendant_snapshot() if isinstance(x, Element) and (value == "*" or x.localName == value)])
+        if value == "*":
+            return HTMLCollection(owner=self, getter=lambda: [x for x in self._descendant_snapshot() if isinstance(x, Element)])
+        return HTMLCollection(owner=self, getter=lambda: list(self._tag_index_snapshot().get(value, ())))
     def fn_getElementsByClassName(self, value=MISSING, *_extra):
         if value is MISSING:
             raise missing_error('Document', 'getElementsByClassName', 1, 0, constructor=False)

@@ -24,14 +24,18 @@ def plain_response(value, url):
         headers = value.get('headers', {})
         status, status_text = value.get('status', 200), value.get('statusText', 'OK')
         redirected, kind = value.get('redirected', False), value.get('type', 'basic')
+        redirect_crossed = value.get('redirectCrossed', False)
         url = value.get('url') or url
     elif isinstance(value, (str, bytes)) or value is None:
         body, headers, status, status_text, redirected, kind = str(value) if value is None else value, {}, 200, 'OK', False, 'basic'
+        redirect_crossed = False
     else:
         body, headers = value.body, value.headers
         headers = getattr(headers, '_data', headers)
         status, status_text = value.status, value.status_text
         redirected, kind = value.redirected, value.type
+        redirect_crossed = getattr(value, 'redirect_crossed',
+                                   getattr(value, '_redirect_crossed', False))
         url = value.url or url
     if isinstance(body, (bytearray, memoryview)):
         body = bytes(body)
@@ -46,7 +50,8 @@ def plain_response(value, url):
     headers = {k: list(v) if isinstance(v, (list, tuple)) else v for k, v in headers.items()}
     return NetworkResponse(url=str(url), body=body, status=int(status), status_text=str(status_text),
                            headers={k.lower(): v for k, v in headers.items()},
-                           redirected=bool(redirected), type=str(kind))
+                           redirected=bool(redirected), type=str(kind),
+                           redirect_crossed=bool(redirect_crossed))
 
 
 def validate_source_scheme(environment, initiator, target, options):
@@ -145,6 +150,7 @@ class ResourceRequestSession:
             raise LoadFailure('this engine follows redirects by itself and cannot be told not to, so '
                               f"redirect: {options.get('redirect')!r} cannot be honoured")
         hops = 0
+        redirect_crossed = False
         while True:
             active()
             target_origin = tuple(self.profile._blob_origins.get(target, origin_tuple(target)))
@@ -194,17 +200,21 @@ class ResourceRequestSession:
                 except RedirectFailure as error:
                     raise LoadFailure(str(error)) from error
             if not isinstance(decision, Deliver):
+                redirect_crossed = redirect_crossed or decision.cross_origin
                 target, method, body, headers = decision.url, decision.method, decision.body, decision.headers
                 hops += 1
                 continue
             if decision.opaque:
                 return NetworkResponse(url=target, status=0, status_text='', body='', type='opaqueredirect')
             response.redirected = bool(hops or response.redirected)
-            if options.get('mode') == 'no-cors' and origin != response_origin:
-                response.status, response.body, response.headers, response.type = 0, '', {}, 'opaque'
+            response.redirect_crossed = redirect_crossed or response.redirect_crossed
+            if options.get('mode') == 'no-cors' and (origin != response_origin or redirect_crossed):
+                response.status, response.status_text, response.body = 0, '', None
+                response.headers, response.type, response.url, response.redirected = {}, 'opaque', '', False
             active()
             self.profile.remember_client_hints(response.url or target, response.headers)
             cache.put(key, {'body': response.body, 'status': response.status,
                             'statusText': response.status_text, 'url': response.url,
-                            'headers': response.headers, 'redirected': response.redirected, 'type': response.type})
+                            'headers': response.headers, 'redirected': response.redirected, 'type': response.type,
+                            'redirectCrossed': response.redirect_crossed})
             return response

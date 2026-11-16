@@ -106,7 +106,7 @@ def _hops():
 def test_a_fetch_follows_every_hop_of_a_chain(page):
     answer = _ask(page, "/a")
     assert answer == {"text": "landed", "status": 200, "url": ORIGIN + "/c",
-                      "redirected": True, "type": "default", "ok": True}
+                          "redirected": True, "type": "basic", "ok": True}
     assert _hops() == [("GET", "/a"), ("GET", "/b"), ("GET", "/c")]
 
 
