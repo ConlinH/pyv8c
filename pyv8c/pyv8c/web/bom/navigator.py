@@ -505,6 +505,9 @@ class MediaDevices(EventTarget):
 
     def fn_enumerateDevices(self, *_extra):
         """The devices the machine lists, which a profile collected: nothing without one."""
+        invalid = promise_receiver_error(self, MediaDevices, 'enumerateDevices')
+        if invalid is not None:
+            return invalid
         devices = []
         for kind in device_kinds(self._services):
             info = InputDeviceInfo(kind=kind) if kind in _INPUT_KINDS else MediaDeviceInfo(kind=kind)
@@ -1271,6 +1274,9 @@ class GPU:
 
     def fn_requestAdapter(self, *_extra):
         """The adapter the reference machine reports, shaped as the API describes one."""
+        invalid = promise_receiver_error(self, GPU, 'requestAdapter')
+        if invalid is not None:
+            return invalid
         realm = getattr(self._services, "realm_services", None)
         if realm is None:
             return pyv8.Null

@@ -18,6 +18,7 @@ from ...foundation.arguments import (MISSING, dictionary, integer, missing_error
                                      sequence)
 from ..page_errors import PageTypeError, dom_exception
 from ..page_errors import js_error_value
+from .utils import promise_receiver_error
 
 
 #: The digest names the standard library backs, and the HMAC hash names as well.
@@ -162,6 +163,9 @@ class SubtleCrypto:
 
     # -- digests ---------------------------------------------------------------
     def fn_digest(self, algorithm=MISSING, data=MISSING, *_extra):
+        invalid = promise_receiver_error(self, SubtleCrypto, 'digest')
+        if invalid is not None:
+            return invalid
         if algorithm is MISSING:
             raise missing_error('SubtleCrypto', 'digest', 2, 0, constructor=False)
         if data is MISSING:
