@@ -111,6 +111,7 @@ class ResourceRequestSession:
     backend: object
     cache_enabled: bool
     site_for_cookies: str | None = None
+    file_system_key: tuple | None = None
 
     def load(self, url, options, cancelled):
         from .fetcher import ResourceFetchController

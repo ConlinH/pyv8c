@@ -956,8 +956,15 @@ class StorageManager:
         return _settled(self._services, value=False)
 
     def fn_getDirectory(self, *_extra):
-        return _settled(self._services, error=dom_exception(
-            "NotSupportedError", "The origin private file system is not implemented here."))
+        invalid = promise_receiver_error(self, StorageManager, 'getDirectory')
+        if invalid is not None:
+            return invalid
+        from .opfs import bucket_directory
+        try:
+            directory = bucket_directory(self._services)
+        except (PageTypeError, DOMException) as error:
+            return promise_rejected_in_caller_realm(error, self._services)
+        return _settled(self._services, value=directory)
 
 
 def _navigator_values(navigator):

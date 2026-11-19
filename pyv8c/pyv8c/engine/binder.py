@@ -440,18 +440,21 @@ class Binder:
             return self.stubs.setter(interface_name, public_name)
         return None
 
-    def compile(self, name):
+    def compile(self, name, context_type="Window"):
         with self._lock:
-            cached = self._compiled.get(name)
+            cls = self.bindings.class_for(name)
+            contextual = tuple(getattr(cls, '__idl_context_members__', {}).get(context_type, ()))
+            local_key = (name, contextual) if contextual else name
+            cached = self._compiled.get(local_key)
             if cached is not None:
                 return cached
             # A hook answers members itself and stub logging keeps its own set: both stay uncached.
             sharing = self.overrides is None and self.bindings.stub_logging == "off"
-            key = compile_key(self.bindings, name, self.bindings.class_for(name)) if sharing else None
+            key = compile_key(self.bindings, name, cls) + (contextual,) if sharing else None
             compiled = _COMPILED.get(key) if key is not None else None
             if compiled is None:
                 before = len(self.bindings.discrepancies)
-                compiled = self._compile(name)
+                compiled = self._compile(name, contextual) if contextual else self._compile(name)
                 if key is not None and len(self.bindings.discrepancies) == before:
                     if len(_COMPILED) >= _COMPILED_LIMIT:
                         # Oldest first: a dict keeps its insertion order, and clearing every
@@ -462,10 +465,10 @@ class Binder:
                     self.compiled_misses += 1
             if getattr(compiled.spec.iteration_source, "__v8_iteration_unimplemented__", False):
                 self.bindings.record_unimplemented_iteration_source(name)
-            self._compiled[name] = compiled
+            self._compiled[local_key] = compiled
             return compiled
 
-    def _compile(self, name):
+    def _compile(self, name, contextual=()):
         bindings = self.bindings
         cls = bindings.class_for(name)
         interface = bindings.idl.interface(name)
@@ -490,6 +493,21 @@ class Binder:
                 raise TypeError(f"{owner}.{member_name} is not present in Chromium interface baseline")
         source = idl_spec(cls, bindings.idl, name)
         entries = bindings.idl.own_members(name)
+        if contextual:
+            # A Window observation cannot suppress an operation that the implementation
+            # explicitly declares for another context. It must still exist in the IDL.
+            present = {member.name for _location, member in entries}
+            extra = []
+            declared = set(contextual)
+            for location in ('instance', 'interface', 'prototype'):
+                for member in interface.own_members(location):
+                    if member.name in declared:
+                        declared.discard(member.name)
+                        if member.name not in present:
+                            extra.append((location, member))
+            if declared:
+                raise ValueError(f'{name}: context members are absent from the IDL: {sorted(declared)}')
+            entries = entries + tuple(extra)
         public_methods = {member.name for _, member in entries if member.kind == "operation"}
         public_attributes = {member.name for _, member in entries if member.kind == "attribute"}
         declared_methods = self._members(cls, name, parent, "methods", public_methods)
@@ -679,8 +697,8 @@ class Binder:
             realm_constructor = "_realm" in _parameters_for(cls)
         return CompiledInterface(source.replace(**options), tuple(realm_methods), realm_constructor)
 
-    def bind(self, name, realm=None):
-        compiled = self.compile(name)
+    def bind(self, name, realm=None, context_type="Window"):
+        compiled = self.compile(name, context_type)
         if realm is None or not (compiled.realm_methods or compiled.realm_constructor):
             return compiled.spec
         cls = self.bindings.class_for(name)

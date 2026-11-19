@@ -136,12 +136,21 @@ class Profile:
         self._blob_urls = {}
         self._blob_origins = {}
         self._databases = {}
+        self._file_systems = {}
         self.closed = False
         self._devtools = None
 
     def _ensure_open(self):
         if self.closed or self._closing or self.browser._closed or self.browser._closing:
             raise HostStateError("Profile is closed")
+
+    def file_system_state(self, key, factory):
+        """Share passive storage data, never realm-bound handles, within a partition."""
+        with self._state_lock:
+            self._ensure_open()
+            if key not in self._file_systems:
+                self._file_systems[key] = factory()
+            return self._file_systems[key]
 
     def create_blob_url(self, blob, realm=None):
         """Mint a ``blob:`` URL whose origin is the creating realm's origin.
@@ -331,6 +340,7 @@ class Profile:
             self._blob_urls.clear()
             self._blob_origins.clear()
             self._databases.clear()
+            self._file_systems.clear()
             with self._close_condition:
                 self._closing = False
                 self._close_owner = None

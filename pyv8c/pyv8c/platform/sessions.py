@@ -21,6 +21,7 @@ class BindingSession:
         self._materialized: set[str] = set()
         #: Legacy Window aliases: the name Blink installs, and the interface it names.
         self._aliases: dict[str, str] = {}
+        self._context_type = 'Window'
 
     def detach(self):
         """Let go of everything this realm built, so a closed realm keeps nothing."""
@@ -48,7 +49,13 @@ class BindingSession:
 
         The plan calls it staged, so this keeps that work off the first script's path.
         """
+        self._context_type = context_type
         self._stage(self.bindings.plan(context_type).eager)
+
+    def _config(self, name, realm):
+        if self._context_type == 'Window':
+            return self.bindings.class_config_for(name, realm)
+        return self.bindings.class_config_for(name, realm, self._context_type)
 
     def materialize(self, name):
         """Stage what *name* needs, and answer the class behind it."""
@@ -101,7 +108,7 @@ class BindingSession:
                      for interface_name in chain}
             plain = {}
             for interface_name, realm_spec in specs.items():
-                plain_spec = self.bindings.class_config_for(interface_name, None)
+                plain_spec = self._config(interface_name, None)
                 plain[interface_name] = (realm_spec is plain_spec
                                          and getattr(plain_spec, "iteration_source", None) is None)
             # py_class_new inherits parent_class or the Python class's last base.
@@ -144,7 +151,7 @@ class BindingSession:
                 for interface_name in reversed(tuple(self.bindings.idl.ancestors(group_name))):
                     cls = self.class_for(interface_name)
                     if cls not in self._configs and cls not in staged:
-                        staged[cls] = self.bindings.class_config_for(interface_name, self.realm)
+                        staged[cls] = self._config(interface_name, self.realm)
                     chain.append(interface_name)
                     materialized.add(interface_name)
         self._configs.update(staged)

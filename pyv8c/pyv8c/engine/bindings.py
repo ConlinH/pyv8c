@@ -220,9 +220,9 @@ class Bindings:
             self._classes[name] = cls
             return cls
 
-    def class_config_for(self, name, realm=None):
+    def class_config_for(self, name, realm=None, context_type="Window"):
         """The spec one interface is built from in one realm."""
-        return self._binder.bind(name, realm)
+        return self._binder.bind(name, realm, context_type)
 
     def describes(self, name):
         """Whether this bindings can commit an overlay for ``name``."""

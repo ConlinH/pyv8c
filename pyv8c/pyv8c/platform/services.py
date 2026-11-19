@@ -414,6 +414,13 @@ class _ResourceCapability:
     def __init__(self, owner):
         self._owner = owner
 
+    def file_system_key(self):
+        page = self._owner._page_realm.page
+        return (tuple(page.top_page.origin), tuple(self._owner._origin))
+
+    def file_system_state(self, factory):
+        return self._owner._profile.file_system_state(self.file_system_key(), factory)
+
     def load_resource(self, url, request=None):
         return self._owner._resource_fetcher.load_resource(url, request)
 
@@ -574,7 +581,7 @@ class _WorkerCapability:
                 origin=tuple(self._owner._origin), base_url=self._owner.realm_services.url,
                 loader=browser.resource_loader, interceptor=browser.resource_interceptor,
                 backend=self._owner._profile.network_backend, cache_enabled=browser.cache_enabled,
-                site_for_cookies=site),
+                site_for_cookies=site, file_system_key=self._owner.resource_services.file_system_key(),),
         )
 
     def create_worker_realm(self, config):

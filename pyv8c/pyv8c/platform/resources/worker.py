@@ -35,6 +35,10 @@ class WorkerResourceCapability:
     def origin(self):
         return self.session.origin
 
+    def file_system_state(self, factory):
+        key = self.session.file_system_key or (self.session.origin, self.session.origin)
+        return self.session.profile.file_system_state(key, factory)
+
     def load_resource_async(self, url, request, callback):
         return self.worker.resource_ownership.issue(self._start, url, request, callback)
 
