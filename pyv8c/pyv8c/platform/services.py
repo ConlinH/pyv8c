@@ -473,6 +473,11 @@ class _DocumentCapability:
     def parser_script_start(self, node):
         return self._owner._navigation.parser_script_start(node)
 
+    def add_content_security_policy(self, text):
+        self._owner._navigation.content_policy.add(text)
+        factory = self._owner.window._window_value('trustedTypes')
+        self._owner._page_realm.v8_context.set_code_generation_handler(factory.code_generation)
+
     def parser_script_complete(self, node, source):
         return self._owner._navigation.parser_script_complete(node, source)
 

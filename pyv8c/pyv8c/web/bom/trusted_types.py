@@ -9,6 +9,7 @@ from pyv8c import pyv8
 
 from ...idl import interface
 from ...foundation.arguments import MISSING, dom_string, is_nullish, missing_error
+from ...foundation.content_policy import ContentPolicy
 from ..page_errors import PageTypeError
 
 
@@ -86,8 +87,9 @@ class TrustedTypePolicy:
 
 @interface('TrustedTypePolicyFactory', None)
 class TrustedTypePolicyFactory:
-    def __init__(self, **_):
+    def __init__(self, policy=None, **_):
         self._policies = {}
+        self._policy = policy or ContentPolicy()
 
     #: [SameObject], and empty: the two read-only values a page may reuse.
     def get_emptyHTML(self): return self._reuse("html", TrustedHTML)
@@ -101,12 +103,16 @@ class TrustedTypePolicyFactory:
             value[slot] = wrapper("")
         return value[slot]
 
-    def get_defaultPolicy(self): return pyv8.Null
+    def get_defaultPolicy(self): return self._policies.get('default', pyv8.Null)
 
     def fn_createPolicy(self, name=MISSING, rules=None, *_extra):
         if name is MISSING:
             raise missing_error('TrustedTypePolicyFactory', 'createPolicy', 2, 0, constructor=False)
         name = dom_string(name)
+        if not self._policy.allows_policy(name, name in self._policies):
+            raise PageTypeError(f"Failed to execute 'createPolicy' on 'TrustedTypePolicyFactory': Policy with name \"{name}\" disallowed.")
+        if name == 'default' and name in self._policies:
+            raise PageTypeError("Failed to execute 'createPolicy' on 'TrustedTypePolicyFactory': Policy with name \"default\" already exists.")
         # Read by name: a dictionary conversion would drop the callbacks.
         settings = {}
         if rules is not None and not is_nullish(rules):
@@ -114,10 +120,40 @@ class TrustedTypePolicyFactory:
                 callback = getattr(rules, operation, None)
                 if callable(callback):
                     settings[operation] = callback
-        policy = self._policies.get(name)
-        if policy is None:
-            policy = self._policies[name] = TrustedTypePolicy(name, settings)
+        policy = self._policies[name] = TrustedTypePolicy(name, settings)
         return policy
+
+    def compliant_string(self, value, kind, sink):
+        wrapper = _WRAPPERS['create' + kind]
+        if isinstance(value, wrapper):
+            return value._value
+        value = dom_string(value)
+        if not self._policy.require_trusted_types:
+            return value
+        default = self._policies.get('default')
+        operation = 'create' + kind
+        callback = default._rules.get(operation) if default is not None else None
+        if callback is not None:
+            result = callback(value, 'Trusted' + kind, sink)
+            if not is_nullish(result):
+                return dom_string(result)
+        raise PageTypeError(f"This document requires 'Trusted{kind}' assignment.")
+
+    def code_generation(self, source, code_like):
+        if not isinstance(source, (str, TrustedScript)):
+            return True
+        if not self._policy.allows_eval:
+            return False
+        if not self._policy.require_trusted_types or isinstance(source, TrustedScript) or code_like:
+            return source._value if isinstance(source, TrustedScript) else True
+        # String compilation may use a default policy only when it preserves
+        # the source. A transformed source is rejected by Chromium's eval hook.
+        try:
+            converted = self.compliant_string(source, 'Script', 'eval')
+        except PageTypeError:
+            return False
+        return converted == source
+
 
     def fn_isHTML(self, value=MISSING, *_extra): return isinstance(value, TrustedHTML)
     def fn_isScript(self, value=MISSING, *_extra): return isinstance(value, TrustedScript)
@@ -127,6 +163,14 @@ class TrustedTypePolicyFactory:
     def fn_getAttributeType(self, *_extra): return ""
     def fn_getPropertyType(self, *_extra): return pyv8.Null
     def fn_getTypeMapping(self, *_extra): return pyv8.Undefined
+
+
+def trusted_string(services, value, kind, sink):
+    document = getattr(services, 'document_services', None)
+    window = getattr(document, 'window', None)
+    if window is None:
+        return dom_string(value)
+    return window._window_value('trustedTypes').compliant_string(value, kind, sink)
 
 __all__ = [
     "TrustedHTML", "TrustedScript", "TrustedScriptURL", "TrustedTypePolicy",

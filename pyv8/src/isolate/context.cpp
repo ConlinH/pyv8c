@@ -271,6 +271,8 @@ PyMethodDef context_methods[] = {
      "bytes of this isolate's heap in use, committed, and its ceiling, as a dict"},
     {"enqueue_microtask", (PyCFunction)PythonBoundary<context_enqueue_microtask>::call, METH_O, NULL},
     {"set_microtask_queue", (PyCFunction)PythonBoundary<context_set_microtask_queue>::call, METH_O, NULL},
+    {"set_code_generation_handler", (PyCFunction)PythonBoundary<context_set_code_generation_handler>::call,
+     METH_O, "Set a realm policy for eval and Function source; None restores engine defaults."},
     {"_run_foreground_task", (PyCFunction)PythonBoundary<context_run_foreground_task>::call, METH_NOARGS,
      "run at most one ready V8 foreground task without waiting or a microtask checkpoint"},
     {"_wasm_stream_feed", (PyCFunction)PythonBoundary<wasm_stream_feed>::call, METH_VARARGS, NULL},

@@ -172,6 +172,7 @@ IsolateState::initialize()
     }
 
     isolate_->SetData(0, this);
+    isolate_->SetModifyCodeGenerationFromStringsCallback(context_modify_code_generation);
     isolate_->SetWasmStreamingCallback(CallbackBoundary<wasm_streaming_callback>::call);
     isolate_->AddNearHeapLimitCallback(&IsolateState::near_heap_limit_callback, this);
     // What ``Error.isError`` hears about this binding's API objects; Blink answers the same

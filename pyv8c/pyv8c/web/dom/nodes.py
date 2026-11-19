@@ -384,6 +384,9 @@ class Node(EventTarget):
             for child in self._children
         )
     def set_textContent(self, value):
+        if getattr(self, 'localName', '') == 'script':
+            from ..bom.trusted_types import trusted_string
+            value = trusted_string(self._services, value, 'Script', 'HTMLScriptElement textContent')
         from .character_data import Text
 
         if not is_nullish(value):
@@ -728,6 +731,8 @@ class ShadowRoot(DocumentFragment):
         return view
     def get_innerHTML(self): return "".join(child.outer_html() for child in self._children)
     def set_innerHTML(self, value):
+        from ..bom.trusted_types import trusted_string
+        value = trusted_string(self._services, value, 'HTML', 'ShadowRoot innerHTML')
         self._replace_children(())
         if self._services:
             self._services.document_services.document._parse_fragment(

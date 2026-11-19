@@ -88,7 +88,8 @@ class HTMLIFrameElement(HTMLElement):
                     resource_services.load_iframe(self)
     def get_srcdoc(self): return self.attributes.get("srcdoc", "")
     def set_srcdoc(self, value):
-        markup = str(dom_string(value))
+        from ..bom.trusted_types import trusted_string
+        markup = trusted_string(self._services, value, 'HTML', 'HTMLIFrameElement srcdoc')
         old = self.attributes.get("srcdoc")
         self.attributes["srcdoc"] = markup
         self._resource_started = False

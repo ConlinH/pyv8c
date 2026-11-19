@@ -98,6 +98,10 @@ class ScriptController:
         """
         if self._sandboxed("allow-scripts"):
             return False
+        if not getattr(node, 'attributes', {}).get('src'):
+            nonce = str(getattr(node, 'attributes', {}).get('nonce', ''))
+            if not self.page.navigation.content_policy.allows_inline(nonce):
+                return False
         if getattr(node, "_script_executed", False):
             return True
         node._script_executed = True

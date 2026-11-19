@@ -331,6 +331,10 @@ class IncrementalDOMParser(_TreeBuilderMixin):
         self._pop_auto_closing(tag)
         node = self._create_element(tag, attrs)
         if self.active:
+            if (tag == 'meta' and self.building and self.mode == 'in-head' and
+                    str(node.attributes.get('http-equiv', '')).lower() == 'content-security-policy'):
+                self.services.document_services.add_content_security_policy(
+                    node.attributes.get('content', ''))
             if tag == "script": self.services.document_services.parser_script_start(node)
             elif tag not in self.raw_text_tags: self.services.resource_services.discover_element_resource(node)
         # An ignored duplicate (a second html/head/body) never reached the tree.

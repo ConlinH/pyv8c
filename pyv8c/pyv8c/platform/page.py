@@ -179,6 +179,7 @@ class Page:
             feature_runtime=profile.browser.bindings.runtime,
         )
         self.services.window = self.window
+        self.window._content_policy = self.navigation.content_policy
         self.services.document = self.document
         self.window.location.href = str(url)
         self.net = PageNet(self)
@@ -362,6 +363,7 @@ class Page:
             if slot in previous_window._features.cached_names:
                 window._features._cache(slot, previous_window._features.value(slot))
         self.window = window
+        window._content_policy = self.navigation.content_policy
         self.services.window = window
         try:
             new_realm = PageRealm(self, executor=self.executor)

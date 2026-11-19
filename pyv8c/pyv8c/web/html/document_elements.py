@@ -16,7 +16,9 @@ class HTMLScriptElement(HTMLElement):
         }
     }
     def get_src(self): return url_value(self, "src")
-    def set_src(self, value): set_url_value(self, "src", value)
+    def set_src(self, value):
+        from ..bom.trusted_types import trusted_string
+        set_url_value(self, 'src', trusted_string(self._services, value, 'ScriptURL', 'HTMLScriptElement src'))
     def get_type(self): return self.attributes.get("type", "")
     def set_type(self, value):
         value = dom_string(value)

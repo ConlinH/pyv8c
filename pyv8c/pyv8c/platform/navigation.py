@@ -16,6 +16,7 @@ from ..web.bom.utils import page_base_url, page_secure_context
 from ..web.dom.document import HTMLDocument
 from ..web.bom.motion import INSECURE_ORIGIN_INTERFACES
 from ..web.html.parser import IncrementalDOMParser
+from ..foundation.content_policy import ContentPolicy
 
 
 def hide_insecure_origin_interfaces(page):
@@ -48,6 +49,8 @@ class NavigationController:
         self.parsing = False
         self.parser_done = False
         self.operation = None
+        self.content_policy = ContentPolicy(page.parent_page.navigation.content_policy
+                                            if page.parent_page else None)
         page._resource_scope.add(self.close)
 
     def navigation_allowed(self):
@@ -79,7 +82,13 @@ class NavigationController:
         # A later document replaces the realm; the first one is the page's own.
         previous_origin = self.page.origin
         self.page._update_origin(url)
-        renew_realm = self.has_navigation or replace_initial
+        policy = ContentPolicy(self.page.parent_page.navigation.content_policy
+                               if response is None and self.page.parent_page and
+                               str(url).startswith(('about:', 'blob:')) else None)
+        if response is not None:
+            policy.add(response.headers.fn_get('content-security-policy') or '')
+        renew_realm = (self.has_navigation or replace_initial or bool(policy.policies))
+        self.content_policy = policy
         if not renew_realm and previous_origin != self.page.origin:
             # Initial host content injection keeps installed globals/listeners.
             # Its explicit origin must still select the correct agent queue.
@@ -99,6 +108,11 @@ class NavigationController:
             # and outlives the document.
             self.page.tasks.cancel_timers()
             self.page._renew_document_realm(str(url))
+        else:
+            self.page.window._content_policy = policy
+            values = self.page.window._window_values
+            if 'trustedTypes' in values.cached_names:
+                values.value('trustedTypes')._policy = policy
         if not page_secure_context(self.page, url):
             # Chrome exposes these only on a secure origin; a frame commits while its
             # parent's realm runs, so the names leave on a task of their own.
