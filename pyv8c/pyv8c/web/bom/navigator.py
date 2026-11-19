@@ -1291,6 +1291,8 @@ class GPU:
         realm = getattr(self._services, "realm_services", None)
         if realm is None:
             return pyv8.Null
+        if not getattr(self._services, 'gpu_enabled', True):
+            return realm.promise_resolve(pyv8.Null)
         environment = environment_of(self._services)
         gpu = getattr(environment, "gpu", None) if environment is not None else None
         adapter_data = getattr(gpu, "adapter", None) or {}

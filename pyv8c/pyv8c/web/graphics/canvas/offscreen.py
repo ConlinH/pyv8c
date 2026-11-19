@@ -53,6 +53,9 @@ class OffscreenCanvas(EventTarget):
         requested = requested_context(kind)
         if requested is None:
             return pyv8.Null
+        if (requested in ('webgl', 'webgl2', 'webgpu') and
+                not getattr(self._services, 'gpu_enabled', True)):
+            return pyv8.Null
         if self._context_kind not in (None, requested): return pyv8.Null
         if requested == '2d':
             if self._context2d is None:
