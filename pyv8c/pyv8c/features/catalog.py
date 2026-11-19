@@ -50,7 +50,7 @@ CATALOG = FeatureCatalog((
     FeatureSpec("compression_streams", "pyv8c.web.bom.compression_streams",
                 ("CompressionStream", "DecompressionStream", "ReadableStream",
                  "WritableStream", "ReadableStreamDefaultController", "ReadableStreamDefaultReader",
-                 "WritableStreamDefaultWriter"), requires=("core",)),
+                 "WritableStreamDefaultWriter", "WritableStreamDefaultController"), requires=("core",)),
     FeatureSpec("media_recorder", "pyv8c.web.dom.media_recorder",
                 ("MediaRecorder",), requires=("core",)),
     FeatureSpec("credentials", "pyv8c.web.bom.credentials",

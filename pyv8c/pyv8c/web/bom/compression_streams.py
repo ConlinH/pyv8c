@@ -11,9 +11,11 @@ import zlib
 from pyv8c import pyv8
 
 from ...features.runtime import FeatureImplementation
-from ...foundation.arguments import MISSING, dictionary, dom_string, is_nullish, missing_error
+from ...foundation.arguments import (MISSING, IdlArgumentError, abort_signal, boolean,
+                                     dictionary, dom_string, is_nullish, missing_error)
 from ...idl import interface
 from ..page_errors import PageRangeError, PageTypeError, js_error_value
+from .utils import promise_receiver_error, promise_rejected_in_caller_realm
 
 
 _FORMATS = {'gzip': 31, 'deflate': 15, 'deflate-raw': -15}
@@ -170,6 +172,22 @@ class _SourcePipe:
             self._schedule_pull()
         return promise
 
+    def cancel_stream(self, reason):
+        promise, resolve, reject = _promise(self.services)
+        self.queue.clear()
+        self.finished = True
+        while self.readers:
+            _reader, read_resolve, _reject = self.readers.popleft()
+            read_resolve({'value': pyv8.Undefined, 'done': True})
+        callback = self.cancel
+        try:
+            result = (callback.call(self.source, reason) if isinstance(callback, pyv8.JSObject)
+                      else callback(reason)) if callback is not None and callback is not pyv8.Undefined else None
+            self._settle(result, lambda *_: resolve(pyv8.Undefined), reject)
+        except (pyv8.JSException, PageTypeError) as error:
+            reject(js_error_value(error))
+        return promise
+
 
 @interface('ReadableStreamDefaultController', None)
 class ReadableStreamDefaultController:
@@ -280,6 +298,14 @@ class _BytePipe:
             reject(js_error_value(self._fail(error)))
         return promise
 
+    def abort_stream(self, reason):
+        promise, resolve, _reject = _promise(self.services)
+        self._fail(reason)
+        resolve(pyv8.Undefined)
+        return promise
+
+    cancel_stream = abort_stream
+
 
 @interface('ReadableStream', None)
 class ReadableStream:
@@ -296,12 +322,39 @@ class ReadableStream:
         self._reader = ReadableStreamDefaultReader(self)
         return self._reader
 
+    def fn_pipeTo(self, destination=MISSING, options=None, *_extra):
+        invalid = promise_receiver_error(self, ReadableStream, 'pipeTo')
+        if invalid is not None:
+            return invalid
+        try:
+            if destination is MISSING:
+                raise missing_error('ReadableStream', 'pipeTo', 1, 0)
+            if not isinstance(destination, WritableStream):
+                raise PageTypeError("Failed to execute 'pipeTo' on 'ReadableStream': "
+                                    "parameter 1 is not of type 'WritableStream'.")
+            settings = dictionary(options)
+            prevent_abort = boolean(settings.get('preventAbort', False))
+            prevent_cancel = boolean(settings.get('preventCancel', False))
+            prevent_close = boolean(settings.get('preventClose', False))
+            signal = abort_signal(settings.get('signal'))
+            if self.get_locked():
+                raise PageTypeError('Cannot pipe a locked stream')
+            if destination.get_locked():
+                raise PageTypeError('Cannot pipe to a locked stream')
+        except (IdlArgumentError, PageTypeError, pyv8.JSException) as error:
+            return promise_rejected_in_caller_realm(error, self._services)
+        from .stream_piping import PipeTransfer
+        return PipeTransfer(self, destination, prevent_abort=prevent_abort,
+                            prevent_cancel=prevent_cancel, prevent_close=prevent_close,
+                            signal=signal).start()
+
 
 @interface('WritableStream', None)
 class WritableStream:
     def __init__(self, sink=None, *_extra, services=None, _realm=None, **_):
-        self._pipe = sink if isinstance(sink, _BytePipe) else None
         self._services = services or _realm
+        from .stream_piping import SinkPipe
+        self._pipe = sink if isinstance(sink, _BytePipe) else SinkPipe(sink, self._services)
         self._writer = None
 
     def get_locked(self): return self._writer is not None
@@ -311,6 +364,22 @@ class WritableStream:
             raise PageTypeError('WritableStream is locked')
         self._writer = WritableStreamDefaultWriter(self)
         return self._writer
+
+    def fn_close(self, *_extra):
+        invalid = promise_receiver_error(self, WritableStream, 'close')
+        if invalid is not None:
+            return invalid
+        if self.get_locked():
+            return promise_rejected_in_caller_realm(PageTypeError('Cannot close a locked stream'), self._services)
+        return self._pipe.close()
+
+    def fn_abort(self, reason=pyv8.Undefined, *_extra):
+        invalid = promise_receiver_error(self, WritableStream, 'abort')
+        if invalid is not None:
+            return invalid
+        if self.get_locked():
+            return promise_rejected_in_caller_realm(PageTypeError('Cannot abort a locked stream'), self._services)
+        return self._pipe.abort_stream(reason)
 
 
 @interface('ReadableStreamDefaultReader', None)
@@ -400,12 +469,15 @@ class DecompressionStream(_CompressionBase):
     pass
 
 
+from .stream_piping import WritableStreamDefaultController
+
 FEATURE = FeatureImplementation({
     'CompressionStream': CompressionStream,
     'DecompressionStream': DecompressionStream,
     'ReadableStream': ReadableStream,
     'ReadableStreamDefaultController': ReadableStreamDefaultController,
     'WritableStream': WritableStream,
+    'WritableStreamDefaultController': WritableStreamDefaultController,
     'ReadableStreamDefaultReader': ReadableStreamDefaultReader,
     'WritableStreamDefaultWriter': WritableStreamDefaultWriter,
 })
