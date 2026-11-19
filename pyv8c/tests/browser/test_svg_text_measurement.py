@@ -5,6 +5,30 @@ import sys
 pytest.importorskip('pyv8c.pyv8')
 
 
+@pytest.mark.skipif(sys.platform != 'win32', reason='Chrome Windows Arial metrics')
+def test_svg_parser_text_metrics_match_chrome_on_windows_arial(page):
+    page.set_content('''<svg width="600" height="400"><g>
+      <text x="10" y="200" style="font:150px Arial">H</text></g></svg>''', url='https://text.test/')
+    assert page.evaluate('''(() => {
+      const t=document.querySelector('text'), rect=r=>[r.x,r.y,r.width,r.height];
+      return [t instanceof SVGTextElement,t.namespaceURI,t.getComputedTextLength(),
+              rect(t.getBBox()),rect(t.getExtentOfChar(0)),rect(t.parentNode.getBBox()),
+              [t.getStartPositionOfChar(0).x,t.getEndPositionOfChar(0).x]];
+    })()''') == [True, 'http://www.w3.org/2000/svg', 108.328125,
+                [10,64,108.328125,168], [10,64,108.328125,168],
+                [10,64,108.328125,168], [10,118.328125]]
+
+
+def test_svg_text_invalid_character_throws_and_removed_text_has_no_layout(page):
+    page.set_content('<svg><text style="font:20px Arial">Hi</text></svg>',url='https://text.test/')
+    assert page.evaluate('''(() => {
+      const t=document.querySelector('text'); let error;
+      try{t.getExtentOfChar(2)}catch(e){error=e.name}
+      const full=t.getComputedTextLength(), parts=t.getSubStringLength(0,1)+t.getSubStringLength(1,1);
+      t.remove();return [error,full===parts,t.getComputedTextLength(),t.getNumberOfChars()];
+    })()''') == ['IndexSizeError',True,0,0]
+
+
 def test_font_shorthand_cascades_into_svg_and_html_longhands(page):
     page.set_content('''<style>.sample {font:italic 24px/30px Arial} .sample {font-size:30px}</style>
       <div class="sample">H</div><svg><text class="sample">H</text></svg>''',url='https://text.test/')

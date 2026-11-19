@@ -77,6 +77,8 @@ class _TreeBuilderMixin:
             in ('text/html', 'application/xhtml+xml')))
         if tag == 'math' and (space != MATHML_NAMESPACE or integration):
             namespace = MATHML_NAMESPACE
+        elif tag == 'svg':
+            namespace = SVG_NAMESPACE
         elif space == MATHML_NAMESPACE and not integration:
             namespace = SVG_NAMESPACE if tag == 'svg' else MATHML_NAMESPACE
         elif space == SVG_NAMESPACE and name not in ('foreignobject', 'desc', 'title'):

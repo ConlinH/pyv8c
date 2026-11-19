@@ -11,8 +11,9 @@ import struct
 import math
 
 from ...idl import interface
-from ...foundation.arguments import dom_string, number
-from ..page_errors import PageTypeError, NotSupportedError
+from ...foundation.arguments import MISSING, dom_string, number, integer, missing_error
+from ...foundation.environment import environment_of
+from ..page_errors import IndexSizeError, PageTypeError, NotSupportedError
 from ..css.cssom import CSSStyleDeclaration
 from ..css.typed import StylePropertyMap
 from ..dom.element import Element
@@ -120,14 +121,17 @@ class SVGGraphicsElement(SVGElement):
             node = node.parentElement
         return True
 
+    def _own_bounds(self):
+        return self._rect_bounds()
+
 
     def fn_getBBox(self, *_extra):
         if not self._svg_rendered():
             return SVGRect()
-        bounds = self._rect_bounds()
+        bounds = self._own_bounds()
         if bounds is not None:
             return SVGRect(*bounds)
-        boxes = [node._rect_bounds() for node in self._descendants()
+        boxes = [node._own_bounds() for node in self._descendants()
                  if isinstance(node, SVGGraphicsElement)]
         boxes = [box for box in boxes if box is not None]
         if not boxes:
@@ -173,6 +177,90 @@ class SVGGeometryElement(SVGGraphicsElement):
         dx = max(x + rx - px, 0, px - (x + width - rx))
         dy = max(y + ry - py, 0, py - (y + height - ry))
         return (dx / rx) ** 2 + (dy / ry) ** 2 <= 1
+
+
+@interface('SVGTextContentElement', 'SVGGraphicsElement')
+class SVGTextContentElement(SVGGraphicsElement):
+    """Horizontal SVG text measured by the same font shaper as document text."""
+
+    def _text_layout(self):
+        from ..dom import layout
+        if not self._svg_rendered():
+            return '', None, None, (0.0, 0.0)
+        style = computed_style(self)
+        text = self.get_textContent()
+        if style.get('white-space', 'normal') not in ('pre', 'pre-wrap', 'break-spaces'):
+            text = re.sub(r'[\t\n\r ]+', ' ', text).strip(' ')
+        environment = environment_of(self._services)
+        run, _face = layout._shaped(text, style, environment, layout_units=True)
+        metrics = layout._run_metrics(run, style) if run is not None else None
+        metrics = metrics or layout._font_metrics(style, environment)
+        position = tuple(parse_length(str(self.attributes.get(name, '0')).split()[0])[0]
+                         for name in ('x', 'y'))
+        return text, run, metrics, position
+
+    def _own_bounds(self):
+        text, run, metrics, (x, y) = self._text_layout()
+        if not text or run is None or metrics is None:
+            return None
+        return x, y - metrics.ascent, run.width, metrics.ascent + metrics.descent
+
+    def fn_getNumberOfChars(self, *_extra):
+        return len(self._text_layout()[0])
+
+    def fn_getComputedTextLength(self, *_extra):
+        _text, run, _metrics, _position = self._text_layout()
+        return _svg_float(run.width) if run is not None else 0.0
+
+    def _character(self, index, method):
+        if index is MISSING:
+            raise missing_error('SVGTextContentElement', method, 1, 0, constructor=False)
+        index = integer(index)
+        text, run, metrics, position = self._text_layout()
+        if index >= len(text) or run is None:
+            raise IndexSizeError(f"Failed to execute '{method}' on 'SVGTextContentElement': The charnum provided ({index}) is greater than or equal to the maximum bound ({len(text)}).")
+        return index, run, metrics, position
+
+    def fn_getExtentOfChar(self, charnum=MISSING, *_extra):
+        index, run, metrics, (x, y) = self._character(charnum, 'getExtentOfChar')
+        return SVGRect(_svg_float(x + run.prefix[index]), _svg_float(y - metrics.ascent),
+                       _svg_float(run.prefix[index + 1] - run.prefix[index]),
+                       _svg_float(metrics.ascent + metrics.descent))
+
+    def fn_getStartPositionOfChar(self, charnum=MISSING, *_extra):
+        index, run, _metrics, (x, y) = self._character(charnum, 'getStartPositionOfChar')
+        return SVGPoint(_svg_float(x + run.prefix[index]), _svg_float(y))
+
+    def fn_getEndPositionOfChar(self, charnum=MISSING, *_extra):
+        index, run, _metrics, (x, y) = self._character(charnum, 'getEndPositionOfChar')
+        return SVGPoint(_svg_float(x + run.prefix[index + 1]), _svg_float(y))
+
+    def fn_getSubStringLength(self, charnum=MISSING, nchars=MISSING, *_extra):
+        if charnum is MISSING or nchars is MISSING:
+            raise missing_error('SVGTextContentElement', 'getSubStringLength', 2,
+                                0 if charnum is MISSING else 1, constructor=False)
+        index, run, _metrics, _position = self._character(charnum, 'getSubStringLength')
+        end = min(len(run.prefix) - 1, index + integer(nchars))
+        return _svg_float(run.prefix[end] - run.prefix[index])
+
+
+@interface('SVGTextPositioningElement', 'SVGTextContentElement')
+class SVGTextPositioningElement(SVGTextContentElement):
+    pass
+
+
+@interface('SVGTextElement', 'SVGTextPositioningElement')
+class SVGTextElement(SVGTextPositioningElement):
+    pass
+
+
+@interface('SVGTSpanElement', 'SVGTextPositioningElement')
+class SVGTSpanElement(SVGTextPositioningElement):
+    pass
+
+
+def _svg_float(value):
+    return struct.unpack('f', struct.pack('f', value))[0]
 
 
 
