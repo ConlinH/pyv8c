@@ -429,10 +429,21 @@ class HTMLInputElement(HTMLElement):
     def set_webkitdirectory(self, value): self._set_bool("webkitdirectory", value)
     def get_incremental(self): return self._bool("incremental")
     def set_incremental(self, value): self._set_bool("incremental", value)
-    def get_maxLength(self): return self._long("maxlength")
-    def set_maxLength(self, value): self.attributes["maxlength"] = str(integer(value))
-    def get_minLength(self): return self._long("minlength")
-    def set_minLength(self, value): self.attributes["minlength"] = str(integer(value))
+    def get_maxLength(self):
+        value = self._long('maxlength')
+        return value if value is not None and 0 <= value <= 0x7FFFFFFF else -1
+    def set_maxLength(self, value):
+        self._set_length_bound('maxLength', 'maxlength', value)
+    def get_minLength(self):
+        value = self._long('minlength')
+        return value if value is not None and 0 <= value <= 0x7FFFFFFF else -1
+    def set_minLength(self, value):
+        self._set_length_bound('minLength', 'minlength', value)
+    def _set_length_bound(self, member, attribute, value):
+        value = integer(value, bits=32, signed=True)
+        if value < 0:
+            raise IndexSizeError(f"Failed to set the '{member}' property on 'HTMLInputElement': The provided value ({value}) is not positive or 0.")
+        self.attributes[attribute] = str(value)
     def get_size(self):
         parsed = self._long("size")
         return parsed if parsed is not None and parsed > 0 else 20
