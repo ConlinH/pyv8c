@@ -72,6 +72,23 @@ def _parsed_inline(raw):
     return tuple(parse_declarations(raw))
 
 
+def _font_longhands(value):
+    match = re.search(r'(?<![\w.-])((?:\d+(?:\.\d*)?|\.\d+)(?:px|pt|pc|em|rem|%|in|cm|mm)|'
+                      r'xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger)'
+                      r'(?:\s*/\s*([^\s]+))?\s+(.+)$', str(value), re.I)
+    if match is None:
+        return {}
+    prefix = str(value)[:match.start()].lower().split()
+    return {'font-size': match[1], 'line-height': match[2] or 'normal',
+            'font-family': match[3],
+            'font-style': 'italic' if 'italic' in prefix else 'oblique' if 'oblique' in prefix else 'normal',
+            'font-weight': next((token for token in prefix if token in ('bold', 'bolder', 'lighter')
+                                 or re.fullmatch(r'\d{1,4}', token)), '400'),
+            'font-variant': 'small-caps' if 'small-caps' in prefix else 'normal',
+            'font-stretch': next((token for token in prefix if token.endswith('condensed')
+                                 or token.endswith('expanded')), 'normal')}
+
+
 def _specificity(group):
     """Count the parsed selector, so escaped punctuation remains an identifier."""
     counts = [0, 0, 0]
@@ -157,7 +174,9 @@ def _cascade(element, rules, cache=None):
         order += 1
     for _important, _inline, _count, _order, name, value in sorted(matched, key=lambda item: item[:4]):
         values[name] = value
-        if name in ('margin', 'padding'):
+        if name == 'font':
+            values.update(_font_longhands(value))
+        elif name in ('margin', 'padding'):
             parts = _box_values(value)
             if parts is not None:
                 for side, part in zip(('top', 'right', 'bottom', 'left'), parts):

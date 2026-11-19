@@ -647,6 +647,12 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
         selector = dom_string(selector)
         return self._services.document_services.document.query_selector(selector, self) if self._services else pyv8.Null
 
+    def fn_computedStyleMap(self, *_extra):
+        from ..css.typed import StylePropertyMapReadOnly
+        result = getattr(self, '_computed_style_map', None)
+        if result is None:
+            result = self._computed_style_map = StylePropertyMapReadOnly(element=self, computed=True)
+        return result
     def fn_querySelectorAll(self, selector=MISSING, *_extra):
         if selector is MISSING:
             raise missing_error('Element', 'querySelectorAll', 1, 0, constructor=False)

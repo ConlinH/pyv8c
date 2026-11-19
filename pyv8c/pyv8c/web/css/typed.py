@@ -134,10 +134,17 @@ class StylePropertyMapReadOnly:
         }
     }
 
-    def __init__(self, element=None, **_):
+    def __init__(self, element=None, computed=False, **_):
         self._element = element
+        self._computed = bool(computed)
 
     def _declarations(self):
+        if self._computed:
+            if self._element is None or not self._element.isConnected:
+                return ()
+            from .cascade import computed_style
+            values = computed_style(self._element)
+            return tuple((name, value, '') for name, value in sorted(values.items()))
         raw = str(self._element.attributes.get("style", "")) if self._element is not None else ""
         return parser.parse_declarations(raw)
 
