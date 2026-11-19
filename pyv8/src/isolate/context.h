@@ -32,6 +32,7 @@ struct ContextLifetime {
 struct ContextResources {
     std::size_t handle_count() const { return handles.size(); }
     std::vector<std::shared_ptr<WasmStreamSession>> wasm_streams;
+    std::shared_ptr<void> console_inspector;
 private:
     friend class IsolateState;
     friend PyObject* context_new(PyTypeObject*, PyObject*, PyObject*);

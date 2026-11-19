@@ -10,6 +10,7 @@ typedef struct _debugger {
 } debugger_c;
 extern PyTypeObject* debugger_type;
 int debugger_type_init();
+PyObject* context_enable_console(context_c*, PyObject*);
 void debugger_prepare_script(context_c* context);
 void debugger_context_closed(context_c* context);
 bool debugger_context_can_close(context_c* context);

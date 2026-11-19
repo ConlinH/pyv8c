@@ -106,6 +106,22 @@ static std::shared_ptr<InspectorHub> hub_for(Isolate* isolate) {
     }
     return hub;
 }
+PyObject* context_enable_console(context_c* context, PyObject*) {
+    if (!context_is_active(context)) {
+        PyErr_SetString(PyExc_RuntimeError, "Context is closed");
+        return nullptr;
+    }
+    IN_ISOLATE(context->isolate_state);
+    auto hub = hub_for(isolate);
+    if (!hub->groups.count(context)) {
+        int group = hub->next_group++;
+        hub->groups[context] = group;
+        hub->inspector->contextCreated(V8ContextInfo(context->js_context.Get(isolate), group, StringView()));
+    }
+    if (!context->resources) context->resources = new ContextResources();
+    context->resources->console_inspector = hub;
+    PYV8_RETURN_NONE;
+}
 static PyObject* debugger_new(PyTypeObject* type, PyObject*, PyObject*) {
     return PyType_GenericAlloc(type, 0);
 }
@@ -159,8 +175,14 @@ static PyObject* debugger_rebind_context(debugger_c* self, PyObject* object) {
     PyOwnedRef previous_owner(PyV8_NewRef((PyObject*)previous));
     IN_ISOLATE(next->isolate_state);
     auto hub = self->state->hub;
-    if (!hub->pause_stack.empty() || hub->groups.count(next)) {
+    bool next_has_session = std::any_of(hub->sessions.begin(), hub->sessions.end(),
+                                      [next](debugger_c* item) { return item->context == next; });
+    if (!hub->pause_stack.empty() || next_has_session) {
         PyErr_SetString(PyExc_RuntimeError, "cannot replace a paused or already registered context"); return nullptr;
+    }
+    if (hub->groups.count(next)) {
+        hub->inspector->contextDestroyed(next->js_context.Get(isolate));
+        hub->groups.erase(next);
     }
     const int group = self->state->group;
     hub->inspector->contextDestroyed(previous->js_context.Get(isolate));
@@ -234,12 +256,13 @@ static PyObject* debugger_disconnect(debugger_c* self, PyObject*) {
     auto& sessions = hub->sessions;
     sessions.erase(std::remove(sessions.begin(), sessions.end(), self), sessions.end());
     bool remaining = std::any_of(sessions.begin(), sessions.end(), [self](debugger_c* other) { return other->context == self->context; });
-    if (!remaining) {
+    if (!remaining && (!self->context->resources ||
+                       !self->context->resources->console_inspector)) {
         hub->inspector->contextDestroyed(self->context->js_context.Get(isolate));
         hub->groups.erase(self->context);
     }
     self->state->hub.reset();
-    if (sessions.empty()) inspector_hubs.erase(isolate);
+    if (sessions.empty() && hub->groups.empty()) inspector_hubs.erase(isolate);
     PYV8_RETURN_NONE;
 }
 bool debugger_context_can_close(context_c* context) {
@@ -290,6 +313,12 @@ void debugger_context_closed(context_c* context) {
         PyObject* result = debugger_disconnect(session, nullptr);
         Py_XDECREF((PyObject*)result);
     }
+    if (hub->groups.count(context)) {
+        hub->inspector->contextDestroyed(context->js_context.Get(isolate));
+        hub->groups.erase(context);
+    }
+    if (context->resources) context->resources->console_inspector.reset();
+    if (hub->groups.empty() && hub->sessions.empty()) inspector_hubs.erase(isolate);
 }
 void debugger_prepare_script(context_c* context) {
     auto found = inspector_hubs.find(context->isolate_state->isolate());

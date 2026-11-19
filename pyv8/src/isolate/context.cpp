@@ -273,6 +273,8 @@ PyMethodDef context_methods[] = {
     {"set_microtask_queue", (PyCFunction)PythonBoundary<context_set_microtask_queue>::call, METH_O, NULL},
     {"set_code_generation_handler", (PyCFunction)PythonBoundary<context_set_code_generation_handler>::call,
      METH_O, "Set a realm policy for eval and Function source; None restores engine defaults."},
+    {"enable_console", (PyCFunction)PythonBoundary<context_enable_console>::call, METH_NOARGS,
+     "Enable V8's browser console implementation without attaching a debugger session."},
     {"_run_foreground_task", (PyCFunction)PythonBoundary<context_run_foreground_task>::call, METH_NOARGS,
      "run at most one ready V8 foreground task without waiting or a microtask checkpoint"},
     {"_wasm_stream_feed", (PyCFunction)PythonBoundary<wasm_stream_feed>::call, METH_VARARGS, NULL},

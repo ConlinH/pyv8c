@@ -300,6 +300,9 @@ class Context:
     def set_code_generation_handler(self, handler: Any) -> None:
         """Validate eval/Function source in this realm; return a string, bool or raise."""
         ...
+    def enable_console(self) -> None:
+        """Enable V8's console backend without an Inspector protocol session."""
+        ...
     @property
     def heap_terminations(self) -> int:
         """How many crossings were stopped because the heap was full.

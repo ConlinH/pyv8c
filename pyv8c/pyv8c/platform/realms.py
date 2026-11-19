@@ -193,6 +193,7 @@ class WorkerRealm:
             bindings=config.bindings,
             isolated=config.cross_origin_isolated,
         )
+        self.v8_context.enable_console()
         return self.v8_context
 
     # The worker's global scope reaches these through WorkerRealmServices, as a
@@ -323,6 +324,7 @@ class PageRealm:
             if pending:
                 self.v8_context.install_ordered(pending)
             install_window_chrome(self.v8_context, page.services)
+            self.v8_context.enable_console()
             if page.navigation.content_policy.policies:
                 factory = page.window._window_values.value('trustedTypes')
                 self.v8_context.set_code_generation_handler(factory.code_generation)
