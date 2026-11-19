@@ -437,10 +437,12 @@ static PyObject* context_heap_statistics(context_c* self, PyObject* args) {
     if (!state) return nullptr;
     v8::HeapStatistics statistics;
     state->isolate()->GetHeapStatistics(&statistics);
-    return Py_BuildValue("{s:L,s:L,s:L}",
+    return Py_BuildValue("{s:L,s:L,s:L,s:L,s:L}",
                          "used", (long long)statistics.used_heap_size(),
                          "total", (long long)statistics.total_heap_size(),
-                         "limit", (long long)statistics.heap_size_limit());
+                         "limit", (long long)statistics.heap_size_limit(),
+                         "physical", (long long)statistics.total_physical_size(),
+                         "external", (long long)statistics.external_memory());
 }
 
 PyGetSetDef context_getset[] = {

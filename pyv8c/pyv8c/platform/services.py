@@ -34,6 +34,7 @@ class WorkerContext:
     debug_parent: Any | None
     creator_origin: tuple
     resource_session: Any
+    cross_origin_isolated: bool = False
 
 
 class _TaskSource:
@@ -216,6 +217,17 @@ class _RealmCapabilityBase(_TaskSource):
         v8_context = self.v8_context
         return v8_context.heap_statistics() if v8_context is not None else {}
 
+    def memory_snapshot(self):
+        from ..foundation.heap_memory import HeapMemoryCache
+        cache = getattr(self, '_memory_cache', None)
+        if cache is None:
+            cache = self._memory_cache = HeapMemoryCache()
+        return cache.snapshot(self.heap_statistics, precise=self.cross_origin_isolated)
+
+    @property
+    def cross_origin_isolated(self):
+        return False
+
 
 class _RealmCapability(_RealmCapabilityBase):
     """Realm identity, scripting and task posting (implements RealmServices)."""
@@ -258,6 +270,14 @@ class _RealmCapability(_RealmCapabilityBase):
     @property
     def v8_context(self):
         return getattr(self._owner._page_realm, "v8_context", None)
+
+    @property
+    def cross_origin_isolated(self):
+        return self._owner._navigation.cross_origin_isolated
+
+    def memory_snapshot(self):
+        cache = self._owner._page_realm.page.execution_group.heap_memory
+        return cache.snapshot(self.heap_statistics, precise=self.cross_origin_isolated)
 
     def ancestor_origins(self):
         """The origins of this realm's ancestors, nearest first.
@@ -402,6 +422,10 @@ class _WorkerRealmCapability(_RealmCapabilityBase):
     @property
     def url(self):
         return self._runtime.script_url
+
+    @property
+    def cross_origin_isolated(self):
+        return self._runtime.config.cross_origin_isolated
 
     @property
     def origin(self):
@@ -581,6 +605,7 @@ class _WorkerCapability:
             devtools=self._owner._profile._devtools,
             debug_parent=self._owner._page_realm.page._devtools_target,
             creator_origin=tuple(self._owner._origin),
+            cross_origin_isolated=self._owner.realm_services.cross_origin_isolated,
             resource_session=ResourceRequestSession(
                 profile=self._owner._profile, environment=self._owner.environment,
                 origin=tuple(self._owner._origin), base_url=self._owner.realm_services.url,

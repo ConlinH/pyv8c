@@ -12,6 +12,7 @@ class Clock:
     RESOLUTION_MS = 0.1
 
     def __init__(self):
+        self.resolution_ms = self.RESOLUTION_MS
         self._epoch = time.time() * 1000.0
         self._monotonic = time.perf_counter()
 
@@ -27,7 +28,7 @@ class Clock:
         """Convert a shared rendering instant to this document's timeline."""
         elapsed = (monotonic - self._monotonic) * 1000.0
         # Rounding is monotonic, so readings still never run backwards.
-        return round(elapsed / self.RESOLUTION_MS) * self.RESOLUTION_MS
+        return round(elapsed / self.resolution_ms) * self.resolution_ms
 
     def reset(self, epoch_ms=None, *, monotonic=None):
         """Start a new timeline, as a document's navigation does.

@@ -49,6 +49,8 @@ class NavigationController:
         self.parsing = False
         self.parser_done = False
         self.operation = None
+        self.cross_origin_isolated = bool(page.parent_page and
+                                          page.parent_page.navigation.cross_origin_isolated)
         self.content_policy = ContentPolicy(page.parent_page.navigation.content_policy
                                             if page.parent_page else None)
         page._resource_scope.add(self.close)
@@ -82,13 +84,18 @@ class NavigationController:
         # A later document replaces the realm; the first one is the page's own.
         previous_origin = self.page.origin
         self.page._update_origin(url)
+        from .isolation import document_isolated
+        isolated = document_isolated(self.page, url, response)
         policy = ContentPolicy(self.page.parent_page.navigation.content_policy
                                if response is None and self.page.parent_page and
                                str(url).startswith(('about:', 'blob:')) else None)
         if response is not None:
             policy.add(response.headers.fn_get('content-security-policy') or '')
-        renew_realm = (self.has_navigation or replace_initial or bool(policy.policies))
+        renew_realm = (self.has_navigation or replace_initial or
+                       isolated != self.cross_origin_isolated or bool(policy.policies))
+        self.cross_origin_isolated = isolated
         self.content_policy = policy
+        self.page.services.realm_services.performance.clock.resolution_ms = 0.005 if isolated else 0.1
         if not renew_realm and previous_origin != self.page.origin:
             # Initial host content injection keeps installed globals/listeners.
             # Its explicit origin must still select the correct agent queue.

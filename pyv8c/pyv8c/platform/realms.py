@@ -116,11 +116,11 @@ def _publish_window_name(context, page):
 _NON_ISOLATED_HIDDEN = ("SharedArrayBuffer",)
 
 
-def _declare_realm_interfaces(context, *, context_type, bindings):
+def _declare_realm_interfaces(context, *, context_type, bindings, isolated=False):
     """Declare the realm's plan; the realm answers each name itself."""
     plan = bindings.plan(context_type)
     context.install(plan.installs)
-    for name in _NON_ISOLATED_HIDDEN:
+    for name in (() if isolated else _NON_ISOLATED_HIDDEN):
         context.hide_global(name)
     #: Every interface is still a lazy constructor after startup, including the
     #: ones the context installed while its template was built.
@@ -149,6 +149,8 @@ class WorkerRealm:
         self._resource_scope = ResourceScope()
         self.resource_ownership = ResourceOwnership(self._resource_scope)
         self.services = WorkerRealmServices(self.tasks, self)
+        self.services.realm_services.performance.clock.resolution_ms = (
+            0.005 if config.cross_origin_isolated else 0.1)
         self.callback_boundary = None
 
     def is_closed(self):
@@ -189,6 +191,7 @@ class WorkerRealm:
             self.v8_context,
             context_type="Worker",
             bindings=config.bindings,
+            isolated=config.cross_origin_isolated,
         )
         return self.v8_context
 
@@ -323,7 +326,7 @@ class PageRealm:
             if page.navigation.content_policy.policies:
                 factory = page.window._window_values.value('trustedTypes')
                 self.v8_context.set_code_generation_handler(factory.code_generation)
-            for name in _NON_ISOLATED_HIDDEN:
+            for name in (() if page.navigation.cross_origin_isolated else _NON_ISOLATED_HIDDEN):
                 self.v8_context.hide_global(name)
         deferred_globals = len(plan.installs)
         deferred_declared_at = time.perf_counter_ns()

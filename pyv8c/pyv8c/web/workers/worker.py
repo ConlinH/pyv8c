@@ -138,8 +138,7 @@ class WorkerGlobalScope(_SchedulingMixin, EventTarget):
         """The origin the worker was started from, which a blob URL carries."""
         return origin_string(self.script_url())
     def get_crossOriginIsolated(self):
-        """A worker inherits its owner's isolation, and no document here is isolated."""
-        return False
+        return bool(self._services.realm_services.cross_origin_isolated)
     def script_url(self):
         """The URL the worker was started from, which decides its security."""
         return str(getattr(self._runtime, "script_url", "") or "")

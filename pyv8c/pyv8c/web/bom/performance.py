@@ -163,12 +163,11 @@ class MemoryInfo:
         if services is pyv8.Undefined:
             services = None
         self._services = services or _realm
+        self._snapshot = (self._services.realm_services.memory_snapshot()
+                          if self._services is not None else {})
 
     def _statistics(self):
-        services = self._services
-        if services is None:
-            return {}
-        return services.realm_services.heap_statistics() or {}
+        return self._snapshot
 
     def get_jsHeapSizeLimit(self): return self._statistics().get("limit", 0)
     def get_totalJSHeapSize(self): return self._statistics().get("total", 0)

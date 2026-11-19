@@ -9,6 +9,7 @@ from ..foundation.agent_tasks import AgentTaskQueue
 from ..foundation.rendering import RenderingScheduler
 from ..foundation.error_policy import control_exceptions
 from ..foundation.foreground import ForegroundSource
+from ..foundation.heap_memory import HeapMemoryCache
 
 
 class NavigationCancelled(RuntimeError):
@@ -27,6 +28,7 @@ class Agent:
 
 class WindowExecutionGroup:
     def __init__(self, *, frame_rate=60.0):
+        self.heap_memory = HeapMemoryCache()
         self.rendering = RenderingScheduler(frame_rate=frame_rate)
         self.executor = RealmExecutor(name='pyv8c-window-group', auto_pump=True)
         self.executor.call(self.executor.attach_rendering, self.rendering)
