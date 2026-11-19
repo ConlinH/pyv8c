@@ -667,6 +667,10 @@ class Permissions:
         return name
 
     def _state(self, name):
+        feature = {'audio_capture': 'microphone', 'video_capture': 'camera'}.get(name, name)
+        realm = getattr(self._services, 'realm_services', None)
+        if realm is not None and not realm.permission_allowed(feature):
+            return 'denied'
         if name == "geolocation":
             return self._environment.geolocation.permission
         if name in ("background-fetch", "storage-access"):

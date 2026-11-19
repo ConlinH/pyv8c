@@ -251,7 +251,7 @@ class Document(_ParentNodeMixin, Node):
     def get_featurePolicy(self):
         policy = getattr(self, "_feature_policy", None)
         if policy is None:
-            policy = self._feature_policy = PermissionsPolicy(url=self.get_URL())
+            policy = self._feature_policy = PermissionsPolicy(url=self.get_URL(), services=self._services)
         return policy
 
     def get_referrer(self):

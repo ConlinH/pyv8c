@@ -35,6 +35,7 @@ class WorkerContext:
     creator_origin: tuple
     resource_session: Any
     cross_origin_isolated: bool = False
+    denied_permissions: frozenset = frozenset()
 
 
 class _TaskSource:
@@ -228,6 +229,9 @@ class _RealmCapabilityBase(_TaskSource):
     def cross_origin_isolated(self):
         return False
 
+    def permission_allowed(self, feature):
+        return True
+
 
 class _RealmCapability(_RealmCapabilityBase):
     """Realm identity, scripting and task posting (implements RealmServices)."""
@@ -278,6 +282,9 @@ class _RealmCapability(_RealmCapabilityBase):
     def memory_snapshot(self):
         cache = self._owner._page_realm.page.execution_group.heap_memory
         return cache.snapshot(self.heap_statistics, precise=self.cross_origin_isolated)
+
+    def permission_allowed(self, feature):
+        return feature not in self._owner._navigation.denied_permissions
 
     def ancestor_origins(self):
         """The origins of this realm's ancestors, nearest first.
@@ -426,6 +433,9 @@ class _WorkerRealmCapability(_RealmCapabilityBase):
     @property
     def cross_origin_isolated(self):
         return self._runtime.config.cross_origin_isolated
+
+    def permission_allowed(self, feature):
+        return feature not in self._runtime.config.denied_permissions
 
     @property
     def origin(self):
@@ -606,12 +616,14 @@ class _WorkerCapability:
             debug_parent=self._owner._page_realm.page._devtools_target,
             creator_origin=tuple(self._owner._origin),
             cross_origin_isolated=self._owner.realm_services.cross_origin_isolated,
+            denied_permissions=self._owner._navigation.denied_permissions,
             resource_session=ResourceRequestSession(
                 profile=self._owner._profile, environment=self._owner.environment,
                 origin=tuple(self._owner._origin), base_url=self._owner.realm_services.url,
                 loader=browser.resource_loader, interceptor=browser.resource_interceptor,
                 backend=self._owner._profile.network_backend, cache_enabled=browser.cache_enabled,
-                site_for_cookies=site, file_system_key=self._owner.resource_services.file_system_key(),),
+                site_for_cookies=site, file_system_key=self._owner.resource_services.file_system_key(),
+                referrer_policy=self._owner._navigation.referrer_policy),
         )
 
     def create_worker_realm(self, config):

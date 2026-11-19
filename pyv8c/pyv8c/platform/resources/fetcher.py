@@ -114,6 +114,8 @@ class ResourceFetchController:
             url=target,
             current_url=initiator_url or request.get("initiator_url") or page.url,
             current_origin=None if origin is None else serialize_origin(origin),
+            referrer_policy=request.get('referrer_policy') or getattr(
+                getattr(page, 'navigation', page), 'referrer_policy', 'strict-origin-when-cross-origin'),
             browser_initiated=bool(request.get("browser_initiated")),
             user_activated=bool(request.get("user_activated")),
             content_type=request.get("content_type"),

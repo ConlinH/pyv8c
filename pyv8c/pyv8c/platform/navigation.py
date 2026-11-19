@@ -16,6 +16,7 @@ from ..web.bom.utils import page_base_url, page_secure_context
 from ..web.dom.document import HTMLDocument
 from ..web.bom.motion import INSECURE_ORIGIN_INTERFACES
 from ..web.html.parser import IncrementalDOMParser
+from .resources.request_headers import referrer_policy
 from ..foundation.content_policy import ContentPolicy
 
 
@@ -53,6 +54,10 @@ class NavigationController:
                                           page.parent_page.navigation.cross_origin_isolated)
         self.content_policy = ContentPolicy(page.parent_page.navigation.content_policy
                                             if page.parent_page else None)
+        self.denied_permissions = frozenset(page.parent_page.navigation.denied_permissions
+                                             if page.parent_page else ())
+        self.referrer_policy = (page.parent_page.navigation.referrer_policy
+                                if page.parent_page else 'strict-origin-when-cross-origin')
         page._resource_scope.add(self.close)
 
     def navigation_allowed(self):
@@ -91,6 +96,16 @@ class NavigationController:
                                str(url).startswith(('about:', 'blob:')) else None)
         if response is not None:
             policy.add(response.headers.fn_get('content-security-policy') or '')
+        inherited_referrer = (self.page.parent_page.navigation.referrer_policy
+                              if response is None and self.page.parent_page and
+                              str(url).startswith(('about:', 'blob:')) else 'strict-origin-when-cross-origin')
+        self.referrer_policy = referrer_policy(
+            response.headers.fn_get('referrer-policy') if response is not None else '', inherited_referrer)
+        denied = set(self.page.parent_page.navigation.denied_permissions if self.page.parent_page else ())
+        if response is not None:
+            permissions = str(response.headers.fn_get('permissions-policy') or '')
+            denied.update(re.findall(r'(?:^|,)\s*([\w-]+)\s*=\s*\(\s*\)', permissions))
+        self.denied_permissions = frozenset(denied)
         renew_realm = (self.has_navigation or replace_initial or
                        isolated != self.cross_origin_isolated or bool(policy.policies))
         self.cross_origin_isolated = isolated

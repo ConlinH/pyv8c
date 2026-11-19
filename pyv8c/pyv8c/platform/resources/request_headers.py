@@ -5,7 +5,7 @@ Measured against Chrome 153 (``docs/pyv8c/request-headers.md``); ``Host`` and
 """
 from __future__ import annotations
 
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from ...foundation.urls import origin_string
 from ...foundation.sites import site_domain
@@ -174,7 +174,20 @@ def site_relation(url, current_url) -> str:
     return "same-site" if same_site(url, current_url) else "cross-site"
 
 
-def referer_for(url, current_url) -> str:
+REFERRER_POLICIES = frozenset(('no-referrer', 'no-referrer-when-downgrade', 'same-origin',
+    'origin', 'strict-origin', 'origin-when-cross-origin', 'strict-origin-when-cross-origin', 'unsafe-url'))
+
+
+def referrer_policy(value, default='strict-origin-when-cross-origin'):
+    result = default
+    for token in str(value or '').split(','):
+        candidate = token.strip().lower()
+        if candidate in REFERRER_POLICIES:
+            result = candidate
+    return result
+
+
+def referer_for(url, current_url, policy='strict-origin-when-cross-origin') -> str:
     """``Referer`` under ``strict-origin-when-cross-origin``: full URL, else origin.
 
     Only an http(s) URL can be a referrer: a worker started from a ``blob:`` script reports that
@@ -184,10 +197,19 @@ def referer_for(url, current_url) -> str:
     """
     if not url or not current_url:
         return ""
-    if urlsplit(str(current_url)).scheme.lower() not in ("http", "https"):
+    source = urlsplit(str(current_url))
+    if source.scheme.lower() not in ("http", "https"):
         return ""
-    if origin_string(url) == origin_string(current_url):
-        return str(current_url)
+    policy = referrer_policy(policy)
+    same = origin_string(url) == origin_string(current_url)
+    downgrade = source.scheme.lower() == 'https' and urlsplit(str(url)).scheme.lower() != 'https'
+    if policy == 'no-referrer' or (policy == 'same-origin' and not same):
+        return ''
+    if downgrade and policy in ('no-referrer-when-downgrade', 'strict-origin', 'strict-origin-when-cross-origin'):
+        return ''
+    full = urlunsplit((source.scheme, source.netloc.rsplit('@', 1)[-1], source.path or '/', source.query, ''))
+    if policy in ('unsafe-url', 'no-referrer-when-downgrade') or (same and policy not in ('origin', 'strict-origin')):
+        return full
     origin = origin_string(current_url)
     return "" if origin == "null" else origin + "/"
 
@@ -208,7 +230,7 @@ def include_origin(url, current_url, mode, method, current_origin=None) -> bool:
 def browser_headers(environment, *, destination="empty", mode=None, method="GET",
                     url="", current_url="", browser_initiated=False,
                     user_activated=False, content_type=None, http_version=1,
-                    extra=None, current_origin=None, accepted_hints=()) -> dict:
+                    extra=None, current_origin=None, accepted_hints=(), referrer_policy='strict-origin-when-cross-origin') -> dict:
     """The headers Chromium would send for one request, in Chromium's order.
 
     ``browser_initiated`` marks a browser-started navigation, which has no
@@ -219,7 +241,7 @@ def browser_headers(environment, *, destination="empty", mode=None, method="GET"
     header.
     """
     hints = client_hint_headers(environment.client_hints, accepted_hints)
-    referer = "" if browser_initiated else referer_for(url, current_url)
+    referer = "" if browser_initiated else referer_for(url, current_url, referrer_policy)
     origin = origin_string(current_url) if current_origin is None else current_origin
     site = "none" if browser_initiated else site_relation(url, origin if current_origin is not None else current_url)
     resolved_mode = mode or fetch_mode(destination)

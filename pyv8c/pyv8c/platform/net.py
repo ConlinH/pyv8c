@@ -80,6 +80,7 @@ class PageNet:
             method=method,
             url=target,
             current_url=self._page.url,
+            referrer_policy=self._page.navigation.referrer_policy,
             http_version=2 if urlsplit(str(target)).scheme == "https" else 1,
         )
 

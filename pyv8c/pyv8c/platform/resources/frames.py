@@ -167,7 +167,7 @@ class FrameResourceController:
         try:
             #: The frame's document reports the parent's URL as its referrer, and its
             #: timeline begins where the frame's own request did.
-            response._document_referrer = referer_for(target, page.url)
+            response._document_referrer = referer_for(target, page.url, page.navigation.referrer_policy)
             child.executor.call(child.navigation.set_content, response.body_text(), url=target,
                                 replace_initial=True, response=response)
             child.lifecycle.when_loaded(callback)
@@ -196,7 +196,9 @@ class FrameResourceController:
         response = self.controller.load_resource(
             target, {"method": "GET", "mode": "navigate", "destination": "iframe", "resource_type": "iframe"})
         try:
-            child.executor.call(child.navigation.set_content, response.body_text(), url=target, replace_initial=True)
+            response._document_referrer = referer_for(target, page.url, page.navigation.referrer_policy)
+            child.executor.call(child.navigation.set_content, response.body_text(), url=target,
+                                replace_initial=True, response=response)
         except NavigationCancelled:
             return child
         return child

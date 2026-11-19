@@ -43,22 +43,27 @@ class PermissionsPolicy:
     def fn_allowsFeature(self, feature=MISSING, *_extra):
         if feature is MISSING:
             raise missing_error('PermissionsPolicy', 'allowsFeature', 1, 0, constructor=False)
-        return str(dom_string(feature)) in FEATURES
+        name = str(dom_string(feature))
+        realm = getattr(self._services, 'realm_services', None)
+        return name in FEATURES and (realm is None or realm.permission_allowed(name))
 
     def fn_allowedFeatures(self, *_extra):
-        return list(FEATURES)
+        return [name for name in FEATURES if self.fn_allowsFeature(name)]
 
     def fn_features(self, *_extra):
         return list(FEATURES)
 
-    def __init__(self, url="", **_):
+    def __init__(self, url="", services=None, **_):
         self._url = str(url or "")
+        self._services = services
 
     def fn_getAllowlistForFeature(self, feature=MISSING, *_extra):
         if feature is MISSING:
             raise missing_error('PermissionsPolicy', 'getAllowlistForFeature', 1, 0,
                                 constructor=False)
         name = str(dom_string(feature))
+        if not self.fn_allowsFeature(name):
+            return []
         # The default allowlist of most features is 'self', which an opaque origin
         # cannot match, and Chrome answers the same way for an unknown name.
         if name not in FEATURES or urlsplit(self._url).scheme.lower() not in _TUPLE_SCHEMES:

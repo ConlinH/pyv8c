@@ -112,6 +112,7 @@ class ResourceRequestSession:
     cache_enabled: bool
     site_for_cookies: str | None = None
     file_system_key: tuple | None = None
+    referrer_policy: str = 'strict-origin-when-cross-origin'
 
     def load(self, url, options, cancelled):
         from .fetcher import ResourceFetchController
@@ -119,7 +120,8 @@ class ResourceRequestSession:
         initiator = str(options.get('initiator_url') or self.base_url)
         target = absolute_url(url, initiator)
         origin = self.origin
-        view = SimpleNamespace(environment=self.environment, url=initiator, profile=self.profile)
+        view = SimpleNamespace(environment=self.environment, url=initiator, profile=self.profile,
+                               referrer_policy=self.referrer_policy)
         mode = ResourceFetchController._request_mode(options)
         prepare = ResourceFetchController._request_with_environment_headers
         prepared = prepare(options, view, target, initiator, origin)
