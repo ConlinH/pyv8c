@@ -19,6 +19,23 @@ def test_svg_parser_text_metrics_match_chrome_on_windows_arial(page):
                 [10,64,108.328125,168], [10,118.328125]]
 
 
+def test_svg_char_extent_uses_a_local_face_when_the_profile_font_file_is_absent(page):
+    """A Windows catalog family with no file here must still measure.
+
+    The packaged profile names Segoe UI. macOS has the record and not the file,
+    so shaping falls back to one local face. The extent is that face's box.
+    """
+    page.set_content(
+        '<svg><text y="20" style="font: 16px \'Segoe UI\'">H</text></svg>',
+        url='https://text.test/')
+    extent = page.evaluate('''(() => {
+      const rect = document.querySelector('text').getExtentOfChar(0);
+      return [rect.width, rect.height];
+    })()''')
+    assert extent[0] > 0
+    assert extent[1] > 0
+
+
 def test_svg_text_invalid_character_throws_and_removed_text_has_no_layout(page):
     page.set_content('<svg><text style="font:20px Arial">Hi</text></svg>',url='https://text.test/')
     assert page.evaluate('''(() => {

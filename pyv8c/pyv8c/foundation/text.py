@@ -172,9 +172,12 @@ def shape(text, path, index=0, size=16.0, *, features=None, weight=None,
         advances.append(advance)
         offsets.append((position.x_offset * scale, position.y_offset * scale))
         extents.append(_extent(font, int(info.codepoint), scale))
+    # Layout reads extents from run.faces. This fast path is still one face;
+    # leaving faces empty makes a profile family with no local file report none.
     run = ShapedRun(text, sum(advances), tuple(glyphs), tuple(clusters), tuple(advances),
                     tuple(offsets), tuple(extents),
-                    _prefix_widths(clusters, advances, len(text)))
+                    _prefix_widths(clusters, advances, len(text)),
+                    ((str(path), int(index)),))
     return _remember(_RUNS, key, run)
 
 

@@ -140,6 +140,13 @@ def test_the_boxes_come_from_the_face_that_was_measured_with():
     assert answer["right"] >= answer["width"] - 2, answer
 
 
+def test_a_profile_family_without_a_local_file_still_reports_its_font_box():
+    """Segoe UI is in the Windows catalog. Without the file, the box is the local fallback."""
+    answer = _boxes('16px "Segoe UI"', text="H")
+    assert answer["width"] > 0, answer
+    assert answer["fontAscent"] > 0, answer
+
+
 def test_an_empty_run_has_the_face_box_and_no_ink():
     answer = _boxes('16px "Arial"', text="")
     assert answer["width"] == 0 and answer["ascent"] == 0 and answer["descent"] == 0, answer

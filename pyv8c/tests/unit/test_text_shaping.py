@@ -36,6 +36,13 @@ def test_glyph_without_extents_has_no_ink():
     assert T._extent(Font(), 1, 1.0) == (0.0, 0.0, 0.0, 0.0)
 
 
+def test_a_single_face_run_names_the_face_it_used(face):
+    """Metrics are read from ``run.faces``. The fast path has to name its face too."""
+    path, index = face
+    run = shaped("H", face)
+    assert run.faces == ((str(path), int(index)),)
+
+
 def test_shaping_matches_a_run_of_glyphs(face):
     run = shaped("hello", face)
     assert run.text == "hello"

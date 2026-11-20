@@ -293,14 +293,23 @@ class _LineStyle:
 
 
 def _font_metrics(style, environment=None):
-    """The face's own extents for a style, or ``None`` when no face can be read."""
-    record = _face_for(_families(style), environment, style.get("font-weight", "400"),
-                       style.get("font-style", "normal"))
-    path = _face_path(record)
-    if path is None:
-        return None
-    found = text_engine.metrics(path, index=getattr(record, "index", 0), size=_font_size(style))
-    return found if found.height else None
+    """The face's own extents for a style, or ``None`` when no face can be read.
+
+    A catalog record whose file is not on this machine is not a face. The Windows
+    profile names Segoe UI and Noto Sans SC; measurement uses the first face in
+    the same chain that actually opens.
+    """
+    chain = _face_chain(_families(style), environment, style.get("font-weight", "400"),
+                        style.get("font-style", "normal"))
+    size = _font_size(style)
+    for record in chain:
+        path = _face_path(record)
+        if path is None:
+            continue
+        found = text_engine.metrics(path, index=getattr(record, "index", 0), size=size)
+        if found.height:
+            return found
+    return None
 
 
 def _line_style(style, environment=None, root=16.0, found=None):
