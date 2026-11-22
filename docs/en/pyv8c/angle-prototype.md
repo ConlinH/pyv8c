@@ -9,14 +9,12 @@ python -m pip install "pyv8c[angle]"
 ```
 
 ```python
-from pyv8c import Browser
+from pyv8c.async_api import Browser, run
 
-browser = Browser(webgl_backend="angle")
-try:
-    page = browser.new_profile().new_page()
-    # Run a page that uses WebGL.
-finally:
-    browser.close()
+async def main():
+    async with Browser(webgl_backend='angle') as browser:
+        page = browser.new_profile().new_page()
+run(main())
 ```
 
 The simulated backend remains the default. When ANGLE is selected, the EGL and GLES libraries come from `comfy-angle`; if it is not installed,

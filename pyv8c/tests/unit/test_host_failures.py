@@ -18,7 +18,7 @@ pytestmark = pytest.mark.native
 from pyv8c import pyv8
 from pyv8c.pyv8 import IdlSpec
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.page_errors import PageError, PageTypeError, js_error_value
 from pyv8c.foundation.host_errors import RealmBusyError
 from pyv8c.foundation.error_policy import host_boundary, is_host_failure
@@ -48,7 +48,7 @@ def sink():
                                 format="{message}")
 
 
-def test_a_rejection_reason_is_what_a_realm_may_be_shown():
+async def test_a_rejection_reason_is_what_a_realm_may_be_shown():
     #: A declared error crosses as itself -- the native resolver builds the JavaScript error
     #: when it settles -- and a non-exception reason stays what it is.  A failure of the
     #: host's own is not something a realm may be handed, so the page gets a plain error
@@ -63,7 +63,7 @@ def test_a_rejection_reason_is_what_a_realm_may_be_shown():
     assert "late rejection" not in str(carried)
 
 
-def test_a_failure_outside_the_family_is_the_hosts_own():
+async def test_a_failure_outside_the_family_is_the_hosts_own():
     assert is_host_failure(RealmBusyError(WEDGED)) is True
     # The guard has always been a RuntimeError, and callers catch it as one.
     assert isinstance(RealmBusyError(WEDGED), RuntimeError)
@@ -75,7 +75,7 @@ def test_a_failure_outside_the_family_is_the_hosts_own():
     assert is_host_failure("a thrown value") is False
 
 
-def test_a_host_failure_while_scripting_is_logged_and_the_script_carries_on(context):
+async def test_a_host_failure_while_scripting_is_logged_and_the_script_carries_on(context):
     messages, token = sink()
 
     def close():
@@ -93,14 +93,14 @@ def test_a_host_failure_while_scripting_is_logged_and_the_script_carries_on(cont
     assert "_cleanup_owner" in messages[0]
 
 
-def test_the_same_failure_the_host_asked_for_still_reaches_the_host():
+async def test_the_same_failure_the_host_asked_for_still_reaches_the_host():
     """No script is on the stack, so there is nothing to keep it out of."""
     with pytest.raises(RealmBusyError, match="_cleanup_owner"):
         with host_boundary("WorkerGlobalScope.close"):
             raise RealmBusyError(WEDGED)
 
 
-def test_a_realm_pyv8_cannot_answer_for_says_so_itself():
+async def test_a_realm_pyv8_cannot_answer_for_says_so_itself():
     """A worker's realm runs on its own isolate, where no context is the current one."""
     messages, token = sink()
     try:
@@ -114,7 +114,7 @@ def test_a_realm_pyv8_cannot_answer_for_says_so_itself():
     assert len(messages) == 1, messages
 
 
-def test_a_scripts_own_failure_is_still_thrown_at_the_script(context):
+async def test_a_scripts_own_failure_is_still_thrown_at_the_script(context):
     def fail():
         with host_boundary("WorkerGlobalScope.close"):
             raise PageError("the script's own failure")
@@ -126,7 +126,7 @@ def test_a_scripts_own_failure_is_still_thrown_at_the_script(context):
     ) == "Error:the script's own failure"
 
 
-def test_a_host_failure_in_a_task_is_not_a_page_error():
+async def test_a_host_failure_in_a_task_is_not_a_page_error():
     """Where nothing is thrown at a caller, the realm still hears only its own failures."""
     messages, token = sink()
 
@@ -136,19 +136,19 @@ def test_a_host_failure_in_a_task_is_not_a_page_error():
     def script_failure():
         raise PageError("the script's own failure")
 
-    browser = Browser(stub_logging="off", real_network=False)
+    browser = (await Browser(stub_logging="off", real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<html><body></body></html>")
+        (await page.set_content("<html><body></body></html>", wait_until="commit"))
         page.evaluate("window.__errors = [];"
                       " window.addEventListener('error',"
                       "   (event) => __errors.push(String(event.message)))")
         page.tasks.post(host_failure)
         page.tasks.post(script_failure)
-        page.run_until_idle(0.3)
+        (await page.run_until_idle(0.3))
         seen = json.loads(page.evaluate("JSON.stringify(window.__errors)"))
     finally:
         logger.remove(token)
-        browser.close()
+        (await browser.close())
     assert len(seen) == 1 and "the script's own failure" in seen[0], seen
     assert any("the host could not finish" in line for line in messages), messages

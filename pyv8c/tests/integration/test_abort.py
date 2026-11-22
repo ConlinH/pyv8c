@@ -7,23 +7,25 @@ is several at once.  A page's own loader stands in for that server so the rules 
 covered on a machine with none.  What the corpus cases hold against Chrome are the
 readings that need no waiting; the ones that do are here.
 """
+
+import asyncio
 import threading
 
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 ORIGIN = "http://abort.test"
 PAGE = "<!doctype html><title>abort</title><body><div id=host></div></body>"
 
 
-def _page(loader=None):
-    browser = Browser(stub_logging="off", threaded_loaders=True,
-                      resource_loader=loader or (lambda url, request: _response(url)))
+async def _page(loader=None):
+    browser = (await Browser(stub_logging="off", threaded_loaders=True,
+                      resource_loader=loader or (lambda url, request: _response(url))).__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content(PAGE, url=ORIGIN + "/")
+    (await page.set_content(PAGE, url=ORIGIN + "/", wait_until="commit"))
     return browser, page
 
 
@@ -32,8 +34,8 @@ def _response(url, status=200, body="ok"):
             "headers": {"Content-Type": "text/plain"}}
 
 
-def test_a_signal_is_not_constructible_and_the_constructor_needs_new():
-    browser, page = _page()
+async def test_a_signal_is_not_constructible_and_the_constructor_needs_new():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const out = [];
@@ -50,11 +52,11 @@ def test_a_signal_is_not_constructible_and_the_constructor_needs_new():
                           " function."],
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_aborting_fires_one_plain_event_and_keeps_the_first_reason():
-    browser, page = _page()
+async def test_aborting_fires_one_plain_event_and_keeps_the_first_reason():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const c = new AbortController(), s = c.signal, seen = [];
@@ -68,11 +70,11 @@ def test_aborting_fires_one_plain_event_and_keeps_the_first_reason():
                      "signal is aborted without reason", 20, True,
                      "AbortError: signal is aborted without reason"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_reason_the_page_gave_travels_as_itself():
-    browser, page = _page()
+async def test_a_reason_the_page_gave_travels_as_itself():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const out = [];
@@ -96,11 +98,11 @@ def test_a_reason_the_page_gave_travels_as_itself():
                      "signal is aborted without reason"], ["AbortError",
                      "signal is aborted without reason"], [True, True]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_onabort_is_a_prototype_slot_that_fires_once():
-    browser, page = _page()
+async def test_onabort_is_a_prototype_slot_that_fires_once():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const c = new AbortController(), s = c.signal;
@@ -114,11 +116,11 @@ def test_onabort_is_a_prototype_slot_that_fires_once():
             return [typeof before, String(before), inPrototype, n, String(s.onabort)];
         })()""") == ["object", "null", True, 1, "null"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_the_statics_hand_out_signals_that_are_aborted_or_waiting():
-    browser, page = _page()
+async def test_the_statics_hand_out_signals_that_are_aborted_or_waiting():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const out = [];
@@ -134,11 +136,11 @@ def test_the_statics_hand_out_signals_that_are_aborted_or_waiting():
         })()""") == [[True, "AbortError", "signal is aborted without reason", 20],
                      [True, True, "string"], [False, "undefined", True, True]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_deadline_fires_with_chromes_timeout_reason():
-    browser, page = _page()
+async def test_a_deadline_fires_with_chromes_timeout_reason():
+    browser, page = (await _page())
     try:
         page.evaluate("""(() => {
             window.__timeout = null;
@@ -149,15 +151,15 @@ def test_a_deadline_fires_with_chromes_timeout_reason():
             };
             return 'armed';
         })()""")
-        page.wait_for("window.__timeout !== null", timeout=10)
+        (await page.wait_for("window.__timeout !== null", timeout=10))
         assert page.evaluate("window.__timeout") == [True, "TimeoutError", "signal timed out",
                                                     23, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_deadline_conversion_is_checked_the_way_chrome_checks_it():
-    browser, page = _page()
+async def test_a_deadline_conversion_is_checked_the_way_chrome_checks_it():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const out = [];
@@ -187,11 +189,11 @@ def test_a_deadline_conversion_is_checked_the_way_chrome_checks_it():
             ["1.5", True], ["5", True], ["9007199254740991", True],
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_any_follows_its_members_and_keeps_their_reason():
-    browser, page = _page()
+async def test_any_follows_its_members_and_keeps_their_reason():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const out = [];
@@ -211,11 +213,11 @@ def test_any_follows_its_members_and_keeps_their_reason():
             return out;
         })()""") == [[False, "undefined", True], [True, True, "z", 1, True], [True, "x"]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_any_refuses_what_is_not_a_signal_in_chromes_words():
-    browser, page = _page()
+async def test_any_refuses_what_is_not_a_signal_in_chromes_words():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const out = [];
@@ -235,11 +237,11 @@ def test_any_refuses_what_is_not_a_signal_in_chromes_words():
                           " value to 'AbortSignal'."],
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_the_receiver_is_checked_on_the_members_that_need_their_own():
-    browser, page = _page()
+async def test_the_receiver_is_checked_on_the_members_that_need_their_own():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const out = [];
@@ -254,11 +256,11 @@ def test_the_receiver_is_checked_on_the_members_that_need_their_own():
         })()""") == [["TypeError", "Illegal invocation"], ["TypeError", "Illegal invocation"],
                      ["TypeError", "Illegal invocation"]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_fetch_the_page_aborted_rejects_with_the_reason():
-    browser, page = _page()
+async def test_a_fetch_the_page_aborted_rejects_with_the_reason():
+    browser, page = (await _page())
     try:
         page.evaluate("""(() => {
             window.__early = window.__custom = window.__late = null;
@@ -276,17 +278,17 @@ def test_a_fetch_the_page_aborted_rejects_with_the_reason():
             setTimeout(() => midflight.abort(), 0);
             return 'asked';
         })()""")
-        page.run_until_idle(timeout=5)
+        (await page.run_until_idle(timeout=5))
         assert page.evaluate("window.__early") == ["AbortError",
                                                    "signal is aborted without reason", True]
         assert page.evaluate("window.__custom") == ["Error", "stop"]
         assert page.evaluate("window.__late") == ["AbortError",
                                                   "signal is aborted without reason"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_an_aborted_fetch_never_delivers_the_response():
+async def test_an_aborted_fetch_never_delivers_the_response():
     started = threading.Event()
     released = threading.Event()
 
@@ -295,7 +297,7 @@ def test_an_aborted_fetch_never_delivers_the_response():
         released.wait(5)
         return _response(url)
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         page.evaluate("""(() => {
             window.__settled = 'pending';
@@ -306,11 +308,11 @@ def test_an_aborted_fetch_never_delivers_the_response():
             setTimeout(() => controller.abort(), 0);
             return 'asked';
         })()""")
-        page.run_until_idle(timeout=2)
-        assert started.wait(5), "the loader never ran"
+        (await page.run_until_idle(timeout=2))
+        assert (await asyncio.to_thread(started.wait, 5)), "the loader never ran"
         released.set()
-        page.run_until_idle(timeout=5)
+        (await page.run_until_idle(timeout=5))
         assert page.evaluate("window.__settled") == "rejected"
     finally:
         released.set()
-        browser.close()
+        (await browser.close())

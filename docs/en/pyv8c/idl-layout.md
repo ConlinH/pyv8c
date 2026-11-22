@@ -10,4 +10,4 @@ Document and query views are reused through a bounded cache, and the generated i
 load timing belongs to a single `Idl.load` call and is not shared between Browsers. Interface implementation coverage can be viewed with
 `python tools/idl_audit.py --coverage`; adding `--json report.json` saves the full list.
 
-The baseline used by the release package is the `pyv8c/pyv8c/idl/idl.zip` corresponding to `CHROMIUM_VERSION`. The version inside the archive is checked before packaging.
+The baseline shipped by default in the release package is the `pyv8c/pyv8c/idl/idl.zip` corresponding to `CHROMIUM_VERSION`. `CHROMIUM_VERSION` records the baseline source for the IDL extractor; no version consistency check runs at packaging time. `Idl.load(path=...)` can load an IDL document of any version, and profiles match by content digest rather than a version string.

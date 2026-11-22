@@ -5,7 +5,7 @@ import pytest
 @pytest.mark.parametrize('expression', [
     "document.createElement('span')", "document", "window", "navigator",
 ])
-def test_web_object_dom_string_uses_its_js_string_value(page, expression):
+async def test_web_object_dom_string_uses_its_js_string_value(page, expression):
     assert page.evaluate('''(() => {
         const value = ''' + expression + ''';
         const target = document.createElement('div');
@@ -15,7 +15,7 @@ def test_web_object_dom_string_uses_its_js_string_value(page, expression):
 
 
 @pytest.mark.parametrize('kind', ['toString', 'toPrimitive'])
-def test_blob_part_conversion_propagates_a_host_wrappers_coercion_error(page, kind):
+async def test_blob_part_conversion_propagates_a_host_wrappers_coercion_error(page, kind):
     member = 'Symbol.toPrimitive' if kind == 'toPrimitive' else "'toString'"
     assert page.evaluate('''(() => {
         const node = document.createElement('div');
@@ -26,7 +26,7 @@ def test_blob_part_conversion_propagates_a_host_wrappers_coercion_error(page, ki
     })()''') is True
 
 
-def test_dom_string_calls_a_host_wrappers_override_once(page):
+async def test_dom_string_calls_a_host_wrappers_override_once(page):
     assert page.evaluate('''(() => {
         const node = document.createElement('div');
         let calls = 0;

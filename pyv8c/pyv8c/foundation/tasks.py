@@ -235,23 +235,27 @@ class TaskQueue:
             if self.closed or scheduler.closed:
                 raise RuntimeError('cannot bind a closed task queue')
             old = self._scheduler
+            previous_runner, previous_context = self._runner, self._task_context
             self._runner = runner
             self._task_context = context
             if old is scheduler:
-                scheduler.invalidate_document(self)
-                return
-            records = old.detach(self)
-            scheduler.attach(self)
-            self._scheduler = scheduler
-            scheduler.adopt(records)
+                retired = scheduler.invalidate_document(self)
+            else:
+                records = old.detach(self)
+                scheduler.attach(self)
+                self._scheduler = scheduler
+                retired = scheduler.adopt(records)
+        del retired, previous_runner, previous_context
 
     def set_task_context(self, context):
         """Replace this lane's identity and invalidate old document work."""
         with self._routing_lock:
             # Worker identity is installed before its V8 context becomes live.
             # Changing identity does not start work or reopen a closed queue.
+            previous_context = self._task_context
             self._task_context = context
-            self._scheduler.invalidate_document(self)
+            retired = self._scheduler.invalidate_document(self)
+        del retired, previous_context
 
     def post_task(self, callback, source: TaskSource = TaskSource.DOM, *, label=None, document_bound=False):
         """Return a cancellation ticket, or None when this lane no longer accepts work."""
@@ -267,7 +271,7 @@ class TaskQueue:
         return self.post_task(callback, source) is not None
 
     def post_managed(self, callback, source=TaskSource.EMBEDDER):
-        """Submit an operation that owns its result, native budget and cleanup."""
+        """Publish and wake for an operation owning its budget and cleanup."""
         with self._routing_lock:
             return self._scheduler.post(self, callback, source, label='embedder operation', managed=True)
 
@@ -417,7 +421,7 @@ class TaskQueue:
     def close(self):
         with self._lock:
             self._closed = True
-            self.timers.clear()
+            retired_timers, self.timers = self.timers, []
             self.cancelled.clear()
             self._timer_ids.clear()
             # Completions may arrive after close; no task may land after this clear.
@@ -425,9 +429,10 @@ class TaskQueue:
             self.worker_pending = 0
             self.loader_pending = 0
         with self._routing_lock:
-            for record in self._scheduler.detach(self):
-                record.ticket.cancel()
+            records = self._scheduler.detach(self)
+            retired = [record.ticket._cancel_pending() for record in records]
             self._timer_queued = False
+        del retired, records, retired_timers
         self._signal()
 
 

@@ -25,7 +25,7 @@ def _compile_all(bindings):
     return (time.perf_counter() - started) * 1000
 
 
-def measure(pages=1):
+async def measure(pages=1):
     """Phase timings in milliseconds, and the member specs a page builds."""
     result = {}
     started = time.perf_counter()
@@ -47,24 +47,26 @@ def measure(pages=1):
     result["compile_again_ms"] = _compile_all(again)
     result["compiled_misses_again"] = again._binder.compiled_misses
 
-    from .. import Browser
+    from ..async_api import Browser
 
     started = time.perf_counter()
-    browser = Browser(stub_logging="off")
-    result["browser_ms"] = (time.perf_counter() - started) * 1000
-    started = time.perf_counter()
-    for _ in range(pages):
-        page = browser.new_profile().new_page()
-        context_done = time.perf_counter()
-        page.set_content("<body>x", url="https://measure.test/")
-    finished = time.perf_counter()
-    # Split so the cost is attributable: ``new_page`` materializes the realm, ``set_content``
-    # runs the parser and the load pipeline.
-    result["new_page_ms"] = (context_done - started) * 1000
-    result["set_content_ms"] = (finished - context_done) * 1000
-    result["first_page_ms"] = (finished - started) * 1000
-    result["startup_stats"] = getattr(browser, "_startup_stats", {})
-    browser.close()
+    browser = await Browser(stub_logging="off").__aenter__()
+    try:
+        result["browser_ms"] = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        for _ in range(pages):
+            page = browser.new_profile().new_page()
+            context_done = time.perf_counter()
+            (await page.set_content("<body>x", url="https://measure.test/"))
+        finished = time.perf_counter()
+        # Split so the cost is attributable: ``new_page`` materializes the realm, ``set_content``
+        # runs the parser and the load pipeline.
+        result["new_page_ms"] = (context_done - started) * 1000
+        result["set_content_ms"] = (finished - context_done) * 1000
+        result["first_page_ms"] = (finished - started) * 1000
+        result["startup_stats"] = getattr(browser, "_startup_stats", {})
+    finally:
+        await browser.close()
     return result
 
 
@@ -80,7 +82,10 @@ def main(argv=None):
         from ..foundation.logging import logger
 
         logger.remove()
-    result = measure(args.pages)
+    if args.pages < 1:
+        parser.error("--pages must be positive")
+    from ..async_api import run
+    result = run(measure(args.pages))
     for key, value in result.items():
         if isinstance(value, float):
             print(f"  {key:<24} {value:.1f} ms")

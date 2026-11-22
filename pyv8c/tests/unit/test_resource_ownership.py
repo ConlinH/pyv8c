@@ -2,34 +2,31 @@
 import pytest
 
 from pyv8c.foundation.lifecycle import ResourceScope
-from pyv8c.platform.resources.handles import LoadHandle
+from pyv8c.foundation.load_handle import LoadHandle
 from pyv8c.platform.resources.ownership import ResourceOwnership
 
 
 def test_early_delivery_pending_handle_and_duplicate_callback():
     owner = ResourceOwnership(ResourceScope())
-    handle = LoadHandle()
     results = []
-    def start(url, request, callback):
+    def start(handle, url, request, callback):
         callback("ok", None)
         callback("duplicate", None)
-        return handle
-    assert owner.issue(start, "", {}, lambda *args: results.append(args)) is handle
+    handle = owner.issue(start, "", {}, lambda *args: results.append(args))
     assert results == [("ok", None)]
     assert not handle.done
     assert owner.active_count == 0
 
 
-def test_close_before_binding_cancels_and_drops_result():
+def test_close_during_start_cancels_and_drops_result():
     scope = ResourceScope()
     owner = ResourceOwnership(scope)
-    handle = LoadHandle()
     results = []
-    def start(url, request, callback):
+    def start(handle, url, request, callback):
         scope.close()
+        assert handle.cancelled
         callback("late", None)
-        return handle
-    owner.issue(start, "", {}, lambda *args: results.append(args))
+    handle = owner.issue(start, "", {}, lambda *args: results.append(args))
     assert handle.cancelled
     assert not results
     assert owner.active_count == 0
@@ -37,11 +34,10 @@ def test_close_before_binding_cancels_and_drops_result():
 
 def test_finish_before_delivery_still_delivers_once():
     owner = ResourceOwnership(ResourceScope())
-    handle = LoadHandle()
     callbacks = []
     results = []
-    owner.issue(lambda u, r, cb: callbacks.append(cb) or handle, "", {},
-                lambda *args: results.append(args))
+    handle = owner.issue(lambda handle, url, request, cb: callbacks.append(cb), "", {},
+                         lambda *args: results.append(args))
     handle.finish()
     assert owner.active_count == 0
     callbacks[0]("ok", None)
@@ -51,7 +47,7 @@ def test_finish_before_delivery_still_delivers_once():
 
 def test_callback_exception_releases_ticket():
     owner = ResourceOwnership(ResourceScope())
-    def start(url, request, callback):
+    def start(handle, url, request, callback):
         callback(None, None)
     def fail(*args):
         raise ValueError("user callback")

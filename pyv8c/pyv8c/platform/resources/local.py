@@ -4,7 +4,8 @@ from urllib.parse import unquote_to_bytes
 from ...foundation.environment import extension_resource
 from ...foundation.host_errors import LoadFailure
 from ...foundation.logging import logger
-from ...web.fetch.response import Response
+from ...foundation.urls import origin_tuple, unloadable_scheme
+from ...network.models import NetworkResponse
 
 #: how the load completes (an image completes as one so its element answers for the size).
 PRELOAD_KINDS = {
@@ -34,7 +35,40 @@ _EXTENSION_PNG = base64.b64decode(
 _EXTENSION_SVG = b'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"></svg>'
 
 
-def data_url_response(url, services):
+class LocalExtensionResponse(NetworkResponse):
+    """Payload produced by the local resolver for an authorized extension."""
+
+
+def validate_source_scheme(environment, initiator, target, *, mode, browser_initiated):
+    """Reject browser-owned schemes before cache access or host interception."""
+    blocked = unloadable_scheme(target)
+    if blocked is None:
+        return None
+    if str(target).lower().startswith('chrome-extension:') and (mode != 'navigate' or browser_initiated):
+        resource = extension_resource(environment, target, source_url=initiator)
+        if resource is not None:
+            return resource
+    raise LoadFailure(blocked)
+
+
+def resolve_local_response(profile, target, origin, mode, extension_path):
+    if extension_path is not None:
+        return _extension_response(target, extension_path)
+    if target.startswith('about:blank'):
+        return NetworkResponse(url=target)
+    if target.startswith('blob:'):
+        inherited = profile._blob_origins.get(target)
+        target_origin = origin_tuple(target) if inherited is None else tuple(inherited)
+        if mode != 'navigate' and origin != target_origin:
+            raise LoadFailure('Blob URL belongs to another origin')
+        body, content_type = profile.resolve_blob_url(target)
+        return NetworkResponse(url=target, body=body, headers={'content-type': content_type})
+    if target[:5].lower() == 'data:':
+        return _data_url_response(target)
+    return None
+
+
+def _data_url_response(url):
     """The response a ``data:`` URL carries, decoded in place.
 
     A ``data:`` URL *is* its payload: Chromium fetches nothing for it, and a frame whose
@@ -52,23 +86,18 @@ def data_url_response(url, services):
     else:
         body = unquote_to_bytes(payload)
     content_type = header or "text/plain;charset=US-ASCII"
-    return Response(body, {"url": str(url), "headers": {"content-type": content_type}},
-                    services=services)
+    return NetworkResponse(url=str(url), body=body, status_text='', type='default',
+                           headers={"content-type": content_type})
 
 
-def extension_response(page, target, request):
-    """The response for a resource this browser's extensions expose, or ``None``.
+def _extension_response(target, resource):
+    """Build the placeholder for an allowed extension resource.
 
     Chrome answers one locally, in the file's own kind, and a page whose origin the
     extension's ``matches`` names reads it without a CORS check. This framework has
     declarations but not extension files: the returned contents are placeholders,
     not the extension's actual resources.
     """
-    resource = extension_resource(page.environment, target, source_url=page.url)
-    if resource is None:
-        return None
-    if str(request.get("mode", "")) == "navigate" and not request.get("browser_initiated"):
-        return None
     logger.warning("extension resource is a placeholder, not extension content: {}", target)
     content_type = EXTENSION_TYPES.get(resource.rsplit(".", 1)[-1].lower(), "application/octet-stream")
     if content_type == "image/svg+xml":
@@ -77,11 +106,7 @@ def extension_response(page, target, request):
         body = _EXTENSION_PNG
     else:
         body = b""
-    return Response(
-        body,
-        {"url": target, "type": "basic",
-         "headers": {"content-type": content_type, "content-length": str(len(body))}},
-        services=page.services,
-    )
+    return LocalExtensionResponse(url=target, body=body, status_text='',
+                                  headers={"content-type": content_type, "content-length": str(len(body))})
 
 

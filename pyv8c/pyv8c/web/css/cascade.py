@@ -15,8 +15,8 @@ from .colors import SYSTEM_COLORS
 from .parser import _box_values, parse_declarations, valid_color
 from .stylesheet import stylesheet_source
 from .colors import NAMED_COLORS
-from .selectors import parse as parse_selector, _matches_ast
-from .values import resolve as resolve_computed_values, length_math, absolute_length_px
+from .selectors import parse as parse_selector, matches_group
+from .values import resolve as resolve_computed_values, length_math, absolute_length_px, variables
 
 
 def _environment_for(element):
@@ -108,6 +108,50 @@ def _specificity(group):
     return tuple(counts)
 
 
+class StyleRules:
+    """A tree's rules indexed by required terms of each rightmost compound.
+
+    Candidates retain whole selector lists and source order. Matching still
+    decides applicability and specificity using the current tree and attributes.
+    """
+
+    __slots__ = ('_entries', '_buckets', '_universal')
+
+    def __init__(self, entries):
+        self._entries = tuple(entries)
+        buckets, universal = {}, set()
+        for position, (selectors, _declarations, _counts) in enumerate(self._entries):
+            for compounds, _relations in selectors:
+                simple = compounds[-1]
+                if simple.ids:
+                    key = ('id', simple.ids[0])
+                elif simple.classes:
+                    key = ('class', simple.classes[0])
+                elif simple.tag != '*':
+                    key = ('tag', simple.tag)
+                else:
+                    universal.add(position)
+                    continue
+                buckets.setdefault(key, set()).add(position)
+        self._buckets = {key: frozenset(positions) for key, positions in buckets.items()}
+        self._universal = frozenset(universal)
+
+    def candidates(self, element):
+        # Nothing can be excluded when every rule has an unanchored group.
+        if len(self._universal) == len(self._entries):
+            return self._entries
+        attributes = element.attributes
+        positions = set(self._universal)
+        positions.update(self._buckets.get(('tag', element.localName), ()))
+        positions.update(self._buckets.get(('id', attributes.get('id', '')), ()))
+        for name in str(attributes.get('class', '')).split():
+            positions.update(self._buckets.get(('class', name), ()))
+        return (self._entries[position] for position in sorted(positions))
+
+
+_EMPTY_RULES = StyleRules(())
+
+
 def _cascade(element, rules, cache=None):
     if cache is not None and element in cache:
         return cache[element]
@@ -159,7 +203,7 @@ def _cascade(element, rules, cache=None):
     # Last applied wins, so the order is CSS's: important, inline, specificity, source.
     matched = []
     order = 0
-    for selectors, declarations, counts in rules:
+    for selectors, declarations, counts in rules.candidates(element):
         best = None
         for part, count in zip(selectors, counts):
             if (best is None or count > best) and _selector_matches(element, part):
@@ -172,12 +216,19 @@ def _cascade(element, rules, cache=None):
     for name, value, priority in _inline_declarations(element):
         matched.append(((priority == "important"), True, (0, 0, 0), order, name, value))
         order += 1
-    for _important, _inline, _count, _order, name, value in sorted(matched, key=lambda item: item[:4]):
+    ordered = sorted(matched, key=lambda item: item[:4])
+    for *_, name, value in ordered:
+        if name.startswith('--'):
+            values[name] = value
+    for _important, _inline, _count, _order, name, value in ordered:
+        if name.startswith('--'):
+            continue
         values[name] = value
         if name == 'font':
             values.update(_font_longhands(value))
         elif name in ('margin', 'padding'):
-            parts = _box_values(value)
+            resolved = variables(value, values) if 'var(' in value.lower() else value
+            parts = _box_values(resolved) if resolved is not None else None
             if parts is not None:
                 for side, part in zip(('top', 'right', 'bottom', 'left'), parts):
                     values[name + '-' + side] = part
@@ -209,7 +260,7 @@ def _cascade(element, rules, cache=None):
         while node is not None:
             if any(name in ('font-size', 'font') for name, _, _ in _inline_declarations(node)):
                 return True
-            for selectors, declarations, _counts in rules:
+            for selectors, declarations, _counts in rules.candidates(node):
                 if (any(name in ('font-size', 'font') for name, _, _ in declarations)
                         and any(_selector_matches(node, selector) for selector in selectors)):
                     return True
@@ -303,14 +354,14 @@ def _stylesheet_selector(selector):
 
 def _selector_matches(element, group):
     """Match a cached stylesheet AST against the current element state."""
-    return _matches_ast(element, group)
+    return matches_group(element, group)
 
 
 def document_rules(document):
     """The document's ``<style>`` rules, cached on ``style_version`` as
-    ``(selector ASTs, declarations, counts)`` -- specificity counted once, not per node."""
+    an indexed rule set -- specificity counted once, not per node."""
     if document is None:
-        return ()
+        return _EMPTY_RULES
     version = getattr(document, "style_version", 0)
     cached = getattr(document, "_rules_cache", None)
     if cached is not None and cached[0] == version:
@@ -345,7 +396,7 @@ def _parse_style_elements(document):
             if parsed:
                 groups, counts = zip(*parsed)
                 rules.append((groups, parse_declarations(block), counts))
-    return tuple(rules)
+    return StyleRules(rules)
 
 
 def computed_style(element):

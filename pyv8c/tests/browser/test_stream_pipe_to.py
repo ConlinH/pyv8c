@@ -2,17 +2,17 @@
 import pytest
 
 
-def run(page, body):
-    page.set_content('<!doctype html><body><iframe></iframe>', url='https://streams.test/')
+async def run(page, body):
+    await page.set_content('<!doctype html><body><iframe></iframe>', url='https://streams.test/')
     page.evaluate('window.result = null; (async () => {' + body +
                   '})().catch(e => { result = {unexpected: [e.name, e.message]}; });')
-    page.wait_for('result !== null', timeout=3)
+    await page.wait_for('result !== null', timeout=3)
     return page.evaluate('result')
 
 
 @pytest.mark.parametrize('receiver', ['window', '{}', 'null'])
-def test_pipe_to_invalid_receiver_rejects_instead_of_throwing(page, receiver):
-    result = run(page, '''
+async def test_pipe_to_invalid_receiver_rejects_instead_of_throwing(page, receiver):
+    result = await run(page, '''
       let p;
       try { p = ReadableStream.prototype.pipeTo.call(%s); }
       catch(e) { result = {thrown: e.name}; return; }
@@ -22,8 +22,8 @@ def test_pipe_to_invalid_receiver_rejects_instead_of_throwing(page, receiver):
     assert result == [True, True, "Failed to execute 'pipeTo' on 'ReadableStream': Illegal invocation"]
 
 
-def test_pipe_to_rejection_uses_method_realm(page):
-    result = run(page, '''
+async def test_pipe_to_rejection_uses_method_realm(page):
+    result = await run(page, '''
       const child = document.querySelector('iframe').contentWindow;
       const p = child.ReadableStream.prototype.pipeTo.call({});
       try { await p; } catch(e) {
@@ -34,8 +34,8 @@ def test_pipe_to_rejection_uses_method_realm(page):
     assert result == [False, True, False, True]
 
 
-def test_pipe_to_moves_chunks_with_backpressure_and_releases_locks(page):
-    result = run(page, '''
+async def test_pipe_to_moves_chunks_with_backpressure_and_releases_locks(page):
+    result = await run(page, '''
       const events = [];
       const source = new ReadableStream({start(c) { c.enqueue(1); c.enqueue(2); c.close(); }});
       const sink = new WritableStream({
@@ -52,8 +52,8 @@ def test_pipe_to_moves_chunks_with_backpressure_and_releases_locks(page):
 
 
 @pytest.mark.parametrize('prevent', [False, True])
-def test_source_error_aborts_destination_unless_prevented(page, prevent):
-    result = run(page, '''
+async def test_source_error_aborts_destination_unless_prevented(page, prevent):
+    result = await run(page, '''
       const reason = {why:'source'}; let aborted = 0;
       const source = new ReadableStream({pull(c) { c.error(reason); }});
       const sink = new WritableStream({abort(e) { aborted += e === reason ? 1 : 100; }});
@@ -64,8 +64,8 @@ def test_source_error_aborts_destination_unless_prevented(page, prevent):
 
 
 @pytest.mark.parametrize('prevent', [False, True])
-def test_sink_error_cancels_source_unless_prevented(page, prevent):
-    result = run(page, '''
+async def test_sink_error_cancels_source_unless_prevented(page, prevent):
+    result = await run(page, '''
       const reason = {why:'sink'}; let cancelled = 0;
       const source = new ReadableStream({start(c) { c.enqueue(1); }, cancel(e) { cancelled += e === reason ? 1 : 100; }});
       const sink = new WritableStream({write() { throw reason; }});
@@ -75,8 +75,8 @@ def test_sink_error_cancels_source_unless_prevented(page, prevent):
     assert result == [True, 0 if prevent else 1, False, False]
 
 
-def test_prevent_close_preserves_writable_destination(page):
-    result = run(page, '''
+async def test_prevent_close_preserves_writable_destination(page):
+    result = await run(page, '''
       const events = [];
       const source = new ReadableStream({start(c) { c.close(); }});
       const sink = new WritableStream({write(v) { events.push(v); }, close() { events.push('close'); }});
@@ -87,8 +87,8 @@ def test_prevent_close_preserves_writable_destination(page):
     assert result == [[9, 'close'], False, False]
 
 
-def test_pipe_to_compression_stream_transfers_real_bytes(page):
-    result = run(page, '''
+async def test_pipe_to_compression_stream_transfers_real_bytes(page):
+    result = await run(page, '''
       const source = new ReadableStream({start(c) { c.enqueue(new Uint8Array([97,98,99])); c.close(); }});
       const gzip = new CompressionStream('gzip'); const reader = gzip.readable.getReader();
       const collecting = (async () => { const bytes=[]; for (;;) { const item=await reader.read();
@@ -100,8 +100,8 @@ def test_pipe_to_compression_stream_transfers_real_bytes(page):
     assert result == [23, [31, 139, 8], False, False]
 
 
-def test_abort_signal_shuts_down_both_ends_and_keeps_reason_identity(page):
-    result = run(page, '''
+async def test_abort_signal_shuts_down_both_ends_and_keeps_reason_identity(page):
+    result = await run(page, '''
       const controller = new AbortController(), reason = {why:'stop'}, events = [];
       const source = new ReadableStream({cancel(e) { events.push(['cancel', e === reason]); }});
       const sink = new WritableStream({abort(e) { events.push(['abort', e === reason]); }});
@@ -111,8 +111,8 @@ def test_abort_signal_shuts_down_both_ends_and_keeps_reason_identity(page):
     assert result == [True, [['abort', True], ['cancel', True]], False, False]
 
 
-def test_conversion_errors_reject_and_do_not_acquire_locks(page):
-    result = run(page, '''
+async def test_conversion_errors_reject_and_do_not_acquire_locks(page):
+    result = await run(page, '''
       const source = new ReadableStream(); const sink = new WritableStream(); const results=[];
       for (const invoke of [() => source.pipeTo(), () => source.pipeTo({}),
                             () => source.pipeTo(sink, {get preventClose() { throw 'conversion'; }})]) {

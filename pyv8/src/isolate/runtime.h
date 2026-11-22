@@ -68,7 +68,7 @@ public:
     }
 
     IsolateState* default_isolate() const { return default_isolate_.get(); }
-    IsolateState* create_isolate();
+    IsolateState* create_isolate(bool thread_bound = false);
     bool destroy_isolate(IsolateState* state, bool report_error = true);
     IsolateState* find_isolate(v8::Isolate* isolate) const;
 

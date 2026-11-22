@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 ORIGIN = "http://xhr.test"
 PAGE = "<!doctype html><title>xhr</title><body></body>"
@@ -28,23 +28,23 @@ def _loader(url, request, released=None):
     return {"status": 200, "url": str(url), "body": "ok", "headers": HEADERS}
 
 
-def _page(loader):
-    browser = Browser(stub_logging="off", threaded_loaders=True, resource_loader=loader)
+async def _page(loader):
+    browser = (await Browser(stub_logging="off", threaded_loaders=True, resource_loader=loader).__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content(PAGE, url=ORIGIN + "/")
+    (await page.set_content(PAGE, url=ORIGIN + "/", wait_until="commit"))
     return browser, page
 
 
-def test_fetch_cache_round_trip_preserves_header_filter_and_immutability():
+async def test_fetch_cache_round_trip_preserves_header_filter_and_immutability():
     def loader(url, request):
         return {'body': 'ok', 'headers': {
             'Access-Control-Allow-Origin': 'https://xhr.test', 'Content-Type': 'text/plain',
             'X-Public': 'shown', 'Access-Control-Expose-Headers': 'X-Public',
             'X-Private': 'hidden', 'Set-Cookie': 'session=secret'}}
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
-        page.set_content(PAGE, url='https://xhr.test/')
+        (await page.set_content(PAGE, url='https://xhr.test/', wait_until="commit"))
         page.evaluate('''window.__cache_result = null; (async () => {
             const cache = await caches.open('header-review');
             const response = await fetch('https://api.test/secret');
@@ -74,16 +74,16 @@ def test_fetch_cache_round_trip_preserves_header_filter_and_immutability():
                               custom.headers.get('x-own'), savedCustom.headers.get('x-own'),
                               copied.get('x-public')];
         })().catch(e => __cache_result = ['error', e.name, e.message]);''')
-        page.wait_for('__cache_result !== null', timeout=5)
+        (await page.wait_for('__cache_result !== null', timeout=5))
         result = json.loads(page.evaluate('JSON.stringify(__cache_result)'))
         visible = ['shown', None, None, ['TypeError', 'TypeError', 'TypeError']]
         assert result == [visible, visible, visible, visible, visible, 'before', 'again', 'copy']
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize('threaded', [False, True])
-def test_no_cors_cross_origin_redirect_back_to_source_is_opaque(threaded):
+async def test_no_cors_cross_origin_redirect_back_to_source_is_opaque(threaded):
     def loader(url, request):
         if url == ORIGIN + '/start':
             return {'status': 302, 'headers': {'Location': 'http://api.test/hop'}, 'body': ''}
@@ -91,29 +91,29 @@ def test_no_cors_cross_origin_redirect_back_to_source_is_opaque(threaded):
             return {'status': 302, 'headers': {'Location': ORIGIN + '/final'}, 'body': ''}
         return {'body': 'secret', 'headers': {'Content-Type': 'text/plain', 'X-Private': 'hidden'}}
 
-    browser = Browser(stub_logging='off', threaded_loaders=threaded, resource_loader=loader)
+    browser = (await Browser(stub_logging='off', threaded_loaders=threaded, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url=ORIGIN + '/')
+        (await page.set_content(PAGE, url=ORIGIN + '/', wait_until="commit"))
         page.evaluate('''window.__opaque_result = null;
             fetch('/start', {mode:'no-cors'}).then(async r => {
                 __opaque_result = [r.type, r.status, r.url, r.redirected,
                                    r.body === null, await r.text(), [...r.headers]];
             }).catch(e => __opaque_result = ['error', e.name]);''')
-        page.wait_for('__opaque_result !== null', timeout=5)
+        (await page.wait_for('__opaque_result !== null', timeout=5))
         assert json.loads(page.evaluate('JSON.stringify(__opaque_result)')) == [
             'opaque', 0, '', False, True, '', []]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_cached_opaque_response_remains_opaque():
+async def test_cached_opaque_response_remains_opaque():
     def loader(url, request):
         return {'body': 'secret', 'headers': {'Content-Type': 'text/plain', 'X-Private': 'hidden'}}
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
-        page.set_content(PAGE, url='https://xhr.test/')
+        (await page.set_content(PAGE, url='https://xhr.test/', wait_until="commit"))
         page.evaluate('''window.__opaque_cache = null; (async () => {
             const cache = await caches.open('opaque-review');
             const response = await fetch('https://api.test/opaque', {mode:'no-cors'});
@@ -125,20 +125,20 @@ def test_cached_opaque_response_remains_opaque():
             __opaque_cache = [saved.type, saved.status, saved.url, saved.redirected,
                               saved.body === null, await saved.text(), mutation];
         })().catch(e => __opaque_cache = ['error', e.name]);''')
-        page.wait_for('__opaque_cache !== null', timeout=5)
+        (await page.wait_for('__opaque_cache !== null', timeout=5))
         assert json.loads(page.evaluate('JSON.stringify(__opaque_cache)')) == [
             'opaque', 0, '', False, True, '', 'TypeError']
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_cookie_setting_headers_are_hidden_from_both_xhr_header_apis():
+async def test_cookie_setting_headers_are_hidden_from_both_xhr_header_apis():
     def loader(url, request):
         return {'status': 200, 'url': str(url), 'body': 'ok', 'headers': {
             'Content-Type': 'text/plain', 'X-Test': 'ok',
             'Set-Cookie': 'a=1; Path=/', 'Set-Cookie2': 'b=2; Path=/'}}
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         page.evaluate('''window.__headers = null;
             const xhr = new XMLHttpRequest(); xhr.open('GET', '/headers');
@@ -146,7 +146,7 @@ def test_cookie_setting_headers_are_hidden_from_both_xhr_header_apis():
                 xhr.getResponseHeader('SET-COOKIE2') === null, xhr.getResponseHeader('x-test'),
                 xhr.getAllResponseHeaders()]; };
             xhr.send();''')
-        page.wait_for('__headers !== null', timeout=3)
+        (await page.wait_for('__headers !== null', timeout=3))
         assert page.evaluate('__headers') == [True, True, 'ok',
                                                'content-type: text/plain\r\nx-test: ok\r\n']
         page.evaluate('''window.__fetch_headers = null; fetch('/headers').then(r => {
@@ -155,10 +155,10 @@ def test_cookie_setting_headers_are_hidden_from_both_xhr_header_apis():
                 r.headers.get('SET-COOKIE2') === null, r.headers.get('x-test'),
                 c.headers.get('set-cookie') === null];
         });''')
-        page.wait_for('__fetch_headers !== null', timeout=3)
+        (await page.wait_for('__fetch_headers !== null', timeout=3))
         assert page.evaluate('__fetch_headers') == ['basic', True, True, 'ok', True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize('expose,credentials,expected', [
@@ -170,7 +170,7 @@ def test_cookie_setting_headers_are_hidden_from_both_xhr_header_apis():
     ('X-Public,, X-Other', False, ['visible', None, 'other']),
     ('', False, [None, None, None]),
 ])
-def test_cross_origin_xhr_exposes_only_cors_allowed_headers(expose, credentials, expected):
+async def test_cross_origin_xhr_exposes_only_cors_allowed_headers(expose, credentials, expected):
     def loader(url, request):
         return {'status': 200, 'url': str(url), 'body': 'ok', 'headers': {
             'Access-Control-Allow-Origin': ORIGIN,
@@ -179,7 +179,7 @@ def test_cross_origin_xhr_exposes_only_cors_allowed_headers(expose, credentials,
             'Content-Type': 'text/plain', 'X-Public': 'visible',
             'X-Private': 'hidden', 'X-Other': 'other', 'Set-Cookie': 'a=1'}}
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         page.evaluate('''window.__headers = null;
             const xhr = new XMLHttpRequest(); xhr.open('GET', 'http://api.test/data');
@@ -190,7 +190,7 @@ def test_cross_origin_xhr_exposes_only_cors_allowed_headers(expose, credentials,
                 xhr.getResponseHeader('content-type'), xhr.getAllResponseHeaders()]; };
             xhr.onerror = () => { window.__headers = ['error']; };
             xhr.send();''' % ('true' if credentials else 'false'))
-        page.wait_for('__headers !== null', timeout=3)
+        (await page.wait_for('__headers !== null', timeout=3))
         actual = json.loads(page.evaluate('JSON.stringify(__headers)'))
         assert actual[:6] == [200, *expected, None, 'text/plain']
         header_names = [line.split(':', 1)[0] for line in actual[6].splitlines()]
@@ -208,14 +208,14 @@ def test_cross_origin_xhr_exposes_only_cors_allowed_headers(expose, credentials,
                     clone.headers.get('x-private')];
             }).catch(() => { __fetch_headers = ['error']; });''' %
                       ('include' if credentials else 'omit'))
-        page.wait_for('__fetch_headers !== null', timeout=3)
+        (await page.wait_for('__fetch_headers !== null', timeout=3))
         fetch_actual = json.loads(page.evaluate('JSON.stringify(__fetch_headers)'))
         assert fetch_actual == [200, 'cors', *expected, None, 'text/plain', expected[1]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_xhr_redirect_to_cross_origin_uses_final_response_exposure():
+async def test_xhr_redirect_to_cross_origin_uses_final_response_exposure():
     def loader(url, request):
         if str(url).endswith('/redirect'):
             return {'status': 302, 'url': str(url), 'headers': {
@@ -224,7 +224,7 @@ def test_xhr_redirect_to_cross_origin_uses_final_response_exposure():
             'Access-Control-Allow-Origin': ORIGIN, 'Content-Type': 'text/plain',
             'X-Private': 'hidden'}}
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         page.evaluate('''window.__headers = null; const xhr = new XMLHttpRequest();
             xhr.open('GET', '/redirect');
@@ -232,14 +232,17 @@ def test_xhr_redirect_to_cross_origin_uses_final_response_exposure():
                 xhr.getResponseHeader('x-private') === null, xhr.getResponseHeader('content-type')]; };
             xhr.onerror = () => { window.__headers = ['error']; };
             xhr.send();''')
-        page.wait_for('__headers !== null', timeout=3)
+        (await page.wait_for('__headers !== null', timeout=3))
         assert page.evaluate('__headers') == [200, True, 'text/plain']
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize('legacy_cache', [False, True])
-def test_cached_xhr_remembers_cross_origin_redirect_taint(tmp_path, legacy_cache):
+async def test_cached_xhr_remembers_cross_origin_redirect_taint(tmp_path, legacy_cache, monkeypatch):
+    if legacy_cache:
+        # Exercise disk validation on the next read, as a fresh Profile would.
+        monkeypatch.setattr('pyv8c.platform.resources.cache._MEMORY_BYTES', 0)
     calls = []
 
     def loader(url, request):
@@ -256,18 +259,18 @@ def test_cached_xhr_remembers_cross_origin_redirect_taint(tmp_path, legacy_cache
             'Content-Type': 'text/plain', 'X-Private': 'hidden',
             'Cache-Control': 'public, max-age=300'}}
 
-    browser = Browser(stub_logging='off', threaded_loaders=True,
-                      resource_loader=loader, cache_dir=tmp_path / 'cache')
+    browser = (await Browser(stub_logging='off', threaded_loaders=True,
+                      resource_loader=loader, cache_dir=tmp_path / 'cache').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url=ORIGIN + '/')
+        (await page.set_content(PAGE, url=ORIGIN + '/', wait_until="commit"))
         page.evaluate('''window.__results = []; function read() {
             const x = new XMLHttpRequest(); x.open('GET', '/start');
             x.onload = () => { __results.push([x.status,
                 x.getResponseHeader('x-private') === null]); };
             x.onerror = () => { __results.push(['error']); }; x.send();
         } read();''')
-        page.wait_for('__results.length === 1', timeout=5)
+        (await page.wait_for('__results.length === 1', timeout=5))
         if legacy_cache:
             records = list((tmp_path / 'cache').rglob('*.json'))
             assert len(records) == 1
@@ -275,7 +278,7 @@ def test_cached_xhr_remembers_cross_origin_redirect_taint(tmp_path, legacy_cache
             assert record.pop('redirectCrossed') is True
             records[0].write_text(json.dumps(record), encoding='utf-8')
         page.evaluate('read()')
-        page.wait_for('__results.length === 2', timeout=5)
+        (await page.wait_for('__results.length === 2', timeout=5))
         assert page.evaluate('__results') == [[200, True], [200, True]]
         hops = [ORIGIN + '/start', 'http://api.test/hop', ORIGIN + '/final']
         assert calls == hops * (2 if legacy_cache else 1)
@@ -283,17 +286,17 @@ def test_cached_xhr_remembers_cross_origin_redirect_taint(tmp_path, legacy_cache
             __fetch_headers = [r.type, r.headers.get('x-private') === null,
                                r.clone().headers.get('x-private') === null];
         }).catch(() => { __fetch_headers = ['error']; });''')
-        page.wait_for('__fetch_headers !== null', timeout=5)
+        (await page.wait_for('__fetch_headers !== null', timeout=5))
         assert page.evaluate('__fetch_headers') == ['cors', True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_arraybuffer_response_keeps_raw_bytes_and_is_available_only_when_done():
+async def test_arraybuffer_response_keeps_raw_bytes_and_is_available_only_when_done():
     payload = b'!\x00\x80\xff\xc3\xa9'
     def loader(url, request):
         return {'status': 200, 'body': payload, 'headers': {'content-type': 'application/octet-stream'}}
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         page.evaluate('''
           globalThis.result=null;globalThis.states=[];
@@ -306,18 +309,18 @@ def test_arraybuffer_response_keeps_raw_bytes_and_is_available_only_when_done():
             result=[body instanceof ArrayBuffer,body===xhr.response,Array.from(new Uint8Array(body)),textError];
           };xhr.send();
         ''')
-        page.wait_for('result!==null', timeout=3)
+        (await page.wait_for('result!==null', timeout=3))
         assert page.evaluate('before') is True
         assert page.evaluate('states') == [[2, True], [3, True], [4, False]]
         assert page.evaluate('result') == [True, True, list(payload), 'InvalidStateError']
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_reopening_xhr_drops_cached_arraybuffer_without_changing_old_buffer():
+async def test_reopening_xhr_drops_cached_arraybuffer_without_changing_old_buffer():
     def loader(url, request):
         return {'status': 200, 'body': b'AB' if url.endswith('/first') else b'\x00\xff'}
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         page.evaluate('''
           globalThis.result=null;const xhr=new XMLHttpRequest();let first;
@@ -331,19 +334,19 @@ def test_reopening_xhr_drops_cached_arraybuffer_without_changing_old_buffer():
                           Array.from(new Uint8Array(first)),Array.from(new Uint8Array(xhr.response))];
           };xhr.send();
         ''')
-        page.wait_for('result!==null', timeout=3)
+        (await page.wait_for('result!==null', timeout=3))
         assert page.evaluate('result') == [True, True, True, [90, 66], [0, 255]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_request_guard_filters_forbidden_headers_and_xhr_combines_values():
+async def test_request_guard_filters_forbidden_headers_and_xhr_combines_values():
     requests = []
     def loader(url, request):
         requests.append((url, request))
         return _loader(url, request)
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         assert page.evaluate("""(() => {
             const standalone = new Headers({Cookie: 'standalone'});
@@ -363,17 +366,17 @@ def test_request_guard_filters_forbidden_headers_and_xhr_combines_values():
             xhr.setRequestHeader('X-Test', 'two');
             xhr.send();
         })()""")
-        page.run_until_idle(timeout=5)
+        (await page.run_until_idle(timeout=5))
         data = next(request for url, request in requests if url.endswith('/data'))
         headers = {name.lower(): value for name, value in data['headers'].items()}
         assert headers.get('cookie') != 'bad'
         assert headers['x-test'] == 'one, two'
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_get_all_response_headers_writes_the_block_chrome_writes():
-    browser, page = _page(_loader)
+async def test_get_all_response_headers_writes_the_block_chrome_writes():
+    browser, page = (await _page(_loader))
     try:
         page.evaluate("""(() => {
             window.__block = null;
@@ -387,14 +390,14 @@ def test_get_all_response_headers_writes_the_block_chrome_writes():
             xhr.send();
             return 'asked';
         })()""")
-        page.run_until_idle(timeout=5)
+        (await page.run_until_idle(timeout=5))
         assert page.evaluate("window.__block") == [BLOCK, "text/plain", True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_get_all_response_headers_is_empty_until_a_response_arrives():
-    browser, page = _page(_loader)
+async def test_get_all_response_headers_is_empty_until_a_response_arrives():
+    browser, page = (await _page(_loader))
     try:
         assert page.evaluate("""(() => {
             const fresh = new XMLHttpRequest();
@@ -404,12 +407,12 @@ def test_get_all_response_headers_is_empty_until_a_response_arrives():
                     opened.getAllResponseHeaders()];
         })()""") == ["", 0, 0, ""]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_timeout_drops_the_request_and_reports_loadend_alone():
+async def test_a_timeout_drops_the_request_and_reports_loadend_alone():
     released = threading.Event()
-    browser, page = _page(lambda url, request: _loader(url, request, released))
+    browser, page = (await _page(lambda url, request: _loader(url, request, released)))
     try:
         page.evaluate("""(() => {
             window.__log = null;
@@ -428,16 +431,16 @@ def test_a_timeout_drops_the_request_and_reports_loadend_alone():
             }, 400);
             return 'asked';
         })()""")
-        page.wait_for("window.__log !== null", timeout=10)
+        (await page.wait_for("window.__log !== null", timeout=10))
         assert page.evaluate("window.__log") == [["loadend"], 4, 0, 50, ""]
     finally:
         released.set()
-        browser.close()
+        (await browser.close())
 
 
-def test_abort_drops_a_request_that_is_still_running():
+async def test_abort_drops_a_request_that_is_still_running():
     released = threading.Event()
-    browser, page = _page(lambda url, request: _loader(url, request, released))
+    browser, page = (await _page(lambda url, request: _loader(url, request, released)))
     try:
         page.evaluate("""(() => {
             window.__log = null;
@@ -452,16 +455,16 @@ def test_abort_drops_a_request_that_is_still_running():
             setTimeout(() => { window.__log = [log, xhr.readyState]; }, 300);
             return 'asked';
         })()""")
-        page.wait_for("window.__log !== null", timeout=10)
+        (await page.wait_for("window.__log !== null", timeout=10))
         # abort() disarms the deadline and cancels the load, so the response that
         # arrives afterwards is dropped with the request rather than reported.
         assert page.evaluate("window.__log") == [["loadend"], 0]
     finally:
         released.set()
-        browser.close()
+        (await browser.close())
 
 
-def test_send_gives_a_string_body_the_content_type_chrome_gives_it():
+async def test_send_gives_a_string_body_the_content_type_chrome_gives_it():
     """A string body is ``text/plain;charset=UTF-8`` unless the author said otherwise.
 
     Chrome 154 sends exactly that on the Cloudflare challenge's own submit POST, and the answer
@@ -476,27 +479,33 @@ def test_send_gives_a_string_body_the_content_type_chrome_gives_it():
         seen.append((str(url), dict(request or {})))
         return {"status": 200, "url": str(url), "body": "ok", "headers": {}}
 
-    browser, page = _page(loader)
+    browser, page = (await _page(loader))
     try:
         page.evaluate("""(() => {
+            window.__bodyRequestsDone = 0;
+            const completed = () => { window.__bodyRequestsDone++; };
             const plain = new XMLHttpRequest();
+            plain.onloadend = completed;
             plain.open('POST', '/plain');
             plain.send('a=1');
             const typed = new XMLHttpRequest();
+            typed.onloadend = completed;
             typed.open('POST', '/typed');
             typed.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
             typed.send('a=1');
             const blob = new XMLHttpRequest();
+            blob.onloadend = completed;
             blob.open('POST', '/blob');
             blob.send(new Blob(['x'], {type: 'text/csv'}));
             const empty = new XMLHttpRequest();
+            empty.onloadend = completed;
             empty.open('GET', '/empty');
             empty.send();
             return 'asked';
         })()""")
-        page.run_until_idle(timeout=5)
+        (await page.wait_for('__bodyRequestsDone === 4', timeout=5))
     finally:
-        browser.close()
+        (await browser.close())
 
     def sent_type(name):
         for url, request in seen:

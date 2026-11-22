@@ -1,9 +1,9 @@
 """WebAssembly modules keep their compiled code across structured clones."""
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_structured_clone_module_and_shared_references():
-    browser = Browser(real_network=False)
+async def test_structured_clone_module_and_shared_references():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         result = page.evaluate("""(() => {
@@ -16,11 +16,11 @@ def test_structured_clone_module_and_shared_references():
         })()""")
         assert result == [True, True, True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_module_can_cross_worker_isolates():
-    browser = Browser(real_network=False)
+async def test_module_can_cross_worker_isolates():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate("""window.result=null;
@@ -30,14 +30,14 @@ def test_module_can_cross_worker_isolates():
           let worker = new Worker(URL.createObjectURL(new Blob([script],{type:'text/javascript'})));
           worker.onmessage = e => {result=e.data};
           worker.postMessage(new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])));""")
-        page.wait_for('result !== null', timeout=5)
+        (await page.wait_for('result !== null', timeout=5))
         assert page.evaluate('result') == [True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_worker_can_post_compiled_module_to_page():
-    browser = Browser(real_network=False)
+async def test_worker_can_post_compiled_module_to_page():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate("""window.result=null;
@@ -45,14 +45,14 @@ def test_worker_can_post_compiled_module_to_page():
           let worker = new Worker(URL.createObjectURL(new Blob([script],{type:'text/javascript'})));
           worker.onmessage = e => {let m=e.data; result=[m instanceof WebAssembly.Module,
             new WebAssembly.Instance(m) instanceof WebAssembly.Instance]};""")
-        page.wait_for('result !== null', timeout=5)
+        (await page.wait_for('result !== null', timeout=5))
         assert page.evaluate('result') == [True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_structured_clone_memory_errors_include_chrome_context():
-    browser = Browser(real_network=False)
+async def test_structured_clone_memory_errors_include_chrome_context():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         result = page.evaluate("""(() => {
@@ -66,4 +66,4 @@ def test_structured_clone_memory_errors_include_chrome_context():
             ['DataCloneError', "Failed to execute 'structuredClone' on 'Window': SharedArrayBuffer transfer requires self.crossOriginIsolated."],
         ]
     finally:
-        browser.close()
+        (await browser.close())

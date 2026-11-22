@@ -4,9 +4,9 @@ import pytest
 
 @pytest.mark.parametrize('through_label', [False, True])
 @pytest.mark.parametrize('mouse', [False, True])
-def test_checkbox_listener_sees_new_state_and_changes_once(page, through_label, mouse):
-    page.set_content('<body><label id="label" style="display:block;width:100px;height:24px">'
-                     '<input id="control" type="checkbox" style="width:20px;height:20px">Label</label></body>')
+async def test_checkbox_listener_sees_new_state_and_changes_once(page, through_label, mouse):
+    (await page.set_content('<body><label id="label" style="display:block;width:100px;height:24px">'
+                     '<input id="control" type="checkbox" style="width:20px;height:20px">Label</label></body>', wait_until="commit"))
     page.evaluate('''window.observed=[];
         const control=document.getElementById('control');
         control.indeterminate=true;
@@ -15,7 +15,7 @@ def test_checkbox_listener_sees_new_state_and_changes_once(page, through_label, 
         control.onchange=()=>observed.push('change');''')
     target = 'label' if through_label else 'control'
     if mouse:
-        page.click('#' + target)
+        (await page.click('#' + target))
     else:
         page.evaluate(f'document.getElementById("{target}").click()')
     assert page.evaluate('observed') == [[True, False, mouse, 'PointerEvent',
@@ -23,8 +23,8 @@ def test_checkbox_listener_sees_new_state_and_changes_once(page, through_label, 
     assert page.evaluate('[control.checked,control.indeterminate]') == [True, False]
 
 
-def test_cancelled_checkbox_click_restores_state_and_emits_no_change(page):
-    page.set_content('<body><input id="control" type="checkbox"></body>')
+async def test_cancelled_checkbox_click_restores_state_and_emits_no_change(page):
+    (await page.set_content('<body><input id="control" type="checkbox"></body>', wait_until="commit"))
     result = page.evaluate('''(()=>{
         const control=document.getElementById('control');
         const observed=[];

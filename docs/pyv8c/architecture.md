@@ -54,6 +54,10 @@ CSS 的属性表、声明解析、值计算、选择器、层叠和 CSSOM 位于
 
 ## 对象与状态归属
 
+公开对象为 Browser → Profile → Page；Browser 通过组合持有内部 Runtime。
+Runtime 只管理执行内核，不继承浏览器配置，也不创建 Profile。同步求值和异步
+加载、输入、网络、关闭的边界以[接口契约](api-contract.md)为准。
+
 Browser 持有配置、FeatureRuntime、绑定设施和宿主回调线程池。Profile 始终拥有 CookieJar，并持有网络后端、Blob URL 注册、存储与资源缓存配置。不同 Profile 的可变会话状态应隔离，显式指定相同磁盘缓存目录时仍可能共享持久内容。
 
 Page 组合导航、生命周期、脚本、文档和资源组件，通过 PageServices 向 Web API 提供窄能力。PageRealm 管理 V8Context、绑定会话和拒绝跟踪。Realm 的可引用寿命与文档的活动状态不是同一概念，导航不能靠清空共享 Agent 微任务来撤销旧文档。

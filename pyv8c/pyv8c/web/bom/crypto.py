@@ -1,9 +1,6 @@
 """``window.crypto``: ``getRandomValues`` fills the caller's array in place,
-``randomUUID`` is secure-context only, as in Chrome, and ``subtle`` is backed by the
-standard library where it can be: digests, HMAC, raw key handling and PBKDF2 are real,
-while AES, RSA and the encapsulations reject with ``NotSupportedError`` rather than
-answering something that only looks like a result. ``supports`` reports the same set,
-which is the question a page is meant to ask.
+``randomUUID`` is secure-context only. SubtleCrypto uses the standard library
+for digests, HMAC, raw key handling, and PBKDF2, and PyCryptodome for AES-GCM.
 """
 
 import hashlib
@@ -43,8 +40,8 @@ _VALID_USAGES = {
 
 def _options(algorithm):
     """An ``AlgorithmIdentifier`` as a plain mapping."""
-    if isinstance(algorithm, dict):
-        return algorithm
+    if isinstance(algorithm, str):
+        return {"name": algorithm}
     return dictionary(algorithm)
 
 
@@ -219,6 +216,9 @@ class SubtleCrypto:
         if name in _VALID_USAGES:
             _checked_usages(name, granted)
         material = _bytes_of(key_data, 'importKey', 2)
+        if name == "AES-GCM" and len(material) not in (16, 24, 32):
+            return self._settle(error=dom_exception(
+                "DataError", "An AES-GCM key must be 128, 192 or 256 bits."))
         if name in _PASSWORD_ALGORITHMS:
             return self._settle(CryptoKey("secret", bool(extractable), {"name": name},
                                           granted, material))
@@ -342,13 +342,65 @@ class SubtleCrypto:
         return self._settle(CryptoKey("secret", bool(extractable), view, _usages(usages),
                                       material))
 
-    # -- what is not backed here ------------------------------------------------
     def fn_encrypt(self, algorithm=MISSING, key=MISSING, data=MISSING, *_extra):
-        return self._settle(error=_unsupported('encrypt', _name_of(algorithm)))
+        invalid = promise_receiver_error(self, SubtleCrypto, 'encrypt')
+        if invalid is not None:
+            return invalid
+        return self._aes_gcm('encrypt', algorithm, key, data)
 
     def fn_decrypt(self, algorithm=MISSING, key=MISSING, data=MISSING, *_extra):
-        return self._settle(error=_unsupported('decrypt', _name_of(algorithm)))
+        invalid = promise_receiver_error(self, SubtleCrypto, 'decrypt')
+        if invalid is not None:
+            return invalid
+        return self._aes_gcm('decrypt', algorithm, key, data)
 
+    def _aes_gcm(self, operation, algorithm, key, data):
+        from Crypto.Cipher import AES
+
+        try:
+            for present, value in enumerate((algorithm, key, data)):
+                if value is MISSING:
+                    raise missing_error('SubtleCrypto', operation, 3, present, constructor=False)
+            if not isinstance(key, CryptoKey):
+                raise PageTypeError("The key must be a CryptoKey.")
+            payload = _bytes_of(data, operation, 3)
+            options = _options(algorithm)
+            name = str(options.get("name", "")).upper()
+            if not name:
+                raise PageTypeError("The algorithm requires a name.")
+            if name != "AES-GCM":
+                return self._settle(error=_unsupported(operation, name))
+            iv = _bytes_of(options.get("iv", MISSING), operation, 1)
+            additional_data = _bytes_of(options.get("additionalData", b""), operation, 1)
+            tag_bits = integer(options.get("tagLength", 128), bits=8, enforce_range=True)
+        except pyv8.JSException as error:
+            return self._settle(error=error)
+        except pyv8.JsTypeError as error:
+            return self._settle(error=PageTypeError(str(error)))
+
+        if key._algorithm.get("name") != name or operation not in key._usages:
+            return self._settle(error=dom_exception(
+                "InvalidAccessError", f"The key does not support AES-GCM {operation}."))
+        if tag_bits not in (32, 64, 96, 104, 112, 120, 128):
+            return self._settle(error=dom_exception("OperationError", "Invalid AES-GCM tag length."))
+        tag_bytes = tag_bits // 8
+        decrypt = operation == 'decrypt'
+        if decrypt and len(payload) < tag_bytes:
+            return self._settle(error=dom_exception(
+                "OperationError", "The ciphertext is shorter than the authentication tag."))
+        try:
+            cipher = AES.new(key._material, AES.MODE_GCM, nonce=iv, mac_len=tag_bytes)
+            cipher.update(additional_data)
+            if decrypt:
+                result = cipher.decrypt_and_verify(payload[:-tag_bytes], payload[-tag_bytes:])
+            else:
+                ciphertext, tag = cipher.encrypt_and_digest(payload)
+                result = ciphertext + tag
+        except ValueError:
+            return self._settle(error=dom_exception("OperationError", f"AES-GCM {operation} failed."))
+        return self._settle(result)
+
+    # -- what is not backed here ------------------------------------------------
     def fn_wrapKey(self, format=MISSING, key=MISSING, wrapping_key=MISSING,
                    wrap_algorithm=MISSING, *_extra):
         return self._settle(error=_unsupported('wrapKey', _name_of(wrap_algorithm)))
@@ -377,7 +429,7 @@ class SubtleCrypto:
         if algorithm is MISSING:
             raise missing_error('SubtleCrypto', 'supports', 1, 0, constructor=False)
         name = _name_of(algorithm)
-        return self._settle(name in _HASHES or name in ("HMAC", "PBKDF2"))
+        return self._settle(name in _HASHES or name in ("HMAC", "PBKDF2", "AES-GCM"))
 
 
 @interface('Crypto', None)

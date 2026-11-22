@@ -14,8 +14,8 @@ import pytest
     ('RTCPeerConnection', 'createAnswer', 'new RTCPeerConnection()'),
     ('RTCPeerConnection', 'setLocalDescription', 'new RTCPeerConnection()'),
 ])
-def test_promise_operation_rejects_invalid_receiver(page, interface, method, real_expression):
-    page.set_content('<!doctype html><body></body>', url='https://fixture.test/')
+async def test_promise_operation_rejects_invalid_receiver(page, interface, method, real_expression):
+    (await page.set_content('<!doctype html><body></body>', url='https://fixture.test/', wait_until="commit"))
     page.evaluate(f"""(() => {{
         globalThis.results=[];
         const operation={interface}.prototype.{method};
@@ -31,25 +31,25 @@ def test_promise_operation_rejects_invalid_receiver(page, interface, method, rea
             }}
         }}
     }})()""")
-    page.wait_for('results.length===8 && results.every(row=>row.error)', timeout=2)
+    (await page.wait_for('results.length===8 && results.every(row=>row.error)', timeout=2))
     assert page.evaluate('results') == [{
         'promise': True, 'error': 'TypeError',
         'message': f"Failed to execute '{method}' on '{interface}': Illegal invocation",
     }] * 8
 
 
-def test_keyboard_valid_receiver_still_fulfills(page):
-    page.set_content('<!doctype html><body></body>', url='https://fixture.test/')
+async def test_keyboard_valid_receiver_still_fulfills(page):
+    (await page.set_content('<!doctype html><body></body>', url='https://fixture.test/', wait_until="commit"))
     page.evaluate("""globalThis.results=[];
         navigator.keyboard.getLayoutMap().then(map=>results.push(map instanceof KeyboardLayoutMap));
         navigator.keyboard.lock().then(()=>results.push(true));
     """)
-    page.wait_for('results.length===2', timeout=2)
+    (await page.wait_for('results.length===2', timeout=2))
     assert page.evaluate('results') == [True, True]
 
 
-def test_permissions_argument_errors_reject_and_preserve_the_getter_exception(page):
-    page.set_content('<!doctype html><body></body>', url='https://fixture.test/')
+async def test_permissions_argument_errors_reject_and_preserve_the_getter_exception(page):
+    (await page.set_content('<!doctype html><body></body>', url='https://fixture.test/', wait_until="commit"))
     page.evaluate('''globalThis.permissionResults=[];
         const error=new RangeError('descriptor');
         for(const fn of [()=>navigator.permissions.query(),
@@ -59,7 +59,7 @@ def test_permissions_argument_errors_reject_and_preserve_the_getter_exception(pa
             const promise=fn();row.promise=promise instanceof Promise;
             promise.catch(e=>{row.name=e.name;row.message=e.message;row.original=e===error});
         }''')
-    page.wait_for('permissionResults.every(row=>row.name)', timeout=2)
+    (await page.wait_for('permissionResults.every(row=>row.name)', timeout=2))
     assert page.evaluate('permissionResults') == [
         {'promise': True, 'name': 'TypeError', 'message': "Failed to execute 'query' on 'Permissions': 1 argument required, but only 0 present.", 'original': False},
         {'promise': True, 'name': 'TypeError', 'message': "Failed to execute 'query' on 'Permissions': parameter 1 is not of type 'object'.", 'original': False},
@@ -68,8 +68,8 @@ def test_permissions_argument_errors_reject_and_preserve_the_getter_exception(pa
 
 
 @pytest.mark.parametrize('child_function', [False, True])
-def test_permissions_borrowed_operation_uses_its_function_realm(page, child_function):
-    page.set_content('<!doctype html><body><iframe></iframe></body>', url='https://fixture.test/')
+async def test_permissions_borrowed_operation_uses_its_function_realm(page, child_function):
+    (await page.set_content('<!doctype html><body><iframe></iframe></body>', url='https://fixture.test/', wait_until="commit"))
     page.evaluate('''globalThis.answers=[];
         const child=document.querySelector('iframe').contentWindow;
         const operation=CHILD?child.Permissions.prototype.query:Permissions.prototype.query;
@@ -81,7 +81,7 @@ def test_permissions_borrowed_operation_uses_its_function_realm(page, child_func
             promise.catch(error=>{row.error=error.name;row.parentError=error instanceof TypeError||error instanceof DOMException;
                 row.childError=error instanceof child.TypeError||error instanceof child.DOMException});
         }'''.replace('CHILD', str(child_function).lower()))
-    page.wait_for('answers.length===4&&answers.every(row=>row.error)', timeout=2)
+    (await page.wait_for('answers.length===4&&answers.every(row=>row.error)', timeout=2))
     assert page.evaluate('answers') == [{
         'parentPromise': not child_function, 'childPromise': child_function,
         'error': error, 'parentError': not child_function, 'childError': child_function,
@@ -89,8 +89,8 @@ def test_permissions_borrowed_operation_uses_its_function_realm(page, child_func
 
 
 @pytest.mark.parametrize('child_function', [False, True])
-def test_permissions_success_uses_the_receiver_realm(page, child_function):
-    page.set_content('<!doctype html><body><iframe></iframe></body>', url='https://fixture.test/')
+async def test_permissions_success_uses_the_receiver_realm(page, child_function):
+    (await page.set_content('<!doctype html><body><iframe></iframe></body>', url='https://fixture.test/', wait_until="commit"))
     page.evaluate('''globalThis.answer=null;
         const child=document.querySelector('iframe').contentWindow;
         const operation=CHILD?child.Permissions.prototype.query:Permissions.prototype.query;
@@ -99,5 +99,5 @@ def test_permissions_success_uses_the_receiver_realm(page, child_function):
         promise.then(status=>answer=[promise instanceof Promise,promise instanceof child.Promise,
             status instanceof PermissionStatus,status instanceof child.PermissionStatus]);
         '''.replace('CHILD', str(child_function).lower()))
-    page.wait_for('answer!==null', timeout=2)
+    (await page.wait_for('answer!==null', timeout=2))
     assert page.evaluate('answer') == [child_function, not child_function] * 2

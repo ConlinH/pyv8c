@@ -1,6 +1,6 @@
 """``new Option(...)`` builds the element Chrome's legacy factory builds."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 CASES = """(() => {
   const cases = [
@@ -13,17 +13,17 @@ CASES = """(() => {
 })()"""
 
 
-def test_a_factory_shares_the_interface_prototype():
+async def test_a_factory_shares_the_interface_prototype():
     """Chromium's legacy factories reuse the interface prototype object.
 
     ``Option.prototype`` is ``HTMLOptionElement.prototype`` -- the factory is a distinct
     function, so ``Option !== HTMLOptionElement``, but its prototype (and therefore its
     members and ``instanceof``) is the interface's own.
     """
-    browser = Browser(cache=False, real_network=False, stub_logging="off")
+    browser = (await Browser(cache=False, real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         assert page.evaluate("""(() => {
             const pairs = [['Option', 'HTMLOptionElement'],
                            ['Image', 'HTMLImageElement'],
@@ -37,14 +37,14 @@ def test_a_factory_shares_the_interface_prototype():
             ]);
         })()""") == [[True, False, True, True]] * 3
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_option_arguments_fill_text_and_value():
-    browser = Browser(cache=False, real_network=False, stub_logging="off")
+async def test_option_arguments_fill_text_and_value():
+    browser = (await Browser(cache=False, real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         assert page.evaluate(CASES) == [
             ["", "", "<option></option>"],
             ["only", "only", "<option>only</option>"],
@@ -52,4 +52,4 @@ def test_option_arguments_fill_text_and_value():
             ["t", "v", False, True, '<option value="v">t</option>'],
         ]
     finally:
-        browser.close()
+        (await browser.close())

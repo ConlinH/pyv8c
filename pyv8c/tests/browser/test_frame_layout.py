@@ -1,12 +1,12 @@
 """Embedding display:none removes child layout, as measured in Chrome 157."""
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_embedding_display_none_suppresses_and_restores_child_boxes():
-    browser = Browser(real_network=False)
+async def test_embedding_display_none_suppresses_and_restores_child_boxes():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><section><iframe></iframe></section></body>')
+        (await page.set_content('<body><section><iframe></iframe></section></body>', wait_until="commit"))
         assert page.evaluate("""(() => {
           const holder = document.querySelector('section');
           const frame = holder.firstElementChild;
@@ -31,14 +31,14 @@ def test_embedding_display_none_suppresses_and_restores_child_boxes():
             *[[108, 28, 108, 28, 108, 28, 108, 28, 1, False, '100px', '20px', True]] * 4,
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_nested_frame_layout_uses_current_outer_style():
-    browser = Browser(real_network=False)
+async def test_nested_frame_layout_uses_current_outer_style():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><iframe></iframe></body>')
+        (await page.set_content('<body><iframe></iframe></body>', wait_until="commit"))
         assert page.evaluate("""(() => {
           const outer = document.querySelector('iframe');
           outer.contentDocument.body.innerHTML = '<iframe></iframe>';
@@ -55,4 +55,4 @@ def test_nested_frame_layout_uses_current_outer_style():
           return [before, hidden, element.offsetWidth];
         })()""") == [100, [0, 0, 'auto', 0, 0], 100]
     finally:
-        browser.close()
+        (await browser.close())

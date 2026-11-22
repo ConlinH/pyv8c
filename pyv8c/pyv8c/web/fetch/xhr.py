@@ -11,8 +11,10 @@ from ...foundation.arguments import (
     MISSING, boolean, byte_string, dom_string, integer, is_nullish, missing_error, usv_string,
 )
 from ...foundation.error_policy import control_exceptions
+from ...foundation.host_errors import RequestTimeout
 from ..page_errors import (InvalidStateError, InvalidAccessError, NetworkError,
-                          NotSupportedError, SecurityError, PageSyntaxError, PageTypeError)
+                          NotSupportedError, SecurityError, PageSyntaxError, PageTypeError,
+                          TimeoutError as PageTimeoutError)
 from ..dom.events import Event, EventTarget
 from ..fileapi.blob import Blob
 from .events import ProgressEvent
@@ -111,11 +113,15 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
     def get_timeout(self): return self.timeout
     def set_timeout(self, value):
         """``unsigned long``, and ignored once the request is running."""
-        if not self._async:
+        if not self._async and not self._supports_sync_timeout():
             raise InvalidAccessError("timeout cannot be set for synchronous Window requests")
         if self.readyState not in (self.UNSENT, self.OPENED):
             return
         self.timeout = integer(value, bits=32, signed=False)
+
+    def _supports_sync_timeout(self):
+        resources = getattr(self._services, "resource_services", None)
+        return getattr(resources, "supports_sync_xhr_timeout", False)
 
     def _state(self, value):
         self.readyState = value
@@ -167,7 +173,7 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
             resources = getattr(self._services, 'resource_services', None)
             if not callable(getattr(resources, 'load_resource', None)):
                 raise NotSupportedError("synchronous XMLHttpRequest is unavailable in this realm")
-            if self.timeout or self.response_type:
+            if self.response_type or (self.timeout and not self._supports_sync_timeout()):
                 raise InvalidAccessError("synchronous Window requests require default timeout and responseType")
         # A new request starts from nothing: whatever the last one left is gone.
         self._invalidate_request()
@@ -205,7 +211,8 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
         realm = getattr(self._services, 'realm_services', None)
         origin = getattr(realm, 'origin', None)
         cors = response_is_cors(origin, self._url, self.response_url,
-                                getattr(self._response, '_redirect_crossed', False))
+                                getattr(self._response, '_redirect_crossed', False),
+                                local_extension=getattr(self._response, '_local_extension', False))
         return readable_response_header_names(
             headers, cors=cors, credentials=self._request_include_credentials)
 
@@ -277,6 +284,8 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
             self._send_flag = False
             self._clear_response()
             self.readyState = self.DONE
+            if isinstance(error, RequestTimeout):
+                raise PageTimeoutError("Synchronous XMLHttpRequest timed out") from error
             raise NetworkError("Synchronous XMLHttpRequest failed") from error
         self._response = response
         self.status, self.status_text = response.status, response.status_text
@@ -296,6 +305,9 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
 
     def _finish(self, generation, response, error):
         if not self._current_request(generation) or not self._send_flag:
+            return
+        if isinstance(error, RequestTimeout):
+            self._on_timeout(generation)
             return
         self._handle, self._timer = None, self._stop_timer()
         if error:
@@ -381,10 +393,7 @@ class XMLHttpRequest(XMLHttpRequestEventTarget):
         return None
 
     def _on_timeout(self, generation):
-        """A timeout drops the request and reports ``loadend`` alone -- no ``error``
-        and no ``abort``, which is what Chrome sends.  The realm's task queue runs
-        this, so a host loader that blocks the owner thread delays it.
-        """
+        """Finish an expired request once, whether the timer or HTTP deadline wins."""
         if not self._current_request(generation) or not self._send_flag:
             return
         self._invalidate_request()

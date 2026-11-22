@@ -1,19 +1,23 @@
 """Raw resource results cross one networking boundary before touching the realm."""
-from contextlib import closing
+
+import asyncio
 import threading
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.foundation.tasks import TaskSource
-from pyv8c.network.models import NetworkResponse, RequestHandle
+from pyv8c.network.models import NetworkResponse
+from pyv8c.platform.resources import fetcher as window_resources
+from _http_fixtures import resolved
 
 
 @pytest.mark.parametrize("threaded", [False, True])
 @pytest.mark.parametrize("kind", ["local", "loader", "error", "interceptor", "intercept-local", "redirect"])
-def test_completion_uses_one_networking_task_per_external_result(monkeypatch, threaded, kind):
+async def test_completion_uses_one_networking_task_per_external_result(monkeypatch, threaded, kind):
     host_threads = []
     def loader(url, request):
         host_threads.append(threading.get_ident())
@@ -29,13 +33,13 @@ def test_completion_uses_one_networking_task_per_external_result(monkeypatch, th
         options["resource_interceptor"] = lambda url, request: "ok"
     elif kind == "intercept-local":
         options["resource_interceptor"] = lambda url, request: None
-    with closing(Browser(**options)) as browser:
+    async with Browser(**options) as browser:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://fixture.test/")
+        (await page.set_content("<body></body>", url="http://fixture.test/", wait_until="commit"))
         posted, processing, answers = [], [], []
         arrived = threading.Event()
         original_post = page.tasks.post_task
-        original_convert = page.resource_fetcher.convert_response
+        original_convert = window_resources.web_response
 
         def post(callback, source=TaskSource.DOM, **kwargs):
             if kwargs.get("label") == "resource-completion":
@@ -48,7 +52,7 @@ def test_completion_uses_one_networking_task_per_external_result(monkeypatch, th
             return original_convert(*args, **kwargs)
 
         monkeypatch.setattr(page.tasks, "post_task", post)
-        monkeypatch.setattr(page.resource_fetcher, "convert_response", convert)
+        monkeypatch.setattr(window_resources, "web_response", convert)
 
         def complete(response, error):
             assert page.executor.is_owner_thread()
@@ -66,7 +70,7 @@ def test_completion_uses_one_networking_task_per_external_result(monkeypatch, th
             return handle
 
         handle = page.executor.call(issue)
-        assert arrived.wait(3)
+        assert (await asyncio.to_thread(arrived.wait, 3))
         assert len(answers) == 1
         assert posted == [TaskSource.NETWORKING] * (2 if kind == "redirect" else 1)
         response, error = answers[0]
@@ -82,12 +86,12 @@ def test_completion_uses_one_networking_task_per_external_result(monkeypatch, th
             assert all((ident != owner_id) == threaded for ident in host_threads)
 
 
-def test_duplicate_interceptor_result_does_not_start_two_transports(monkeypatch):
-    with closing(Browser(real_network=False, stub_logging="off",
+async def test_duplicate_interceptor_result_does_not_start_two_transports(monkeypatch):
+    async with Browser(real_network=False, stub_logging="off",
                          resource_interceptor=lambda *args: None,
-                         resource_loader=lambda *args: "ok")) as browser:
+                         resource_loader=lambda *args: "ok") as browser:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://fixture.test/")
+        (await page.set_content("<body></body>", url="http://fixture.test/", wait_until="commit"))
         calls, answers = [], []
         arrived = threading.Event()
 
@@ -102,7 +106,7 @@ def test_duplicate_interceptor_result_does_not_start_two_transports(monkeypatch)
         page.executor.call(lambda: page.resource_fetcher.load_resource_async(
             "http://fixture.test/result", {},
             lambda *args: (answers.append(args), arrived.set())))
-        assert arrived.wait(3)
+        assert (await asyncio.to_thread(arrived.wait, 3))
         assert len(calls) == 2
         assert len(answers) == 1
         assert answers[0][1] is None
@@ -111,26 +115,25 @@ def test_duplicate_interceptor_result_does_not_start_two_transports(monkeypatch)
 
 @pytest.mark.parametrize("action", ["deliver", "cancel", "stale", "reject"])
 @pytest.mark.parametrize("worker_reply", [False, True])
-def test_raw_http_reply_is_guarded_before_conversion(monkeypatch, action, worker_reply):
-    with closing(Browser(real_network=False, stub_logging="off")) as browser:
+async def test_raw_http_reply_is_guarded_before_conversion(monkeypatch, action, worker_reply):
+    async with Browser(real_network=False, stub_logging="off") as browser:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://fixture.test/")
+        (await page.set_content("<body></body>", url="http://fixture.test/", wait_until="commit"))
         replies, answers, conversions = [], [], []
-        transport = RequestHandle()
+        def submit_request(request, handle, remaining):
+            result = Future()
+            replies.append(result)
+            return result
 
-        def request_async(tasks, request, callback):
-            replies.append(callback)
-            return transport
-
-        engine = SimpleNamespace(http=SimpleNamespace(FOLLOWS_ITSELF=False),
-                                 request_async=request_async)
+        from pyv8c.network.backend import NetworkBackend
+        engine = NetworkBackend(http=SimpleNamespace(submit_request=submit_request, close=lambda: None))
         fetcher = page.resource_fetcher
-        monkeypatch.setattr(fetcher, "select_source", lambda load: ("engine", engine))
-        original = fetcher.convert_response
+        monkeypatch.setattr(page.profile, "network_backend", engine)
+        original = window_resources.web_response
         def convert(*args, **kwargs):
             conversions.append(threading.get_ident())
             return original(*args, **kwargs)
-        monkeypatch.setattr(fetcher, "convert_response", convert)
+        monkeypatch.setattr(window_resources, "web_response", convert)
         arrived = threading.Event()
 
         def issue_and_reply():
@@ -139,11 +142,10 @@ def test_raw_http_reply_is_guarded_before_conversion(monkeypatch, action, worker
                 lambda *args: (answers.append(args), arrived.set()))
             if action == "reject":
                 monkeypatch.setattr(page.tasks, "post_task", lambda *args, **kwargs: None)
-            # A custom engine can report synchronously, including duplicate results.
+            # A custom engine can report synchronously, before the initiating owner turn returns.
             raw = NetworkResponse(url="http://fixture.test/result", body="ok")
             def reply():
-                replies[0](raw, None)
-                replies[0](raw, None)
+                replies[0].set_result(raw)
             if worker_reply:
                 worker = threading.Thread(target=reply)
                 worker.start()
@@ -160,12 +162,55 @@ def test_raw_http_reply_is_guarded_before_conversion(monkeypatch, action, worker
 
         handle = page.executor.call(issue_and_reply)
         if action == "deliver":
-            assert arrived.wait(3)
+            assert (await asyncio.to_thread(arrived.wait, 3))
             assert len(answers) == len(conversions) == 1
             assert answers[0][1] is None
         else:
             # Control calls must still work when normal posting is rejected.
-            assert page.run_until_idle(timeout=3)
+            assert (await page.run_until_idle(timeout=3))
             assert not answers and not conversions
             assert handle.cancelled
         assert page.resource_ownership.active_count == 0
+
+
+@pytest.mark.parametrize("caller", ["window", "host"])
+async def test_transport_redirect_advances_while_the_runtime_is_busy(caller):
+    from contextvars import ContextVar
+
+    identity = ContextVar("request_identity")
+    replies = Future()
+    hops = []
+
+    class Engine:
+        def submit_request(self, request, handle, remaining):
+            hops.append((request.url, identity.get()))
+            return replies if request.url.endswith("/start") else resolved(
+                NetworkResponse(request.url, body="ok"))
+
+        def close(self):
+            pass
+
+    async with Browser(http_engine=Engine(), ws_engine=None, stub_logging="off") as browser:
+        page = browser.new_page()
+        url = "http://fixture.test"
+        await page.set_content("<p>local</p>", url + "/")
+        token = identity.set("original request")
+        try:
+            request = page.net.get if caller == "host" else page.net.fetch
+            observer = asyncio.create_task(request("/start", timeout=3))
+            await asyncio.sleep(0)
+        finally:
+            identity.reset(token)
+        assert hops == [(url + "/start", "original request")]
+
+        def reply():
+            replies.set_result(NetworkResponse(url + "/start", status=302,
+                                              headers={"location": "/end"}))
+
+        thread = threading.Thread(target=reply)
+        thread.start()
+        thread.join(2)
+        assert not thread.is_alive()
+        assert hops == [(url + "/start", "original request"), (url + "/end", "original request")]
+        assert not observer.done()
+        assert (await observer).text == "ok"

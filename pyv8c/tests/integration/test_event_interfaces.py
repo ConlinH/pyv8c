@@ -6,12 +6,12 @@ pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importabl
 
 
 @pytest.fixture
-def event_page(page):
-    page.set_content("<div id='app'><input id='field'></div>", url="https://example.test/")
+async def event_page(page):
+    (await page.set_content("<div id='app'><input id='field'></div>", url="https://example.test/", wait_until="commit"))
     return page
 
 
-def test_mouse_and_keyboard_event_init_members(event_page):
+async def test_mouse_and_keyboard_event_init_members(event_page):
     value = event_page.evaluate("""
       (() => {
         const e = new MouseEvent('click', {clientX: 10, clientY: 20, screenX: 1, screenY: 2,
@@ -42,7 +42,7 @@ def test_mouse_and_keyboard_event_init_members(event_page):
     ]
 
 
-def test_mouse_event_defaults_and_related_target(event_page):
+async def test_mouse_event_defaults_and_related_target(event_page):
     assert event_page.evaluate("""
       (() => {
         const target = document.querySelector('#app');
@@ -59,7 +59,7 @@ def test_mouse_event_defaults_and_related_target(event_page):
              True, True]
 
 
-def test_pointer_and_wheel_events_extend_mouse_event(event_page):
+async def test_pointer_and_wheel_events_extend_mouse_event(event_page):
     assert event_page.evaluate("""
       (() => {
         const p = new PointerEvent('pointerdown', {pointerId: 7, pointerType: 'touch',
@@ -104,11 +104,11 @@ def test_pointer_and_wheel_events_extend_mouse_event(event_page):
     ("new MessageEvent('message', {ports: []}).ports.length", 0),
     ("new CloseEvent('close', {code: 1000, reason: 'bye'}).code", 1000),
 ])
-def test_event_init_members_round_trip(event_page, expression, expected):
+async def test_event_init_members_round_trip(event_page, expression, expected):
     assert event_page.evaluate(expression) == expected
 
 
-def test_nullable_event_members_default_to_null(event_page):
+async def test_nullable_event_members_default_to_null(event_page):
     from pyv8c import pyv8
 
     for expression in (
@@ -121,7 +121,7 @@ def test_nullable_event_members_default_to_null(event_page):
         assert event_page.evaluate(expression) is pyv8.Null, expression
 
 
-def test_before_unload_event_is_not_constructible(event_page):
+async def test_before_unload_event_is_not_constructible(event_page):
     assert event_page.evaluate("""
       (() => {
         try { new BeforeUnloadEvent('beforeunload'); return 'allowed'; }
@@ -131,7 +131,7 @@ def test_before_unload_event_is_not_constructible(event_page):
     assert event_page.evaluate("typeof BeforeUnloadEvent") == "function"
 
 
-def test_legacy_init_event_and_init_custom_event(event_page):
+async def test_legacy_init_event_and_init_custom_event(event_page):
     assert event_page.evaluate("""
       (() => {
         const e = new Event('first');
@@ -147,7 +147,7 @@ def test_legacy_init_event_and_init_custom_event(event_page):
     """) == ["second", True, True, "after", False, 2, ["TypeError", "TypeError"]]
 
 
-def test_dispatch_reaches_listener_and_handler_slot(event_page):
+async def test_dispatch_reaches_listener_and_handler_slot(event_page):
     assert event_page.evaluate("""
       (() => {
         const el = document.querySelector('#field');
@@ -164,7 +164,7 @@ def test_dispatch_reaches_listener_and_handler_slot(event_page):
     """) == [["listener", "handler", "listener", "again"], True, "function"]
 
 
-def test_handler_slot_bubbles_to_document_delegate(event_page):
+async def test_handler_slot_bubbles_to_document_delegate(event_page):
     assert event_page.evaluate("""
       (() => {
         const seen = [];
@@ -178,7 +178,7 @@ def test_handler_slot_bubbles_to_document_delegate(event_page):
     """) == [["a", "field"], ["z", "field"]]
 
 
-def test_listener_options_keep_their_meaning(event_page):
+async def test_listener_options_keep_their_meaning(event_page):
     assert event_page.evaluate("""
       (() => {
         const el = document.querySelector('#app');
@@ -194,7 +194,7 @@ def test_listener_options_keep_their_meaning(event_page):
     """) == ["once", "capture", "bubble"]
 
 
-def test_handler_slots_are_prototype_accessors_that_start_out_null(event_page):
+async def test_handler_slots_are_prototype_accessors_that_start_out_null(event_page):
     assert event_page.evaluate("""
       (() => {
         const body = document.body;

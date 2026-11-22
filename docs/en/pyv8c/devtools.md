@@ -9,18 +9,18 @@
 The protocol, sessions, network service, and Isolate mailbox are provided by `pyv8.devtools`; pyv8c handles target descriptions and lifecycle integration for pages, iframes, and Workers.
 
 ```python
-from pyv8c import Browser, DevToolsOptions
+from pyv8c.async_api import Browser, run
 
-browser = Browser(real_network=False)
-try:
-    profile = browser.new_profile()
-    page = profile.new_page()
-    handle = profile.start_devtools(page, options=DevToolsOptions(pause_on_start=True, wait_for_debugger=True, port=9005))
-    print(handle.url)
-    page.evaluate("globalThis.answer = 42", filename="example.js")
-    input("连接调试器后，按回车结束：")
-finally:
-    browser.close()
+async def main():
+    from pyv8c import DevToolsOptions
+    async with Browser(real_network=False) as browser:
+        profile = browser.new_profile()
+        page = profile.new_page()
+        handle = profile.start_devtools(page, options=DevToolsOptions(pause_on_start=True, wait_for_debugger=True, port=9005))
+        print(handle.url)
+        page.evaluate('globalThis.answer = 42', filename='example.js')
+        input('连接调试器后，按回车结束：')
+run(main())
 ```
 
 DevToolsOptions defaults to host `127.0.0.1`, port 0, wait_for_debugger False, pause_on_start True, and startup_timeout None. port=0 allocates a port automatically.
@@ -48,3 +48,7 @@ An Inspector pause does not consume the JS execution budget, and host waits stil
 It supports the V8 Inspector and the framework's Target management, but does not provide the full CDP Page, Network, or DOM domains, nor multi-client coordination. A Chrome frontend being able to connect does not mean all Chrome DevTools features are available.
 
 Dedicated entry points are `pyv8c/tests/browser/test_devtools.py` and `pyv8c/tests/integration/test_lifecycle_stress.py`. Pause notifications, detachment, and shutdown involve concurrency and need repeated validation with failure evidence retained; a passing rerun alone cannot prove a race is resolved.
+
+The sync_api debugger handle drives the Browser loop during wait_for_connection and
+wait_for_ready. With async_api, call the native handle waits through asyncio.to_thread
+to keep the owner loop responsive. Both waits return bool.

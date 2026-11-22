@@ -7,59 +7,56 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
 
-from pyv8c import Browser  # noqa: E402
+from pyv8c.async_api import Browser
 
 EXTENSION_URL = "chrome-extension://kjacjjdnoddnpbbcjilcajfhhbdhkpg/images/about/en/1.png"
 
 
 @pytest.mark.parametrize('target', ['file:///etc/passwd', 'custom://host/resource', EXTENSION_URL])
-def test_blocked_scheme_cannot_reach_custom_loader(target):
-    from types import SimpleNamespace
+async def test_blocked_scheme_cannot_reach_custom_loader(target):
     from pyv8c.foundation.host_errors import LoadFailure
-    from pyv8c.platform.resources.session import select_source
 
     calls = []
-    profile = SimpleNamespace(resource_cache=SimpleNamespace(get=lambda key: calls.append(key)))
-    with pytest.raises(LoadFailure):
-        select_source(profile=profile, environment=None, initiator='https://example.test/',
-                      target=target, options={}, origin=('https', 'example.test', 443),
-                      cache_key=None, loader=lambda *args: None, backend=None)
+    async with Browser(real_network=False, resource_loader=lambda *args: calls.append(args)) as browser:
+        page = browser.new_page()
+        await page.set_content("<p>local</p>", "https://example.test/")
+        with pytest.raises(LoadFailure, match="not a scheme a page loads"):
+            page.executor.call(page.resource_fetcher.load_resource, target, {})
     assert calls == []
 
 
-def test_blocked_scheme_cannot_reach_interceptor():
+async def test_blocked_scheme_cannot_reach_interceptor():
     calls = []
-    browser = Browser(stub_logging='off', resource_interceptor=lambda *args: calls.append(args))
+    browser = (await Browser(stub_logging='off', resource_interceptor=lambda *args: calls.append(args)).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://example.test/')
+        (await page.set_content('<body></body>', url='https://example.test/', wait_until="commit"))
         page.evaluate("fetch('file:///secret').catch(() => { window.done = true; })")
-        page.run_until_idle(1)
+        (await page.run_until_idle(1))
         assert page.evaluate('window.done') is True
         assert calls == []
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_browser_own_scheme_never_reaches_the_engine():
+async def test_a_browser_own_scheme_never_reaches_the_engine():
     """The failure is the browser's, and the network engine is never asked."""
     asked = []
 
     class Transport:
         """The engine ``http_engine`` builds: reaching it at all fails the test."""
 
-        def request_sync(self, request):
+        def submit_request(self, request, handle, remaining):
             asked.append(request.url)
             raise AssertionError("the network engine was asked for a browser scheme")
 
-        def request_async(self, tasks, request, callback):
-            asked.append(request.url)
-            raise AssertionError("the network engine was asked for a browser scheme")
+        def close(self):
+            pass
 
-    browser = Browser(stub_logging="off", http_engine=Transport)
+    browser = (await Browser(stub_logging="off", http_engine=Transport).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://example.test/")
+        (await page.set_content("<body></body>", url="http://example.test/", wait_until="commit"))
         page.evaluate("""
           fetch(%s).then(
             () => { window.__fetched = ['resolved']; },
@@ -72,7 +69,7 @@ def test_a_browser_own_scheme_never_reaches_the_engine():
           xhr.open('GET', %s);
           xhr.send();
         """ % (repr(EXTENSION_URL), repr(EXTENSION_URL)))
-        page.run_until_idle(1)
+        (await page.run_until_idle(1))
 
         assert page.evaluate("window.__fetched") == ["TypeError", "Failed to fetch", True]
         assert page.evaluate("window.__xhr") == [0, "", "", "", "", "null", 4, "error", True]
@@ -80,8 +77,8 @@ def test_a_browser_own_scheme_never_reaches_the_engine():
         # The same URL as an image fails the way an element reports a load failure.
         page.evaluate("window.__image = new Image(); window.__image.src = %s;"
                       % repr(EXTENSION_URL))
-        page.run_until_idle(1)
+        (await page.run_until_idle(1))
         assert page.evaluate("[window.__image.complete, window.__image.naturalWidth]") == [True, 0]
     finally:
-        browser.close()
+        (await browser.close())
     assert asked == []

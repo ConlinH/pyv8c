@@ -57,7 +57,7 @@ V8 源码树各子目录下的 `LICENSE` 文件包含更细的第三方信息，
 
 ### Blink 音频压缩器
 
-动态压缩器实现位于 Rust 扩展 `pyv8c/audio_native/src/compressor.rs`，改写自 Chromium Blink 的 `third_party/blink/renderer/platform/audio/dynamics_compressor.cc`，版权为 Copyright (C) 2011 Google Inc.；其 BSD 许可条款含 Apple 的特定名称和免责声明，与 Chromium 顶层文本不同。完整原文见 [BLINK-AUDIO-LICENSE.txt](third_party_licenses/BLINK-AUDIO-LICENSE.txt)，该源码文件顶部也保留了许可头。旧的 Python 实现 `pyv8c/pyv8c/web/bom/audio_compressor.py` 已移除。
+动态压缩器实现位于 Rust 扩展 `pyv8c/native/src/audio/compressor.rs`，改写自 Chromium Blink 的 `third_party/blink/renderer/platform/audio/dynamics_compressor.cc`，版权为 Copyright (C) 2011 Google Inc.；其 BSD 许可条款含 Apple 的特定名称和免责声明，与 Chromium 顶层文本不同。完整原文见 [BLINK-AUDIO-LICENSE.txt](third_party_licenses/BLINK-AUDIO-LICENSE.txt)，该源码文件顶部也保留了许可头。旧的 Python 实现 `pyv8c/pyv8c/web/bom/audio_compressor.py` 已移除。
 
 ---
 
@@ -119,7 +119,7 @@ pip-licenses --format=markdown --with-urls --with-license-file
 
 ## 6. 发行前待完成的第三方审计
 
-音频波形扩展使用 PyO3 0.27.2、RustFFT 6.4.1 及其 Cargo.lock 所列依赖。扩展中采用 Chromium 的 FFT 数据布局；对应的上游许可证在 `third_party_licenses/CHROMIUM-LICENSE.txt`，Rust crate 许可证文本在 `third_party_licenses/AUDIO-RUST-CRATES-LICENSES.txt`。依赖升级后应重新核对并更新许可证材料。
+统一原生扩展的音频组件使用 PyO3 0.27.2、RustFFT 6.4.1 及其运行时依赖。扩展采用 Chromium 的 FFT 数据布局，对应的上游许可证在 `third_party_licenses/CHROMIUM-LICENSE.txt`。所链接的 Rust crate 许可证文本在 `third_party_licenses/AUDIO-RUST-CRATES-LICENSES.txt`。构建脚本使用 `cc` 编译 DOM C++ 源码，并使用 `sha2` 记录源码摘要。这两个 crate 仅在构建期间使用。依赖升级后应重新核对并更新许可证材料。
 
 V8 的 monolith 和各平台链接输入还可能包含其自身的第三方代码。特别是 Windows 构建会链接 Temporal 的 Rust 库及其传递依赖；不同平台、GN 参数、V8 来源和 ICU 覆盖均可能改变组成。上述文件不是完整物料清单，不能仅凭通过基础检查就认定 wheel 可发布。
 

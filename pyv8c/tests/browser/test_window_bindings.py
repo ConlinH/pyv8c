@@ -2,23 +2,23 @@
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.bom.window import Window
 
 
 @pytest.fixture
-def page():
-    browser = Browser(cache=False, stub_logging="off")
+async def page():
+    browser = (await Browser(cache=False, stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content('<div id="namedElement"></div>', url="http://a.test/")
+    (await page.set_content('<div id="namedElement"></div>', url="http://a.test/", wait_until="commit"))
     try:
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_window_declares_no_named_handler_of_its_own():
-    browser = Browser(cache=False, stub_logging="off")
+async def test_window_declares_no_named_handler_of_its_own():
+    browser = (await Browser(cache=False, stub_logging="off").__aenter__())
     try:
         bindings = browser.bindings
         config = bindings.class_config_for("Window")
@@ -34,10 +34,10 @@ def test_window_declares_no_named_handler_of_its_own():
         assert "postMessage" in {item.name for item in config.methods}
         assert "onmessage" in {item.name for item in config.attributes}
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_normal_access_never_calls_python_named_handler(page, monkeypatch):
+async def test_normal_access_never_calls_python_named_handler(page, monkeypatch):
     calls = []
     original = Window.__getattribute__
 
@@ -61,7 +61,7 @@ def test_normal_access_never_calls_python_named_handler(page, monkeypatch):
     assert calls == []
 
 
-def test_message_member_descriptors_and_identity(page):
+async def test_message_member_descriptors_and_identity(page):
     assert page.evaluate('''(() => {
         const m = Object.getOwnPropertyDescriptor(window, 'postMessage');
         const e = Object.getOwnPropertyDescriptor(window, 'onmessage');
@@ -80,10 +80,10 @@ def test_message_member_descriptors_and_identity(page):
     '"message", {}', '"message", {targetOrigin: "*", transfer: []}',
     '"message", null', '"message", undefined',
 ])
-def test_post_message_overloads(page, arguments):
+async def test_post_message_overloads(page, arguments):
     page.evaluate('window.received = []; onmessage = e => received.push(e.data)')
     page.evaluate('postMessage(' + arguments + ')')
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate('received') == ['message']
 
 
@@ -93,7 +93,7 @@ def test_post_message_overloads(page, arguments):
     ('1, {targetOrigin: "*"}, []', 'SyntaxError'),
     ('1, "not-an-origin"', 'SyntaxError'),
 ])
-def test_post_message_rejects_invalid_arguments(page, arguments, error):
+async def test_post_message_rejects_invalid_arguments(page, arguments, error):
     assert page.evaluate('''(() => {
         try { postMessage(''' + arguments + '''); return 'allowed'; }
         catch (e) { return e.name; }
@@ -101,17 +101,17 @@ def test_post_message_rejects_invalid_arguments(page, arguments, error):
 
 
 @pytest.mark.parametrize("value", ['null', 'undefined', '42', 'false', '"text"'])
-def test_onmessage_non_object_becomes_null(page, value):
+async def test_onmessage_non_object_becomes_null(page, value):
     assert page.evaluate('onmessage = ' + value + '; onmessage === null')
 
 
-def test_post_message_target_filter(page):
+async def test_post_message_target_filter(page):
     page.evaluate('window.received = []; onmessage = e => received.push(e.data); '
                   'postMessage("drop", {targetOrigin:"http://other.test"})')
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate('received') == []
 
 
-def test_non_callable_onmessage_is_not_invoked(page):
+async def test_non_callable_onmessage_is_not_invoked(page):
     page.evaluate('onmessage = {}')
     assert page.evaluate('''dispatchEvent(new Event('message'))''')

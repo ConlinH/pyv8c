@@ -1,6 +1,6 @@
 """Prototype insertion phases as observed in Chrome's bindings."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 PERFORMANCE_NAMES = [
@@ -11,8 +11,8 @@ PERFORMANCE_NAMES = [
 ]
 
 
-def test_performance_order_when_instance_is_observed_first():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_performance_order_when_instance_is_observed_first():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate('Object.getOwnPropertyNames(Object.getPrototypeOf(performance))') == PERFORMANCE_NAMES
@@ -44,24 +44,24 @@ def test_performance_order_when_instance_is_observed_first():
             return before.join(',') === Object.getOwnPropertyNames(Performance.prototype).join(',');
         })()''')
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_order_is_applied_to_each_same_origin_realm():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_order_is_applied_to_each_same_origin_realm():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://order.test/')
+        (await page.set_content('<body></body>', url='https://order.test/', wait_until="commit"))
         page.evaluate("const f = document.createElement('iframe'); f.srcdoc = '<body></body>'; document.body.appendChild(f)")
-        page.run_until_idle(timeout=2)
+        (await page.run_until_idle(timeout=2))
         assert page.evaluate('Object.getOwnPropertyNames(Object.getPrototypeOf(document.querySelector("iframe").contentWindow.performance))') == PERFORMANCE_NAMES
         assert page.evaluate('Object.getOwnPropertyNames(Object.getPrototypeOf(performance))') == PERFORMANCE_NAMES
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_context_independent_template_member_follows_initial_operations():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_context_independent_template_member_follows_initial_operations():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate('''(() => {
@@ -70,4 +70,4 @@ def test_context_independent_template_member_follows_initial_operations():
                    names.indexOf('playbackStats') < names.indexOf('constructor');
         })()''')
     finally:
-        browser.close()
+        (await browser.close())

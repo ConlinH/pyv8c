@@ -4,21 +4,21 @@ import json
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def argument_page():
-    browser = Browser(stub_logging="off", resource_loader=lambda url, request: {"url": url, "body": ""})
+async def argument_page():
+    browser = (await Browser(stub_logging="off", resource_loader=lambda url, request: {"url": url, "body": ""}).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_request_init_reads_members_in_chrome_order(argument_page):
+async def test_request_init_reads_members_in_chrome_order(argument_page):
     expected = ['body', 'cache', 'credentials', 'duplex',
                 'headers', 'integrity', 'keepalive', 'method', 'mode', 'priority',
                 'privateToken', 'redirect', 'referrer', 'referrerPolicy', 'signal',
@@ -38,7 +38,7 @@ def test_request_init_reads_members_in_chrome_order(argument_page):
     })()''') == [expected, expected]
 
 
-def test_request_init_stops_when_an_enum_conversion_throws(argument_page):
+async def test_request_init_stops_when_an_enum_conversion_throws(argument_page):
     assert argument_page.evaluate('''(() => {
         const keys = [];
         const init = new Proxy({}, {get(target, name) {
@@ -50,7 +50,7 @@ def test_request_init_stops_when_an_enum_conversion_throws(argument_page):
     })()''') == ['body', 'cache', 'credentials']
 
 
-def test_input_event_init_reads_dictionary_members_in_chrome_order(argument_page):
+async def test_input_event_init_reads_dictionary_members_in_chrome_order(argument_page):
     assert argument_page.evaluate('''(() => {
         const keys = [];
         const init = new Proxy({}, {get(target, name) {
@@ -63,7 +63,7 @@ def test_input_event_init_reads_dictionary_members_in_chrome_order(argument_page
                  'view', 'data', 'dataTransfer', 'inputType', 'isComposing', 'targetRanges']
 
 
-def test_input_event_init_validates_and_preserves_target_ranges(argument_page):
+async def test_input_event_init_validates_and_preserves_target_ranges(argument_page):
     assert argument_page.evaluate('''(() => {
         const range = new StaticRange({startContainer: document.body, startOffset: 0,
                                        endContainer: document.body, endOffset: 0});
@@ -93,13 +93,13 @@ def test_input_event_init_validates_and_preserves_target_ranges(argument_page):
         "new URL('https://example.test', null)",
     ],
 )
-def test_api_type_errors(argument_page, expression):
+async def test_api_type_errors(argument_page, expression):
     assert argument_page.evaluate(
         "(() => {try {" + expression + ";return false;}catch(error){return error instanceof TypeError;}})()"
     )
 
 
-def test_request_special_scheme_requires_host(argument_page):
+async def test_request_special_scheme_requires_host(argument_page):
     assert argument_page.evaluate("""(() => {
         try { new Request('ftp:', function () {}); }
         catch (error) {
@@ -114,7 +114,7 @@ def test_request_special_scheme_requires_host(argument_page):
 
 
 @pytest.mark.parametrize("thrown", ["new Error('sentinel')", "42", "null", "Symbol('sentinel')"])
-def test_conversion_exception_identity(argument_page, thrown):
+async def test_conversion_exception_identity(argument_page, thrown):
     assert argument_page.evaluate(
         """(() => {
         const sentinel = """
@@ -127,7 +127,7 @@ def test_conversion_exception_identity(argument_page, thrown):
     )
 
 
-def test_dictionary_uses_get_in_order_without_enumeration(argument_page):
+async def test_dictionary_uses_get_in_order_without_enumeration(argument_page):
     assert argument_page.evaluate("""(() => {
         const seen=[];
         const init=new Proxy({}, {
@@ -140,14 +140,14 @@ def test_dictionary_uses_get_in_order_without_enumeration(argument_page):
     })()""") == ["bubbles", "cancelable", "composed"]
 
 
-def test_ignored_extra_is_not_inspected(argument_page):
+async def test_ignored_extra_is_not_inspected(argument_page):
     assert argument_page.evaluate("""(() => {
         const {proxy,revoke}=Proxy.revocable({},{});revoke();
         return document.createElement('div').getAttribute('missing',proxy) === null;
     })()""")
 
 
-def test_sequence_converts_before_next_without_iterator_close(argument_page):
+async def test_sequence_converts_before_next_without_iterator_close(argument_page):
     assert argument_page.evaluate("""(() => {
         const seen=[];let index=0;
         const iterable={get [Symbol.iterator](){seen.push('iterator');return function(){return {
@@ -161,7 +161,7 @@ def test_sequence_converts_before_next_without_iterator_close(argument_page):
     })()""") == ["iterator", "next", "convert"]
 
 
-def test_blob_sequence_error_has_the_constructor_context(argument_page):
+async def test_blob_sequence_error_has_the_constructor_context(argument_page):
     assert argument_page.evaluate("""(() => {
         try { new Blob(() => {}, () => {}); }
         catch (error) { return [error.name, error.message]; }
@@ -169,7 +169,7 @@ def test_blob_sequence_error_has_the_constructor_context(argument_page):
                   "callable @@iterator property."]
 
 
-def test_a_blob_part_that_is_a_buffer_contributes_its_bytes(argument_page):
+async def test_a_blob_part_that_is_a_buffer_contributes_its_bytes(argument_page):
     """A ``BufferSource`` part is the bytes it holds, not the text it reads as.
 
     A buffer, a view of one and a ``DataView`` each contribute their bytes; a part that
@@ -185,17 +185,17 @@ def test_a_blob_part_that_is_a_buffer_contributes_its_bytes(argument_page):
     })()""") == [3, 2, 5, 3, 15]
 
 
-def test_timer_optional_and_variadic_arguments(argument_page):
+async def test_timer_optional_and_variadic_arguments(argument_page):
     argument_page.evaluate("""globalThis.timerArgumentResults=[];
         clearTimeout();clearInterval();
         setTimeout((first,second)=>timerArgumentResults.push(first,second),0,42,null);
         setTimeout('timerArgumentResults.push(7)',0);
     """)
-    argument_page.run_until_idle(timeout=1)
+    (await argument_page.run_until_idle(timeout=1))
     assert json.loads(argument_page.evaluate("JSON.stringify(timerArgumentResults)")) == [42, None, 7]
 
 
-def test_domexception_constructor_converts_and_ignores_extra(argument_page):
+async def test_domexception_constructor_converts_and_ignores_extra(argument_page):
     assert argument_page.evaluate("""(() => {
         const error=new DOMException(null,false,{toString(){throw 42}});
         const empty=new DOMException(undefined,undefined);
@@ -203,21 +203,21 @@ def test_domexception_constructor_converts_and_ignores_extra(argument_page):
     })()""") == ["null", "false", 0, "", "Error"]
 
 
-def test_contains_invalid_tokens_is_a_lookup(argument_page):
+async def test_contains_invalid_tokens_is_a_lookup(argument_page):
     assert argument_page.evaluate("""(() => {
         const tokens=document.body.classList;
         return [tokens.contains(''),tokens.contains('a b')];
     })()""") == [False, False]
 
 
-def test_storage_unsigned_index_and_null_result(argument_page):
+async def test_storage_unsigned_index_and_null_result(argument_page):
     assert argument_page.evaluate("""(() => {
         localStorage.clear();localStorage.setItem('only','value');
         return [localStorage.key(-1)===null,localStorage.key(2**32)==='only',localStorage.getItem('missing')===null];
     })()""") == [True, True, True]
 
 
-def test_event_dictionary_defaults_and_explicit_conversions(argument_page):
+async def test_event_dictionary_defaults_and_explicit_conversions(argument_page):
     assert argument_page.evaluate("""(() => {
         const defaults=new CloseEvent('close');
         const custom=new CloseEvent('close',{code:-1,reason:false,wasClean:[]});
@@ -225,7 +225,7 @@ def test_event_dictionary_defaults_and_explicit_conversions(argument_page):
     })()""") == [0, False, 65535, 'false', True, 'null']
 
 
-def test_websocket_validation_precedes_network_and_state(argument_page):
+async def test_websocket_validation_precedes_network_and_state(argument_page):
     assert argument_page.evaluate("""(() => {
         try{new WebSocket('ftp://example.test', ['duplicate','duplicate'])}
         catch(error){return error.name==='SyntaxError'}
@@ -245,14 +245,14 @@ def test_websocket_validation_precedes_network_and_state(argument_page):
     assert socket._state_value==WebSocket.OPEN
 
 
-def test_record_excludes_inherited_keys_and_converts_values(argument_page):
+async def test_record_excludes_inherited_keys_and_converts_values(argument_page):
     assert argument_page.evaluate("""(() => {
         const source=Object.create({inherited:'skip'});source.key=null;
         return [String(new URLSearchParams(source)),new Headers(source).get('key')];
     })()""") == ["key=null", "null"]
 
 
-def test_dom_variadic_conversion_is_atomic(argument_page):
+async def test_dom_variadic_conversion_is_atomic(argument_page):
     assert argument_page.evaluate("""(() => {
         const node=document.createElement('div');node.textContent='old';
         try{node.replaceChildren('new',{toString(){throw 42}})}catch(error){}
@@ -262,7 +262,7 @@ def test_dom_variadic_conversion_is_atomic(argument_page):
     })()""") == ["old", "nullundefinedfalse"]
 
 
-def test_event_object_listener_and_handler_assignment(argument_page):
+async def test_event_object_listener_and_handler_assignment(argument_page):
     assert argument_page.evaluate("""(() => {
         const target=new EventTarget();const listener={count:0,handleEvent(){this.count++}};
         target.addEventListener('x',listener,{once:true});
@@ -272,7 +272,7 @@ def test_event_object_listener_and_handler_assignment(argument_page):
     })()""") == [1, True]
 
 
-def test_promise_failures_reject_without_sync_throw(argument_page):
+async def test_promise_failures_reject_without_sync_throw(argument_page):
     argument_page.evaluate("""globalThis.argumentDone=false;(async()=>{
         const sentinel={marker:42};const result=[];
         try{await fetch({toString(){throw sentinel}})}catch(error){result.push(error===sentinel)}
@@ -284,12 +284,12 @@ def test_promise_failures_reject_without_sync_throw(argument_page):
         try{await response.text()}catch(error){result.push(error instanceof TypeError)}
         globalThis.argumentResult=result;globalThis.argumentDone=true;
     })()""")
-    argument_page.run_until_idle(timeout=1)
+    (await argument_page.run_until_idle(timeout=1))
     assert argument_page.evaluate("argumentDone")
     assert json.loads(argument_page.evaluate("JSON.stringify(argumentResult)")) == [True] * 4
 
 
-def test_worker_option_conversion_precedes_start(argument_page):
+async def test_worker_option_conversion_precedes_start(argument_page):
     assert argument_page.evaluate("""(() => {
         const seen=[];
         try{new Worker('not-fetched.js', {
@@ -301,7 +301,7 @@ def test_worker_option_conversion_precedes_start(argument_page):
     })()""") == ["credentials", "name", "name-value", "type"]
 
 
-def test_idb_compound_key_path_and_transaction_scope(argument_page):
+async def test_idb_compound_key_path_and_transaction_scope(argument_page):
     argument_page.evaluate("""globalThis.idbArgumentResult=null;
         const request=indexedDB.open('argument-compound-path',1);
         request.onupgradeneeded=()=>{
@@ -315,5 +315,5 @@ def test_idb_compound_key_path_and_transaction_scope(argument_page):
             query.onsuccess=()=>{idbArgumentResult=query.result.id;request.result.close()};
         };
     """)
-    argument_page.run_until_idle(timeout=1)
+    (await argument_page.run_until_idle(timeout=1))
     assert argument_page.evaluate("idbArgumentResult") == 1

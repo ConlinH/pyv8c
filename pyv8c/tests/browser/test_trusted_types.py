@@ -19,13 +19,13 @@ window.__policy = trustedTypes.createPolicy('t', {
 
 
 @pytest.fixture
-def secure_page(page):
+async def secure_page(page):
     """A secure-context page, where ``trustedTypes`` is exposed at all."""
-    page.set_content("<body></body>", url="https://probe.test/trusted.html")
+    (await page.set_content("<body></body>", url="https://probe.test/trusted.html", wait_until="commit"))
     return page
 
 
-def test_a_trusted_script_keeps_its_wrapper_shape(secure_page):
+async def test_a_trusted_script_keeps_its_wrapper_shape(secure_page):
     assert secure_page.evaluate(POLICY + """
 (() => {
   const script = __policy.createScript('1 + 1');
@@ -35,7 +35,7 @@ def test_a_trusted_script_keeps_its_wrapper_shape(secure_page):
 """) == ["object", "[object TrustedScript]", "1 + 1", True, True]
 
 
-def test_eval_runs_the_source_a_policy_produced(secure_page):
+async def test_eval_runs_the_source_a_policy_produced(secure_page):
     assert secure_page.evaluate(POLICY + """
 (() => {
   window.__ran = 0;
@@ -45,7 +45,7 @@ def test_eval_runs_the_source_a_policy_produced(secure_page):
 """) == [41, 2]
 
 
-def test_eval_of_a_trusted_script_keeps_direct_eval_scope(secure_page):
+async def test_eval_of_a_trusted_script_keeps_direct_eval_scope(secure_page):
     """The unwrapping happens inside the native eval, so a ``var`` stays local."""
     assert secure_page.evaluate(POLICY + """
 (() => {
@@ -55,7 +55,7 @@ def test_eval_of_a_trusted_script_keeps_direct_eval_scope(secure_page):
 """) == ["number", "undefined"]
 
 
-def test_eval_through_the_window_property_reaches_the_global_scope(secure_page):
+async def test_eval_through_the_window_property_reaches_the_global_scope(secure_page):
     assert secure_page.evaluate(POLICY + """
 (() => {
   window.eval(__policy.createScript('var __global = 9'));
@@ -64,7 +64,7 @@ def test_eval_through_the_window_property_reaches_the_global_scope(secure_page):
 """) == ["number", 9]
 
 
-def test_eval_leaves_other_arguments_alone(secure_page):
+async def test_eval_leaves_other_arguments_alone(secure_page):
     assert secure_page.evaluate("""
 (() => {
   const object = {a: 1};
@@ -73,12 +73,12 @@ def test_eval_leaves_other_arguments_alone(secure_page):
 """) == [True, "object", 7]
 
 
-def test_the_function_constructor_accepts_a_trusted_script(secure_page):
+async def test_the_function_constructor_accepts_a_trusted_script(secure_page):
     assert secure_page.evaluate(POLICY
                                 + "Function(__policy.createScript('return 5'))()") == 5
 
 
-def test_a_trusted_html_is_not_code(secure_page):
+async def test_a_trusted_html_is_not_code(secure_page):
     """Only a script is code-like: an HTML wrapper still comes back untouched."""
     assert secure_page.evaluate(POLICY + """
 (() => {

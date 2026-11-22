@@ -49,4 +49,4 @@ python -m pytest pyv8c/tests/unit/test_request_headers.py pyv8c/tests/integratio
 python -m pytest pyv8c/tests/repros/test_request_headers_vs_chrome.py -q
 ```
 
-Behavior comparison against Chrome uses the local Chrome; use `PYV8C_CHROME` to specify the executable. A comparison failure should be judged as a framework defect, a transport difference, or a version change, and differences should not be eliminated by loosening assertions or modifying the baseline.
+The request-header and form comparisons can use `PYV8C_CHROME_BASELINE` to select Chrome 154.0.8030.0 and pin its header behavior. If unset, they use `PYV8C_CHROME` or the system Chrome. When a comparison fails, check the actual framework, transport, and Chrome release behavior while preserving the assertions for header names, values, and order.

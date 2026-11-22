@@ -1,13 +1,13 @@
 """Rendering callbacks retain cancellation handles until their own invocation."""
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.mark.parametrize('microtask', [False, True])
 @pytest.mark.parametrize('worker', [False, True])
-def test_frame_callback_can_cancel_later_callback(microtask, worker):
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_frame_callback_can_cancel_later_callback(microtask, worker):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         cancel = "log.push('cancel');cancelAnimationFrame(second)"
@@ -27,14 +27,14 @@ def test_frame_callback_can_cancel_later_callback(microtask, worker):
                           "worker.onmessage=e=>result=e.data")
         else:
             page.evaluate('globalThis.result=null;' + source.replace('__DONE__', 'result=log'))
-        page.wait_for('result!==null', timeout=3)
+        (await page.wait_for('result!==null', timeout=3))
         assert page.evaluate('result') == ['first', 'cancel', 'last']
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_frame_appended_in_cleanup_uses_next_frame():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_frame_appended_in_cleanup_uses_next_frame():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate("""
@@ -47,14 +47,14 @@ def test_frame_appended_in_cleanup_uses_next_frame():
             });
             requestAnimationFrame(t=>log.push(t===first?'peer':'wrong'));
         """)
-        page.wait_for('done', timeout=3)
+        (await page.wait_for('done', timeout=3))
         assert page.evaluate('log') == ['first', 'peer', 'next']
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_throwing_frame_callback_still_runs_cleanup():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_throwing_frame_callback_still_runs_cleanup():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate("""
@@ -66,7 +66,7 @@ def test_throwing_frame_callback_still_runs_cleanup():
             });
             requestAnimationFrame(()=>{log.push('last');done=true});
         """)
-        page.wait_for('done', timeout=3)
+        (await page.wait_for('done', timeout=3))
         assert page.evaluate('log') == ['error', 'micro', 'last']
     finally:
-        browser.close()
+        (await browser.close())

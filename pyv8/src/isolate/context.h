@@ -32,6 +32,12 @@ struct ContextLifetime {
 struct ContextResources {
     std::size_t handle_count() const { return handles.size(); }
     std::vector<std::shared_ptr<WasmStreamSession>> wasm_streams;
+    // Type-erased shared_ptr<InspectorHub>, owned by tools/debugger.cpp.  Its
+    // contract here is lifetime only: while non-null it keeps the V8Inspector
+    // (and this realm's registration with it for console.memory) alive.  Do not
+    // dereference it in this layer; debugger.cpp only tests it and resets it on
+    // context close.  A non-null value also means the last Debugger.disconnect()
+    // must not destroy the inspector registration by itself.
     std::shared_ptr<void> console_inspector;
 private:
     friend class IsolateState;

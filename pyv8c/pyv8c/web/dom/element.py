@@ -52,7 +52,7 @@ class _AttributeMap(dict):
 
     def _changed(self, key):
         self._owner._invalidate_layout()
-        if (getattr(self._owner, "localName", "") in ("style", "link")
+        if (self._owner.localName in ("style", "link")
                 and key in ("rel", "href", "media", "disabled")):
             document = self._owner.ownerDocument
             if document is not None:
@@ -118,6 +118,8 @@ class _AttributeMap(dict):
 @interface('Element', 'Node')
 class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin, Node):
     """Base implementation for HTML and XML elements."""
+
+    _attribute_changed = None
 
     def fn_checkVisibility(self, options=pyv8.Undefined, *_extra):
         """Whether this element is rendered, as Chrome's ``checkVisibility`` answers it.

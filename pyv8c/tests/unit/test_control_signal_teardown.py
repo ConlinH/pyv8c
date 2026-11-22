@@ -9,7 +9,7 @@ def _raise(exc):
     raise exc
 
 
-def test_resource_scope_propagates_control_exception_and_settles_state():
+async def test_resource_scope_propagates_control_exception_and_settles_state():
     scope = ResourceScope()
     scope.add(lambda: _raise(KeyboardInterrupt("stop")))
     with pytest.raises(KeyboardInterrupt):
@@ -17,7 +17,7 @@ def test_resource_scope_propagates_control_exception_and_settles_state():
     assert scope.state is LifecycleState.CLOSED
 
 
-def test_resource_scope_propagates_system_exit_and_settles_state():
+async def test_resource_scope_propagates_system_exit_and_settles_state():
     scope = ResourceScope()
     scope.add(lambda: _raise(SystemExit(3)))
     with pytest.raises(SystemExit) as caught:
@@ -26,7 +26,7 @@ def test_resource_scope_propagates_system_exit_and_settles_state():
     assert scope.state is LifecycleState.CLOSED
 
 
-def test_resource_scope_still_continues_after_ordinary_failure():
+async def test_resource_scope_still_continues_after_ordinary_failure():
     scope = ResourceScope()
     calls = []
     scope.add(lambda: calls.append("last"))
@@ -37,11 +37,11 @@ def test_resource_scope_still_continues_after_ordinary_failure():
 
 
 @pytest.mark.native
-def test_page_close_stops_page_callbacks_after_control_signal(monkeypatch):
+async def test_page_close_stops_page_callbacks_after_control_signal(monkeypatch):
     pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser
 
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.navigation.has_navigation = True
@@ -55,19 +55,19 @@ def test_page_close_stops_page_callbacks_after_control_signal(monkeypatch):
             lambda: calls.append("unload"),
         )
         with pytest.raises(KeyboardInterrupt):
-            page.close()
+            (await page.close())
         assert calls == []
     finally:
         monkeypatch.undo()
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.native
-def test_exception_reporting_propagates_control_signal(monkeypatch):
+async def test_exception_reporting_propagates_control_signal(monkeypatch):
     pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser
 
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         monkeypatch.setattr(
@@ -79,15 +79,15 @@ def test_exception_reporting_propagates_control_signal(monkeypatch):
         assert page._reporting_error is False
     finally:
         monkeypatch.undo()
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.native
-def test_rejection_reporting_propagates_control_signal(monkeypatch):
+async def test_rejection_reporting_propagates_control_signal(monkeypatch):
     pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser
 
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         monkeypatch.setattr(
@@ -98,4 +98,4 @@ def test_rejection_reporting_propagates_control_signal(monkeypatch):
             page.report_rejection("unhandledrejection", None, None)
     finally:
         monkeypatch.undo()
-        browser.close()
+        (await browser.close())

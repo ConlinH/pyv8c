@@ -9,14 +9,12 @@ python -m pip install "pyv8c[angle]"
 ```
 
 ```python
-from pyv8c import Browser
+from pyv8c.async_api import Browser, run
 
-browser = Browser(webgl_backend="angle")
-try:
-    page = browser.new_profile().new_page()
-    # 运行使用 WebGL 的页面。
-finally:
-    browser.close()
+async def main():
+    async with Browser(webgl_backend='angle') as browser:
+        page = browser.new_profile().new_page()
+run(main())
 ```
 
 默认仍使用模拟后端。选择 ANGLE 时从 `comfy-angle` 获取 EGL 和 GLES 库；没有安装时

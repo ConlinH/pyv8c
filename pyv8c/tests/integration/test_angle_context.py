@@ -12,12 +12,12 @@ from pyv8c.web.graphics.webgl.backends.egl import AngleContext, AngleError, bind
 from pyv8c.web.graphics.webgl.backends import egl as angle_module
 
 
-def test_missing_libraries_fail_clearly(tmp_path):
+async def test_missing_libraries_fail_clearly(tmp_path):
     with pytest.raises(AngleError, match='ANGLE library not found'):
         AngleContext(tmp_path)
 
 
-def test_linux_prefers_surfaceless_display(monkeypatch):
+async def test_linux_prefers_surfaceless_display(monkeypatch):
     monkeypatch.setattr(angle_module, 'sys', SimpleNamespace(platform='linux'))
     context = AngleContext.__new__(AngleContext)
     context._query_string = lambda display, name: b'EGL_MESA_platform_surfaceless EGL_EXT_platform_base'
@@ -28,7 +28,7 @@ def test_linux_prefers_surfaceless_display(monkeypatch):
     assert context._select_display() == 42
 
 
-def test_linux_falls_back_when_surfaceless_is_unavailable(monkeypatch):
+async def test_linux_falls_back_when_surfaceless_is_unavailable(monkeypatch):
     monkeypatch.setattr(angle_module, 'sys', SimpleNamespace(platform='linux'))
     context = AngleContext.__new__(AngleContext)
     context._query_string = lambda display, name: b'EGL_EXT_platform_base'
@@ -36,37 +36,37 @@ def test_linux_falls_back_when_surfaceless_is_unavailable(monkeypatch):
     assert context._select_display() == 73
 
 
-def test_browser_reports_missing_angle_libraries(tmp_path):
-    from pyv8c import Browser
+async def test_browser_reports_missing_angle_libraries(tmp_path):
+    from pyv8c.async_api import Browser
     with pytest.raises(AngleError, match='ANGLE library not found'):
-        Browser(real_network=False, angle_library_dir=tmp_path)
+        (await Browser(real_network=False, angle_library_dir=tmp_path).__aenter__())
 
 
-def test_browser_reports_missing_optional_dependency(monkeypatch):
-    from pyv8c import Browser
+async def test_browser_reports_missing_optional_dependency(monkeypatch):
+    from pyv8c.async_api import Browser
     monkeypatch.setitem(sys.modules, 'comfy_angle', None)
     with pytest.raises(ImportError, match=r'install pyv8c\[angle\]'):
-        Browser(real_network=False, webgl_backend='angle')
+        (await Browser(real_network=False, webgl_backend='angle').__aenter__())
 
 
-def test_default_browser_does_not_import_angle(monkeypatch):
-    from pyv8c import Browser
+async def test_default_browser_does_not_import_angle(monkeypatch):
+    from pyv8c.async_api import Browser
     monkeypatch.setitem(sys.modules, 'comfy_angle', None)
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         assert browser._graphics_backend is None
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_browser_rejects_unknown_webgl_backend():
-    from pyv8c import Browser
+async def test_browser_rejects_unknown_webgl_backend():
+    from pyv8c.async_api import Browser
     with pytest.raises(ValueError, match='webgl_backend'):
-        Browser(real_network=False, webgl_backend='invalid')
+        (await Browser(real_network=False, webgl_backend='invalid').__aenter__())
 
 
-def test_webgl_buffer_hook_receives_the_typed_array_view():
-    from pyv8c import Browser
+async def test_webgl_buffer_hook_receives_the_typed_array_view():
+    from pyv8c.async_api import Browser
 
     seen = []
 
@@ -74,8 +74,8 @@ def test_webgl_buffer_hook_receives_the_typed_array_view():
         values = [data[index] for index in range(int(data._get('length')))]
         seen.append(struct.pack('<' + 'f' * len(values), *values))
 
-    browser = Browser(real_network=False, interface_overrides={
-        'WebGLRenderingContext': {'bufferData': capture}})
+    browser = (await Browser(real_network=False, interface_overrides={
+        'WebGLRenderingContext': {'bufferData': capture}}).__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate('''(() => {
@@ -84,12 +84,12 @@ def test_webgl_buffer_hook_receives_the_typed_array_view():
           gl.bufferData(gl.ARRAY_BUFFER, array.subarray(1, 3), gl.STATIC_DRAW);
         })()''')
     finally:
-        browser.close()
+        (await browser.close())
     assert seen == [struct.pack('<ff', -1, 0.5)]
 
 
 @pytest.mark.skipif(not os.environ.get('PYV8C_ANGLE_DIR'), reason='ANGLE libraries not supplied')
-def test_offscreen_triangle_and_context_cleanup():
+async def test_offscreen_triangle_and_context_cleanup():
     with AngleContext(os.environ['PYV8C_ANGLE_DIR'], 16, 16) as context:
         gl = context.gl
         u, i, p = c.c_uint, c.c_int, c.c_void_p
@@ -157,7 +157,7 @@ def test_offscreen_triangle_and_context_cleanup():
 
 
 @pytest.mark.skipif(not os.environ.get('PYV8C_ANGLE_DIR'), reason='ANGLE libraries not supplied')
-def test_closing_one_context_preserves_the_other():
+async def test_closing_one_context_preserves_the_other():
     with AngleContext(os.environ['PYV8C_ANGLE_DIR']) as first:
         second = AngleContext(os.environ['PYV8C_ANGLE_DIR'])
         second.close()
@@ -167,14 +167,14 @@ def test_closing_one_context_preserves_the_other():
 
 @pytest.mark.skipif(not os.environ.get('PYV8C_ANGLE_DIR'), reason='ANGLE libraries not supplied')
 @pytest.mark.parametrize('automatic', [False, True])
-def test_page_webgl_triangle_uses_angle(automatic):
-    from pyv8c import Browser
+async def test_page_webgl_triangle_uses_angle(automatic):
+    from pyv8c.async_api import Browser
     if automatic:
         pytest.importorskip('comfy_angle')
         options = {'webgl_backend': 'angle'}
     else:
         options = {'angle_library_dir': os.environ['PYV8C_ANGLE_DIR']}
-    browser = Browser(real_network=False, **options)
+    browser = (await Browser(real_network=False, **options).__aenter__())
     try:
         assert not browser.bindings.overrides
         page = browser.new_profile().new_page()
@@ -206,18 +206,18 @@ def test_page_webgl_triangle_uses_angle(automatic):
         })()''')
         assert result == [[255, 0, 0, 255], [0, 0, 0, 0]]
     finally:
-        browser.close()
+        (await browser.close())
     assert not browser._graphics_backend._contexts
 
 
 @pytest.mark.skipif(not os.environ.get('PYV8C_ANGLE_DIR'), reason='ANGLE libraries not supplied')
-def test_angle_state_shader_buffer_and_canvas_encoding():
+async def test_angle_state_shader_buffer_and_canvas_encoding():
     import base64
     import io
     from PIL import Image
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser
 
-    browser = Browser(real_network=False, angle_library_dir=os.environ['PYV8C_ANGLE_DIR'])
+    browser = (await Browser(real_network=False, angle_library_dir=os.environ['PYV8C_ANGLE_DIR']).__aenter__())
     try:
         page = browser.new_profile().new_page()
         result = page.evaluate('''(() => {
@@ -257,7 +257,7 @@ def test_angle_state_shader_buffer_and_canvas_encoding():
           const offscreenGL = offscreen.getContext('webgl');
           offscreenGL.clearColor(0, 1, 0, 1); offscreenGL.clear(offscreenGL.COLOR_BUFFER_BIT);
           offscreen.convertToBlob().then(blob => window.offscreenResult = [blob.type, blob.size > 0]);''')
-        page.run_until_idle(timeout=2)
+        (await page.run_until_idle(timeout=2))
         assert page.evaluate('window.offscreenResult') == ['image/png', True]
     finally:
-        browser.close()
+        (await browser.close())

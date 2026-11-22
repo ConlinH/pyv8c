@@ -1,8 +1,8 @@
 """Public runtime surface for pyv8c.
 
-Applications drive a :class:`Browser` realm through JavaScript.  Web interface
+Applications choose ``pyv8c.sync_api`` or ``pyv8c.async_api`` explicitly.  Web interface
 implementation classes are Feature internals: they stay in the package that owns
-them, and the root exports only the object model, the errors an application
+them, and the root exports only the errors an application
 catches, and the network extension points.
 """
 
@@ -13,9 +13,6 @@ from importlib import import_module
 from ._version import __version__
 
 _EXPORTS = {
-    "Browser": ".platform",
-    "Profile": ".platform",
-    "Page": ".platform",
     "DevToolsHandle": ".platform",
     "DevToolsOptions": ".platform",
     "BrowserEnvironment": ".foundation.environment",
@@ -30,6 +27,7 @@ _EXPORTS = {
     "NetworkResponse": ".network.models",
     "NetworkUnavailableError": ".network.models",
     "HostFailure": ".foundation.host_errors",
+    "RequestTimeout": ".foundation.host_errors",
 }
 for _name in (
     "PageError", "PageTypeError", "PageRangeError", "PageReferenceError", "PageSyntaxError", "PageURIError", "PageEvalError",

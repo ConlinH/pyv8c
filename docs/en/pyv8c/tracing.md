@@ -1,4 +1,4 @@
-# Runtime tracing
+# Browser tracing
 
 [简体中文](../../pyv8c/tracing.md) | **English**
 
@@ -9,16 +9,15 @@
 Trace observes the arguments, results, and exceptions of binding operations; request interceptors change resource results, and the two are independent.
 
 ```python
-from pyv8c import Browser
+from pyv8c.async_api import Browser, run
 
-browser = Browser(real_network=False, traceable=True)
-try:
-    page = browser.new_profile().new_page()
-    page.trace = True
-    page.evaluate("document.createElement('div').id")
-    page.trace = False
-finally:
-    browser.close()
+async def main():
+    async with Browser(real_network=False, traceable=True) as browser:
+        page = browser.new_profile().new_page()
+        page.trace = True
+        page.evaluate("document.createElement('div').id")
+        page.trace = False
+run(main())
 ```
 
 `trace=True` starts tracing on and allows it; `traceable=True` allows it to be enabled later. When both are off, you cannot temporarily set a page's trace to True. `page.trace` accepts only bool, and switching is serialized through the owner without rebuilding the page object.
@@ -30,13 +29,13 @@ Profile and Page can each set their own initial trace; configuration on Browser 
 `trace_scripts` accepts a Glob pattern string or a non-empty list of patterns. Patterns are matched case-sensitively against the **complete script URL**; `*` matches any length and `?` matches a single character; query parameters take part in matching. Filtering happens at the native trace entry, and unmatched operations do not convert trace arguments or enter callbacks.
 
 ```python
-browser = Browser(trace=True, trace_scripts="https://cdn.example.test/sdk/p.js*")
+from pyv8c.async_api import Browser, run
 
-# You can observe several files at once, including versions whose query parameters keep changing.
-browser = Browser(trace=True, trace_scripts=[
-    "https://cdn.example.test/sdk/p.js?*",
-    "https://cdn.example.test/sdk/ips.js?*",
-])
+async def main():
+    async with Browser(trace=True, trace_scripts='https://cdn.example.test/sdk/p.js*') as browser:
+        async with Browser(trace=True, trace_scripts=['https://cdn.example.test/sdk/p.js?*', 'https://cdn.example.test/sdk/ips.js?*']) as browser:
+            pass
+run(main())
 ```
 
 `new_profile(trace_scripts=...)` and `new_page(trace_scripts=...)` can override the upper-level configuration; when omitted they inherit, and explicitly passing `None` clears the upper-level filter and traces all scripts. An iframe inherits the parent page's patterns, and a Worker inherits the patterns of the page that created it; a new Realm after navigation keeps the page's configuration. `page.trace` still only turns tracing on or off.

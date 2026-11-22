@@ -1,12 +1,14 @@
 # 任务调度
 
+Browser 使用同线程与协作式等待；完整契约见[协作式 Browser](cooperative-runtime.md)。
+
 **简体中文** | [English](../en/pyv8c/task-scheduling.md)
 
 [文档索引](../README.md)
 
 ## 执行所有权
 
-独立 `new_page()` 创建 WindowExecutionGroup，独占 owner 线程和 Isolate。iframe 使用同一执行组；同有效 origin 的 Realm 共享 Agent，其他 Agent 独立排队但仍在该 owner 线程运行。opaque origin 按身份 token 区分，初始 about:blank、srcdoc 和 Blob 的来源按创建关系继承。
+独立 `new_page()` 创建独立 WindowExecutionGroup，拥有各自的 Isolate、Agent 和帧时钟；其 owner 线程是启动 Browser 的应用线程，与其他页面共享，只有 Worker 使用独立线程。iframe 使用同一执行组；同有效 origin 的 Realm 共享 Agent，其他 Agent 独立排队但仍在该 owner 线程运行。opaque origin 按身份 token 区分，初始 about:blank、srcdoc 和 Blob 的来源按创建关系继承。
 
 每个 Agent 持有任务源队列与显式 V8 微任务队列，Dedicated Worker 使用独立线程、Isolate、Agent 和事件循环。同步 iframe 访问无需跨线程等待；不相关执行组之间不允许直接传递活 JS 对象。
 
@@ -20,6 +22,31 @@ OfflineAudioContext 的完成通知使用 media-element 来源，避免已完成
 
 跨来源不存在一条应被固定的 Chrome 全序，测试约束必要因果顺序和不饥饿。当前不实现完整加载提级、后台预算或动态输入优先级。
 
+owner 从一次任务扫描开始记录唤醒序号。投递方先发布任务或期限，再增加序号并通知条件变量；
+owner 只有在序号未变化时才原子地进入等待。空闲和有限期限使用同一等待协议，不轮询，也不启动额外 asyncio loop。
+
+页面命令直接作为托管任务的回调记录，由 Agent 入队后通知 owner；执行器不追加同一次投递的唤醒。
+独立控制队列仍自行通知。任务扫描确认空闲后只重新读取期限，并在条件锁内校验扫描前的序号，
+不重复扫描所有任务、前台任务及渲染来源。扫描期间的新投递通过序号保留，到期 timer 通过期限重新驱动。
+命令登记与路由引用设置共用提交锁，取消、完成和关闭均清理路由引用；取消锁与当前 Agent 锁相同时，
+票据校验复用已持有的锁，迁移票据仍获取其原锁。来源轮转、操作预算和微任务检查点规则不变。
+
+同步命令使用单次完成记录；排队超时阻止执行，已开始的操作保留原生终止与迟到结果日志。
+结果在预算清理后发布。脚本拥有其微任务检查点；返回对象先完成脚本检查点再复制，
+复制过程中执行的 getter 所产生的任务在返回前处理，原始值无需第二次检查点。
+
+迟到日志的对象格式化或日志输出失败不会关闭执行器；执行终止信号仍向外传播。
+脚本入口的关闭状态检查或 DevTools 前置钩子失败时，也完成所属检查点，避免 Agent 残留为忙碌状态。
+前置钩子失败后不调用后置钩子，保留原始错误；执行终止时仍遵守不再运行页面 JS 的规则。
+
+启用 `threaded_loaders` 时，同步资源加载等待同时受请求期限、当前窗口操作预算和停止请求约束。
+后台 loader 无法强制中断，但其迟到完成不会继续占用已退出等待的 owner。宿主 HTTP Future 在
+页面关闭或文档替换时以 `HostStateError` 结束；显式取消和迟到结果不会再次完成同一个 Future。
+导航成功替换 Realm 后，新 Promise 使用新上下文，已创建的 resolver 仍保留原上下文。
+
+任务取消在锁内标记状态并摘除引用，在调度锁和文档路由锁退出后回收 callback/context。
+文档失效、队列关闭及无效任务筛选遵守同一规则，允许析构和弱引用回调重新进入执行器。
+
 ## 微任务与拒绝通知
 
 Promise、queueMicrotask 和 MutationObserver 使用所属 Agent 的显式微任务队列。普通属性读取、对象转换和嵌套跨 Realm 调用不应意外启动检查点；脚本与回调清理在 JS 栈条件允许时检查，任务结束兜底，并防止重入。
@@ -32,7 +59,7 @@ Promise、queueMicrotask 和 MutationObserver 使用所属 Agent 的显式微任
 
 外部网络完成投递所属 networking 任务；返回 owner 后的响应转换、跳转和内部 continuation 可在该任务内继续。缓存、本地 URL 和 inline loader 的异步最终结果同样通过队列交付，不因当前在 owner 上就同步调用最终用户回调。
 
-导航不在 owner 阻塞等待主文档网络。同步宿主 `goto()` 等待操作 Future，owner 继续处理可运行工作；owner 内部不能同步等待尚未完成的操作，也不能嵌套驱动事件循环完成等待。
+导航不在 owner 阻塞等待主文档网络。`await page.goto()` 协作等待导航完成，owner 可继续处理可运行工作；owner 内部不能同步等待尚未完成的操作，也不能嵌套驱动事件循环完成等待。
 
 | 等待入口 | 判断条件 |
 | --- | --- |

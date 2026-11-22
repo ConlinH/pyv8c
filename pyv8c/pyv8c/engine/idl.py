@@ -540,9 +540,10 @@ class Idl:
         self._descendants: dict[str, tuple] = {}
         self._ancestors: dict[str, tuple] = {}
         self._members: dict[tuple, IdlMember | None] = {}
-        #: ``interface -> (kind, name) -> IdlMember``: what :meth:`_own_member` answers without
+        #: ``interface -> (kind, name) -> IdlMember``: what :meth:`_own_member_index` answers without
         #: rebuilding the member list and re-sorting it on every walk up the parent chain.
         self._member_index: dict[str, dict] = {}
+        self._descendant_members: dict[str, dict] = {}
         self._declared: dict[tuple, bool] = {}
         self._exposed: dict[tuple, tuple] = {}
         self._aliases: dict[str, str] | None = None
@@ -714,16 +715,20 @@ class Idl:
             return self._members[key]
         found = None
         for current in self.ancestors(name):
-            match = self._own_member(current, public_name, kind)
+            match = self._own_member_index(current).get((kind, public_name))
             if match is not None:
                 found = match
                 break
         if found is None and not self._omits_anywhere(name, public_name):
             # A descendant can carry a WorkerGlobalScope member, not one this browser omits.
-            for candidate in self.descendants(name):
-                found = self._own_member(candidate, public_name, kind)
-                if found is not None:
-                    break
+            index = self._descendant_members.get(name)
+            if index is None:
+                index = {}
+                for candidate in self.descendants(name):
+                    for member_key, member in self._own_member_index(candidate).items():
+                        index.setdefault(member_key, member)
+                self._descendant_members[name] = index
+            found = index.get((kind, public_name))
         self._members[key] = found
         return found
 
@@ -733,7 +738,7 @@ class Idl:
             return False
         return any(self.profile.omits(name, location, public_name) for location in LOCATIONS)
 
-    def _own_member(self, name, public_name, kind) -> IdlMember | None:
+    def _own_member_index(self, name) -> dict:
         index = self._member_index.get(name)
         if index is None:
             index = {}
@@ -744,7 +749,7 @@ class Idl:
                 if held is None or (member.main_world and not held.main_world):
                     index[(member.kind, member.name)] = member
             self._member_index[name] = index
-        return index.get((kind, public_name))
+        return index
 
     def declares(self, name, public_name, kind) -> bool:
         """Whether the document declares this member anywhere near the interface."""

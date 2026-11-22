@@ -1,4 +1,4 @@
-"""Browser-facing ``document.cookie`` behavior."""
+"""Runtime-facing ``document.cookie`` behavior."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -7,7 +7,7 @@ from urllib.request import urlopen
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.fetch.response import Response
 
 
@@ -39,7 +39,7 @@ def local_server():
 
 
 @pytest.fixture
-def browser(local_server):
+async def browser(local_server):
     def load(url, _request):
         with urlopen(url, timeout=5) as response:
             return Response(
@@ -52,26 +52,28 @@ def browser(local_server):
                 },
             )
 
-    instance = Browser(resource_loader=load, stub_logging="off")
+    instance = (await Browser(resource_loader=load, stub_logging="off").__aenter__())
     try:
         yield instance
     finally:
-        instance.close()
+        (await instance.close())
 
 
-def test_document_cookie_reads_writes_and_updates_shared_context(browser, local_server):
+async def test_document_cookie_reads_writes_and_updates_shared_context(browser, local_server):
     context = browser.new_profile()
-    page = context.new_page(f"{local_server}/app/index.html")
+    page = context.new_page()
+    await page.goto(f"{local_server}/app/index.html")
     assert page.evaluate("document.cookie") == ""
     assert page.evaluate("document.cookie = 'a=1'") == "a=1"
     assert page.evaluate("document.cookie") == "a=1"
     assert page.evaluate("document.cookie = 'b=hello%20world; Path=/app'") == "b=hello%20world; Path=/app"
     assert page.evaluate("document.cookie") == "a=1; b=hello%20world"
-    other = context.new_page(f"{local_server}/app/other")
+    other = context.new_page()
+    await other.goto(f"{local_server}/app/other")
     assert other.evaluate("document.cookie") == "a=1; b=hello%20world"
 
 
-def test_document_cookie_is_an_enumerable_prototype_accessor_and_ignores_opaque_urls(browser):
+async def test_document_cookie_is_an_enumerable_prototype_accessor_and_ignores_opaque_urls(browser):
     page = browser.new_profile().new_page()
     descriptor = page.evaluate("Object.getOwnPropertyDescriptor(Document.prototype, 'cookie')")
     assert descriptor["get"] is not None
@@ -82,9 +84,10 @@ def test_document_cookie_is_an_enumerable_prototype_accessor_and_ignores_opaque_
     assert page.evaluate("document.cookie") == ""
 
 
-def test_document_cookie_honors_path_httponly_and_deletion(browser, local_server):
+async def test_document_cookie_honors_path_httponly_and_deletion(browser, local_server):
     context = browser.new_profile()
-    page = context.new_page(f"{local_server}/app/index.html")
+    page = context.new_page()
+    await page.goto(f"{local_server}/app/index.html")
     page.evaluate("document.cookie = 'root=1; Path=/'")
     page.evaluate("document.cookie = 'nested=2; Path=/app' ")
     context.cookies.add_from_response(f"{local_server}/app/index.html", "secret=3; HttpOnly")
@@ -95,13 +98,14 @@ def test_document_cookie_honors_path_httponly_and_deletion(browser, local_server
     assert page.evaluate("document.cookie") == "root=1"
 
 
-def test_document_cookie_ignores_invalid_script_assignments_and_logs_changes(browser, local_server, monkeypatch):
+async def test_document_cookie_ignores_invalid_script_assignments_and_logs_changes(browser, local_server, monkeypatch):
     messages = []
     monkeypatch.setattr(
-        "pyv8c.network.cronet.logger.debug",
+        "pyv8c.network.cookies.logger.debug",
         lambda message, *values: messages.append((message, *values)),
     )
-    page = browser.new_profile().new_page(f"{local_server}/")
+    page = browser.new_profile().new_page()
+    await page.goto(f"{local_server}/")
     page.evaluate("document.cookie = 'bad name=value'")
     assert page.evaluate("document.cookie") == ""
     page.evaluate("document.cookie = 'ok=1'")
@@ -109,9 +113,10 @@ def test_document_cookie_ignores_invalid_script_assignments_and_logs_changes(bro
     assert [entry for entry in messages if "cookie" in entry[0]] == [("cookie changed: {}", "ok=1")]
 
 
-def test_document_cookie_cannot_overwrite_a_httponly_cookie(browser, local_server):
+async def test_document_cookie_cannot_overwrite_a_httponly_cookie(browser, local_server):
     context = browser.new_profile()
-    page = context.new_page(f"{local_server}/")
+    page = context.new_page()
+    await page.goto(f"{local_server}/")
     context.cookies.add_from_response(f"{local_server}/", "session=server; HttpOnly")
     page.evaluate("document.cookie = 'session=script'")
     assert page.evaluate("document.cookie") == ""

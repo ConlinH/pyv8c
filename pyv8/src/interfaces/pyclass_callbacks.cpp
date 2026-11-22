@@ -288,9 +288,7 @@ void py_class_method_callback(const FunctionCallbackInfo<Value> &info)
     }
 }
 // --- Interceptors ---
-static void attribute_get_impl(const FunctionCallbackInfo<Value>& info) {
-    SETUP;
-    if (!context_check_callback(context)) return;
+static void attribute_get_impl(const FunctionCallbackInfo<Value>& info, Local<Context> context) {
     auto* binding = (AttributeSpec*)IsolateState::callback_target(info.Data());
     if (binding == nullptr) { js_throw_py(); return; }
     PyObject* self = binding->getter_receiver ? resolve_receiver(info) : Py_None;
@@ -312,7 +310,7 @@ void py_attribute_for_get(const FunctionCallbackInfo<Value>& info) {
     SETUP;
     if (!context_check_callback(context)) return;
     auto* owner = context_from_v8(context);
-    if (!context_trace_enabled(owner)) { attribute_get_impl(info); return; }
+    if (!context_trace_enabled(owner)) { attribute_get_impl(info, context); return; }
     auto* binding = (AttributeSpec*)IsolateState::callback_target(info.Data());
     if (binding == nullptr) { js_throw_py(); return; }
     PyObject* receiver = binding->getter_receiver ? resolve_receiver(info) : Py_None;
@@ -322,12 +320,12 @@ void py_attribute_for_get(const FunctionCallbackInfo<Value>& info) {
     trace::TraceScope observation(info, 0, binding->name, receiver, owner);
     if (named)
         Py_XDECREF(receiver);
-    attribute_get_impl(info);
+    attribute_get_impl(info, context);
 }
 
-static void attribute_set_impl(const FunctionCallbackInfo<Value>& info, bool instance) {
-    SETUP;
-    if (!context_check_callback(context)) return;
+static void attribute_set_impl(const FunctionCallbackInfo<Value>& info, Local<Context> context,
+                               bool instance) {
+    auto* isolate = info.GetIsolate();
     if (info.Length() < 1) {
         isolate->ThrowException(v8::Exception::TypeError(V8String(isolate, "1 argument required, but only 0 present")));
         return;
@@ -362,7 +360,7 @@ static void attribute_set(const FunctionCallbackInfo<Value>& info, bool instance
     SETUP;
     if (!context_check_callback(context)) return;
     auto* owner = context_from_v8(context);
-    if (!context_trace_enabled(owner)) { attribute_set_impl(info, instance); return; }
+    if (!context_trace_enabled(owner)) { attribute_set_impl(info, context, instance); return; }
     auto* binding = (AttributeSpec*)IsolateState::callback_target(info.Data());
     if (binding == nullptr) { js_throw_py(); return; }
     PyObject* receiver = binding->setter_receiver ? resolve_receiver(info) : Py_None;
@@ -372,7 +370,7 @@ static void attribute_set(const FunctionCallbackInfo<Value>& info, bool instance
     trace::TraceScope observation(info, 1, binding->name, receiver, owner);
     if (named)
         Py_XDECREF(receiver);
-    attribute_set_impl(info, instance);
+    attribute_set_impl(info, context, instance);
 }
 
 void py_attribute_for_instance_set(const FunctionCallbackInfo<Value>& info) { attribute_set(info, true); }

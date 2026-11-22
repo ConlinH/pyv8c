@@ -211,16 +211,16 @@ def _for_case(records, name):
 
 
 @pytest.fixture(scope="module")
-def reference():
+async def reference():
     try:
-        with chrome_reference() as session:
+        async with chrome_reference() as session:
             yield session
     except ReferenceUnavailable as unavailable:
         pytest.skip(str(unavailable))
 
 
 @pytest.fixture(scope="module")
-def compared(reference):
+async def compared(reference):
     """Both browsers against the same two servers: what each observed and sent."""
     servers = []
     for _ in range(2):
@@ -233,32 +233,32 @@ def compared(reference):
     try:
         with LOCK:
             RECORDS.clear()
-        chrome_page = reference.browser.new_page()
+        chrome_page = (await reference.browser.new_page())
         try:
-            chrome_page.goto(SAME["origin"] + "/page", wait_until="load")
-            chrome_page.evaluate(script)
-            chrome_page.wait_for_timeout(2000)
-            chrome = _values(chrome_page.evaluate("JSON.stringify(window.__obs)"))
+            (await chrome_page.goto(SAME["origin"] + "/page", wait_until="load"))
+            (await chrome_page.evaluate(script))
+            (await chrome_page.wait_for_timeout(2000))
+            chrome = _values((await chrome_page.evaluate("JSON.stringify(window.__obs)")))
             chrome_wire = _requests()
-            chrome_navigation = _navigation(reference, SAME["origin"])
+            chrome_navigation = (await _navigation(reference, SAME["origin"]))
         finally:
-            chrome_page.close()
+            (await chrome_page.close())
 
-        from pyv8c import Browser
+        from pyv8c.async_api import Browser
 
         with LOCK:
             RECORDS.clear()
-        browser = Browser(real_network=True, stub_logging="off")
+        browser = (await Browser(real_network=True, stub_logging="off").__aenter__())
         try:
             page = browser.new_profile().new_page()
-            page.goto(SAME["origin"] + "/page", wait_until="load")
+            (await page.goto(SAME["origin"] + "/page", wait_until="load"))
             page.evaluate(script)
-            page.wait_for("window.__done")
+            (await page.wait_for("window.__done"))
             mine = _values(page.evaluate("JSON.stringify(window.__obs)"))
             mine_wire = _requests()
-            mine_navigation = _navigation(browser, SAME["origin"])
+            mine_navigation = (await _navigation(browser, SAME["origin"]))
         finally:
-            browser.close()
+            (await browser.close())
         yield {"chrome": chrome, "pyv8c": mine, "chrome_wire": chrome_wire,
                "pyv8c_wire": mine_wire, "chrome_navigation": chrome_navigation,
                "pyv8c_navigation": mine_navigation}
@@ -268,55 +268,55 @@ def compared(reference):
             server.server_close()
 
 
-def _navigation(driver, origin):
+async def _navigation(driver, origin):
     """What each side reports for a same-origin and a cross-origin navigation."""
     report = {}
     if hasattr(driver, "browser"):  # the Chrome reference
-        page = driver.browser.new_page()
+        page = await driver.browser.new_page()
         try:
             for label, path in (("same", "/nav/same1"), ("cross", "/nav/cross")):
-                page.goto(origin + path, wait_until="load")
-                report[label] = _values(page.evaluate(NAVIGATION))
+                (await page.goto(origin + path, wait_until="load"))
+                report[label] = _values(await page.evaluate(NAVIGATION))
         finally:
-            page.close()
+            await page.close()
         return report
     page = driver.new_profile().new_page()
     try:
         for label, path in (("same", "/nav/same1"), ("cross", "/nav/cross")):
-            page.goto(origin + path, wait_until="load")
+            (await page.goto(origin + path, wait_until="load"))
             report[label] = _values(page.evaluate(NAVIGATION))
     finally:
-        driver.close()
+        await driver.close()
     return report
 
 
-def test_a_followed_redirect_lands_where_chrome_lands(compared):
+async def test_a_followed_redirect_lands_where_chrome_lands(compared):
     for name, _init, _status in FOLLOWED:
         assert compared["pyv8c"][name] == compared["chrome"][name], name
 
 
-def test_a_method_is_rewritten_exactly_where_chrome_rewrites_it(compared):
+async def test_a_method_is_rewritten_exactly_where_chrome_rewrites_it(compared):
     for name, _init, _status in REWRITTEN:
         assert compared["pyv8c"][name] == compared["chrome"][name], name
 
 
-def test_a_twenty_hop_chain_lands_where_chrome_lands(compared):
+async def test_a_twenty_hop_chain_lands_where_chrome_lands(compared):
     theirs, ours = compared["chrome"].get("chain20"), compared["pyv8c"].get("chain20")
     assert ours is not None and ours == theirs, f"pyv8c {ours}; Chrome {theirs}"
 
 
-def test_manual_reads_as_an_opaque_redirect_on_both_sides(compared):
+async def test_manual_reads_as_an_opaque_redirect_on_both_sides(compared):
     for name, _init, _status in OPAQUE:
         assert compared["pyv8c"][name] == compared["chrome"][name], name
 
 
-def test_a_load_chrome_refuses_is_refused_here_too(compared):
+async def test_a_load_chrome_refuses_is_refused_here_too(compared):
     for name, _init, _status in REFUSED:
         assert compared["chrome"][name]["ok"] is False, f"{name}: the reference followed it"
         assert compared["pyv8c"][name]["ok"] is False, f"{name}: pyv8c followed it"
 
 
-def test_a_cross_origin_chain_lands_on_the_same_url_with_the_same_body(compared):
+async def test_a_cross_origin_chain_lands_on_the_same_url_with_the_same_body(compared):
     for name, _init, _status in CROSSED:
         theirs = {key: value for key, value in compared["chrome"][name].items()
                   if key not in UNCOMPARED}
@@ -325,7 +325,7 @@ def test_a_cross_origin_chain_lands_on_the_same_url_with_the_same_body(compared)
         assert ours == theirs, name
 
 
-def test_each_case_makes_the_same_requests_in_the_same_order(compared):
+async def test_each_case_makes_the_same_requests_in_the_same_order(compared):
     for name, _init, _status in CASES:
         theirs = [(method, path) for method, path, _auth, _cookie
                   in _for_case(compared["chrome_wire"], name)]
@@ -334,14 +334,14 @@ def test_each_case_makes_the_same_requests_in_the_same_order(compared):
         assert ours == theirs, name
 
 
-def test_a_cross_origin_hop_loses_authorization_on_both_sides(compared):
+async def test_a_cross_origin_hop_loses_authorization_on_both_sides(compared):
     theirs = [record for record in compared["chrome_wire"] if record[1] == "/end-cors-crossAuth"]
     ours = [record for record in compared["pyv8c_wire"] if record[1] == "/end-cors-crossAuth"]
     assert theirs and ours
     assert theirs[0][2] is None and ours[0][2] is None
 
 
-def test_a_cookie_set_on_a_redirect_hop_reaches_the_next_one_on_both_sides(compared):
+async def test_a_cookie_set_on_a_redirect_hop_reaches_the_next_one_on_both_sides(compared):
     theirs = [record for record in compared["chrome_wire"] if record[1] == "/cookie-end"]
     ours = [record for record in compared["pyv8c_wire"] if record[1] == "/cookie-end"]
     assert theirs and ours
@@ -349,5 +349,5 @@ def test_a_cookie_set_on_a_redirect_hop_reaches_the_next_one_on_both_sides(compa
     assert compared["pyv8c"]["cookieHop"]["text"] == compared["chrome"]["cookieHop"]["text"]
 
 
-def test_a_navigation_counts_its_redirects_the_way_chrome_does(compared):
+async def test_a_navigation_counts_its_redirects_the_way_chrome_does(compared):
     assert compared["pyv8c_navigation"] == compared["chrome_navigation"]

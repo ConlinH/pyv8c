@@ -175,7 +175,7 @@ def test_a_member_the_convention_names_binds_without_a_declaration(bindings):
     compiled = bindings._binder.compile("Element")
     methods = {member.name: member.callback for member in compiled.spec.methods}
 
-    assert "setAttributeNS" not in (cls.__dict__.get("__idl_overrides__") or {}), \
+    assert "setAttributeNS" not in (cls.__dict__.get("__idl_overrides__") or {}),\
         "the convention is what binds it"
     assert methods["setAttributeNS"].__name__ == "fn_setAttributeNS"
     assert not getattr(methods["setAttributeNS"], "__v8_idl_stub__", False)

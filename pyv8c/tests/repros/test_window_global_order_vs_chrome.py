@@ -17,44 +17,44 @@ def _names(page):
     return page.evaluate("Object.getOwnPropertyNames(window)")
 
 
-def _here():
-    from pyv8c import Browser
+async def _here():
+    from pyv8c.async_api import Browser
 
-    browser = Browser(real_network=False, stub_logging="off")
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
         return _names(page)
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def _there():
-    with chrome_reference() as reference:
-        page = reference.browser.new_page()
+async def _there():
+    async with chrome_reference() as reference:
+        page = (await reference.browser.new_page())
         try:
-            page.route(
+            (await page.route(
                 "**/*",
                 lambda route: route.fulfill(
                     status=200, content_type="text/html", body="<body></body>"
                 ),
-            )
-            page.goto(CHROME_PAGE)
-            return _names(page)
+            ))
+            (await page.goto(CHROME_PAGE))
+            return await page.evaluate("Object.getOwnPropertyNames(window)")
         finally:
-            page.close()
+            (await page.close())
 
 
 @pytest.fixture(scope="module")
-def orders():
-    here = _here()
+async def orders():
+    here = (await _here())
     try:
-        there = _there()
+        there = (await _there())
     except ReferenceUnavailable as error:
         pytest.skip(str(error))
     return here, there
 
 
-def test_the_legacy_factories_lead_the_constructor_block(orders):
+async def test_the_legacy_factories_lead_the_constructor_block(orders):
     here, there = orders
     start = here.index("Option")
     assert here[start:start + 9] == [
@@ -65,7 +65,7 @@ def test_the_legacy_factories_lead_the_constructor_block(orders):
     assert there.index("Option") < there.index("webkitURL") < there.index("window")
 
 
-def test_the_template_constructors_keep_chrome_order(orders):
+async def test_the_template_constructors_keep_chrome_order(orders):
     here, there = orders
     here_head = here[here.index("Option"):here.index("window")]
     there_head = there[there.index("Option"):there.index("window")]
@@ -75,7 +75,7 @@ def test_the_template_constructors_keep_chrome_order(orders):
     ]
 
 
-def test_the_window_members_keep_chrome_order(orders):
+async def test_the_window_members_keep_chrome_order(orders):
     here, there = orders
     here_tail = here[here.index("window"):here.index("caches")]
     there_tail = there[there.index("window"):there.index("caches")]
@@ -85,44 +85,44 @@ def test_the_window_members_keep_chrome_order(orders):
     ]
 
 
-def test_the_context_dependent_members_follow_the_operations_in_both(orders):
+async def test_the_context_dependent_members_follow_the_operations_in_both(orders):
     here, there = orders
     for names in (here, there):
         assert names.index("caches") > names.index("fetch")
         assert names.index("cookieStore") > names.index("alert")
 
 
-def test_the_host_global_precedes_the_context_dependent_members_in_both(orders):
+async def test_the_host_global_precedes_the_context_dependent_members_in_both(orders):
     here, there = orders
     for names in (here, there):
         assert names.index("chrome") < names.index("crashReport")
         assert names.index("crashReport") < names.index("caches")
 
 
-def test_full_order_matches_same_release_chrome():
+async def test_full_order_matches_same_release_chrome():
     """Compare the complete key order in the same secure document context."""
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser
     from pyv8c.engine.idl import Idl
 
-    browser = Browser(real_network=False, stub_logging="off")
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<!doctype html><body></body>", url=CHROME_PAGE)
-        page.wait_for_load_state("load")
+        (await page.set_content("<!doctype html><body></body>", url=CHROME_PAGE, wait_until="commit"))
+        (await page.wait_for_load_state("load"))
         here = _names(page)
     finally:
-        browser.close()
+        (await browser.close())
     try:
-        with chrome_reference() as reference:
+        async with chrome_reference() as reference:
             if reference.version != Idl.load().metadata.get("chromium_version"):
                 pytest.skip("the installed Chrome and the IDL baseline have different releases")
-            page = reference.browser.new_page()
+            page = (await reference.browser.new_page())
             try:
-                page.route("**/*", lambda route: route.fulfill(status=200, content_type="text/html", body="<!doctype html><body></body>"))
-                page.goto(CHROME_PAGE)
-                there = _names(page)
+                (await page.route("**/*", lambda route: route.fulfill(status=200, content_type="text/html", body="<!doctype html><body></body>")))
+                (await page.goto(CHROME_PAGE))
+                there = await page.evaluate("Object.getOwnPropertyNames(window)")
             finally:
-                page.close()
+                (await page.close())
     except ReferenceUnavailable as error:
         pytest.skip(str(error))
     assert here == there

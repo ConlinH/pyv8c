@@ -1,7 +1,7 @@
 """Explicit 145 baseline; iterable semantics are independent of profile shape."""
 from pathlib import Path
 import pytest
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 IDL = Path(__file__).resolve().parents[2] / "idls" / "145.0.7632.162.zip"
 
@@ -83,19 +83,19 @@ EXPECTED = {
 }
 
 @pytest.mark.parametrize('name,script', CASES)
-def test_iteration_cases(name, script):
-    browser=Browser(idl_path=IDL, real_network=False, stub_logging='off')
+async def test_iteration_cases(name, script):
+    browser=(await Browser(idl_path=IDL, real_network=False, stub_logging='off').__aenter__())
     try:
-        page=browser.new_profile().new_page();page.set_content('<body></body>',url='https://iteration.test/')
+        page=browser.new_profile().new_page();(await page.set_content('<body></body>',url='https://iteration.test/', wait_until="commit"))
         result=page.evaluate('('+script+')()')
         assert result == EXPECTED[name]
-    finally: browser.close()
+    finally: (await browser.close())
 
 
-def test_headers_pair_semantics_and_fonts_set_semantics():
-    browser=Browser(idl_path=IDL, real_network=False, stub_logging='off')
+async def test_headers_pair_semantics_and_fonts_set_semantics():
+    browser=(await Browser(idl_path=IDL, real_network=False, stub_logging='off').__aenter__())
     try:
         page=browser.new_profile().new_page()
         assert page.evaluate("JSON.stringify(Array.from(new Headers([['z','1'],['a','2']]).keys()))") == '["a","z"]'
         assert page.evaluate("FontFaceSet.prototype[Symbol.iterator]===FontFaceSet.prototype.values") is True
-    finally: browser.close()
+    finally: (await browser.close())

@@ -1,51 +1,36 @@
-"""Naming, choosing and extending the engines of a browser context.
-
-An HTTP engine performs requests and a WebSocket engine opens sockets; a context
-chooses each on its own, by name or by being handed an instance.  Which keys an
-engine's ``options`` may carry is the engine's own business: each declares its
-set, and a context that passes anything else is told so before it is built (see
-:func:`accepted_option_keys`).
-
-The wording is deliberate: this module may not name the context's own transport
-attribute (``tests/unit/test_architecture.py``), so it talks about engines.
-"""
+"""Engine names, factories and option-key providers."""
 import inspect
 from collections.abc import Callable
+from concurrent.futures import Future
 from typing import Any, Protocol, runtime_checkable
 
 from .cookies import CookieJar
 from .models import NetworkRequest, NetworkResponse, NetworkUnavailableError, RequestHandle
 
-#: Engine kind and the method a ready implementation must expose.
-KIND_METHODS = {"http": "request_sync", "ws": "websocket"}
+KIND_METHODS = {"http": "submit_request", "ws": "websocket"}
 KINDS = tuple(KIND_METHODS)
 
 
 @runtime_checkable
 class HttpTransport(Protocol):
-    """What the rest of the engine needs from an HTTP engine."""
+    """The HTTP surface a ready engine must expose."""
 
-    #: The context's cookie jar, assigned after construction so both share it.
     cookies: CookieJar
 
-    def request_sync(self, request: NetworkRequest) -> NetworkResponse:
-        """Perform *request* on the calling thread.
+    def submit_request(
+        self, request: NetworkRequest, handle: RequestHandle, remaining: Callable[[], float | None],
+    ) -> Future[NetworkResponse]:
+        """Queue I/O without waiting and return its transport-owned completion.
 
-        ``request.redirect`` is the engine's own instruction: ``"follow"`` lets it run
-        the chain by itself, and every other mode means the caller inspects the hops,
-        so an engine that cannot be told to stop must declare ``FOLLOWS_ITSELF``
-        rather than follow quietly.
-        """
-
-    def request_async(self, tasks, request: NetworkRequest, callback) -> RequestHandle:
-        """Perform *request* off-thread and report a transport-neutral result.
-
-        ``callback(response, error)`` may run inline or on a worker thread.
-        It must only hand off data; Fetcher owns asynchronous owner delivery.
+        An inspectable engine returns the first wire response to a manual hop.
+        Register interruption with the handle before starting I/O. Check
+        ``remaining()`` before sending and enforce that deadline while running.
+        Use ``pyv8c.RequestTimeout`` for expiry of this deadline. Settle the
+        Future only after cleanup, including when interrupted.
         """
 
     def close(self) -> None:
-        """Release every resource this engine owns."""
+        """Synchronously release the engine's resources and return None."""
 
 
 @runtime_checkable
@@ -63,6 +48,25 @@ class WebSocketTransport(Protocol):
 
     def close(self) -> None:
         """Release every resource this engine owns."""
+
+
+def require_http_close(engine):
+    close = getattr(engine, "close", None)
+    implementation = getattr(close, "__call__", None)
+    if not callable(close) or any(
+        inspect.iscoroutinefunction(method) or inspect.isasyncgenfunction(method)
+        for method in (close, implementation)
+    ):
+        raise TypeError(f"HTTP engine {type(engine).__name__} must implement synchronous close()")
+    return close
+
+
+def close_http(engine):
+    result = require_http_close(engine)()
+    if inspect.iscoroutine(result):
+        result.close()
+    if result is not None:
+        raise TypeError(f"HTTP engine {type(engine).__name__} close() must return None after cleanup")
 
 
 def _typed_dict_of(annotation):
@@ -88,13 +92,7 @@ def _typed_dict_keys(annotation) -> frozenset[str] | None:
 
 
 def signature_option_keys(target) -> frozenset[str] | None:
-    """The keyword names *target* accepts, or ``None`` when it is open-ended.
-
-    A client's own signature is the honest list of what its engine may hand it.
-    One that swallows ``**kwargs`` without naming them declares nothing -- as
-    does one that types its parameters to type checkers only -- so the engine
-    stays unvalidated rather than being given an invented list.
-    """
+    """The keyword names *target* accepts, or ``None`` when open-ended."""
     try:
         parameters = inspect.signature(target).parameters
     except (TypeError, ValueError):
@@ -113,13 +111,8 @@ def signature_option_keys(target) -> frozenset[str] | None:
     return frozenset(names)
 
 
-#: Built-in engines of each kind by name, plus anything a host registers.
 _FACTORIES: dict[str, dict[str, Callable[..., Any]]] = {kind: {} for kind in KINDS}
-
-#: Lazy providers of each engine's accepted keys; absent means "not validated".
 _OPTION_KEYS: dict[str, dict[str, Callable[[], frozenset[str] | None]]] = {kind: {} for kind in KINDS}
-
-#: Engines that send traffic through a proxy; absent means an open-ended engine whose ignored proxy must be refused here.
 _ACCEPTS_PROXY: dict[str, dict[str, bool]] = {kind: {} for kind in KINDS}
 
 
@@ -136,15 +129,8 @@ def register_transport(name: str, factory: Callable[..., Any], *,
                        proxy: bool = False) -> None:
     """Make *factory* available as an HTTP engine name.
 
-    The factory is called as ``factory(options=<dict or None>)`` per context, so
-    one engine can serve several with different settings; registering an existing
-    name replaces it.  *option_keys* returns the keys ``options`` may carry, or
-    ``None`` when the engine cannot say -- which leaves it unvalidated.  It runs
-    lazily and may import the client it introspects.
-
-    *proxy* declares that this engine honours the ``proxy`` option; an engine
-    that does not declare it is refused one rather than being handed a setting
-    it would ignore.
+    *option_keys* is lazy and ``None`` leaves the engine unvalidated;
+    interruption is registered by the engine for each submission.
     """
     _register("http", name, factory, option_keys, proxy)
 
@@ -179,36 +165,19 @@ def transport_names(kind: str = "http") -> tuple[str, ...]:
 
 
 def accepted_option_keys(name: str, kind: str = "http") -> frozenset[str] | None:
-    """The option keys the *kind* engine registered as *name* accepts.
-
-    ``None`` means it declares no set -- unregistered, or unable to enumerate
-    what it takes -- and is therefore not validated.  The provider may import the
-    optional client, so a missing dependency surfaces here exactly as it would
-    from the engine's own constructor.
-    """
+    """The accepted option keys, or ``None`` when the engine declares none."""
     provider = _OPTION_KEYS[_kind(kind)].get(str(name).strip())
     return None if provider is None else provider()
 
 
 def accepts_proxy(name: str, kind: str = "http") -> bool:
-    """Whether the *kind* engine registered as *name* can be sent through a proxy.
-
-    An engine that never declared it is taken to mean no: a proxy it cannot
-    honour is a configuration mistake the caller is told about, not a setting
-    quietly dropped on the way in.
-    """
+    """Whether the *kind* engine registered as *name* honours a proxy."""
     return _ACCEPTS_PROXY[_kind(kind)].get(str(name).strip(), False)
 
 
 def create_transport(name: str, *, kind: str = "http", options: dict | None = None,
                      strict: bool = False):
-    """Build the *kind* engine registered as *name*.
-
-    Unknown names and missing optional dependencies both raise
-    :class:`NetworkUnavailableError` naming what is registered, so a typo reads
-    as a configuration mistake rather than a network failure.  With *strict*, an
-    option the engine does not accept raises ``TypeError`` before it is built.
-    """
+    """Build the *kind* engine registered as *name*."""
     which = _kind(kind)
     key = str(name).strip()
     factory = _FACTORIES[which].get(key)
@@ -249,16 +218,10 @@ def _websockets(*, options=None):
     return WebSocketsTransport(options=options)
 
 
-def _cronet_keys(kind):
+def _cronet_keys():
     from .cronet import CronetTransport
 
-    return CronetTransport.accepted_option_keys(kind)
-
-
-def _cronet_http_keys(): return _cronet_keys("http")
-
-
-def _cronet_ws_keys(): return _cronet_keys("ws")
+    return CronetTransport.accepted_option_keys()
 
 
 def _curl_cffi_keys():
@@ -274,10 +237,9 @@ def _websockets_keys():
 
 
 register_transport("curl_cffi", _curl_cffi, option_keys=_curl_cffi_keys, proxy=True)
-# cycronet names its proxy option ``proxies``; the bridge renames the context's.
-register_transport("cronet", _cronet, option_keys=_cronet_http_keys, proxy=True)
+# cycronet names its proxy option ``proxies``.
+register_transport("cronet", _cronet, option_keys=_cronet_keys, proxy=True)
 register_ws_transport("websockets", _websockets, option_keys=_websockets_keys, proxy=True)
-register_ws_transport("cronet", _cronet, option_keys=_cronet_ws_keys, proxy=True)
 
 
 __all__ = [

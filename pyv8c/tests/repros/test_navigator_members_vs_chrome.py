@@ -173,51 +173,57 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 @pytest.fixture(scope="module")
-def compared():
+async def compared():
     """The same probe, answered by both browsers from one secure origin."""
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/doc"
     try:
         try:
-            with chrome_reference() as reference:
-                chrome = _chrome_probe(reference, url)
+            async with chrome_reference() as reference:
+                chrome, device_kinds = await _chrome_probe(reference, url)
         except ReferenceUnavailable as unavailable:
             pytest.skip(str(unavailable))
 
-        from pyv8c import Browser
+        from pyv8c.async_api import Browser
 
-        browser = Browser(real_network=True, stub_logging="off")
+        browser = (await Browser(real_network=True, stub_logging="off",
+                                 environment={"media.devices": device_kinds}).__aenter__())
         try:
             page = browser.new_profile().new_page()
-            page.goto(url, wait_until="load")
+            (await page.goto(url, wait_until="load"))
             page.evaluate("(() => { " + PROBE + ".then((value) => { window.__probe = value; },"
                           " (error) => { window.__probe = {rejected: String(error.name)}; }); })()")
-            page.wait_for("typeof window.__probe !== 'undefined'", timeout=5)
+            (await page.wait_for("typeof window.__probe !== 'undefined'", timeout=5))
             mine = normalize(page.evaluate("window.__probe") or {})
         finally:
-            browser.close()
+            (await browser.close())
         yield {"chrome": chrome, "pyv8c": mine}
     finally:
         server.shutdown()
         server.server_close()
 
 
-def _chrome_probe(reference, url):
-    page = reference.browser.new_page()
+async def _chrome_probe(reference, url):
+    page = (await reference.browser.new_page())
     try:
-        page.goto(url, wait_until="load")
-        return page.evaluate(PROBE) or {}
+        (await page.goto(url, wait_until="load"))
+        # The kind list is a host input. Compare API shape and conversion with
+        # the same inputs even when machines have different audio hardware.
+        device_kinds = await page.evaluate(
+            "async () => (await navigator.mediaDevices.enumerateDevices()).map(device => device.kind)"
+        )
+        return (await page.evaluate(PROBE)) or {}, device_kinds
     finally:
-        page.close()
+        (await page.close())
 
 
-def test_the_probe_answered(compared):
+async def test_the_probe_answered(compared):
     assert compared["pyv8c"], "pyv8c recorded nothing"
     assert compared["chrome"], "Chrome recorded nothing"
 
 
-def test_every_member_answers_the_same(compared):
+async def test_every_member_answers_the_same(compared):
     mine, theirs = compared["pyv8c"], compared["chrome"]
     report = "\n".join(f"{key}:\n  pyv8c: {mine.get(key)!r}\n  chrome: {theirs[key]!r}"
                        for key in theirs if mine.get(key) != theirs[key])

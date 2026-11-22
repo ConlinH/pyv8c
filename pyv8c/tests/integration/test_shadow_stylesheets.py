@@ -3,8 +3,8 @@ import pytest
 
 
 @pytest.mark.parametrize('mode', ['open', 'closed'])
-def test_shadow_stylesheet_list_tracks_connected_owners(page, mode):
-    page.set_content('<!doctype html><style>body{margin:0}</style><body></body>')
+async def test_shadow_stylesheet_list_tracks_connected_owners(page, mode):
+    (await page.set_content('<!doctype html><style>body{margin:0}</style><body></body>', wait_until="commit"))
     assert page.evaluate('''(() => {
         const host=document.body.appendChild(document.createElement('div'));
         const root=host.attachShadow({mode:MODE});
@@ -24,8 +24,8 @@ def test_shadow_stylesheet_list_tracks_connected_owners(page, mode):
 
 
 @pytest.mark.parametrize('scope', ['document', 'open', 'closed'])
-def test_old_stylesheets_keep_their_rules_after_owner_changes(page, scope):
-    page.set_content('<!doctype html><body></body>')
+async def test_old_stylesheets_keep_their_rules_after_owner_changes(page, scope):
+    (await page.set_content('<!doctype html><body></body>', wait_until="commit"))
     assert page.evaluate('''(() => {
         const host=document.body.appendChild(document.createElement('div'));
         const root=SCOPE==='document'?host:host.attachShadow({mode:SCOPE});

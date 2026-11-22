@@ -9,16 +9,15 @@
 Trace 观察绑定操作的参数、结果和异常；请求拦截器则会改变资源结果，两者独立。
 
 ```python
-from pyv8c import Browser
+from pyv8c.async_api import Browser, run
 
-browser = Browser(real_network=False, traceable=True)
-try:
-    page = browser.new_profile().new_page()
-    page.trace = True
-    page.evaluate("document.createElement('div').id")
-    page.trace = False
-finally:
-    browser.close()
+async def main():
+    async with Browser(real_network=False, traceable=True) as browser:
+        page = browser.new_profile().new_page()
+        page.trace = True
+        page.evaluate("document.createElement('div').id")
+        page.trace = False
+run(main())
 ```
 
 `trace=True` 初始开启并允许跟踪；`traceable=True` 允许之后开启。两者都关闭时，不能临时将页面 trace 设为 True。`page.trace` 只接受 bool，切换通过 owner 串行执行，不重建页面对象。
@@ -30,13 +29,13 @@ Profile 和 Page 可以设置各自初始 trace，Browser 上的配置不广播�
 `trace_scripts` 接受一个 Glob 模式字符串或非空模式列表。模式对**完整的脚本 URL**做区分大小写的匹配，`*` 匹配任意长度、`?` 匹配单个字符；查询参数参与匹配。筛选发生在原生 trace 入口，未匹配的操作不会转换 trace 参数或进入回调。
 
 ```python
-browser = Browser(trace=True, trace_scripts="https://cdn.example.test/sdk/p.js*")
+from pyv8c.async_api import Browser, run
 
-# 可同时观察多个文件，包括查询参数不断变化的版本。
-browser = Browser(trace=True, trace_scripts=[
-    "https://cdn.example.test/sdk/p.js?*",
-    "https://cdn.example.test/sdk/ips.js?*",
-])
+async def main():
+    async with Browser(trace=True, trace_scripts='https://cdn.example.test/sdk/p.js*') as browser:
+        async with Browser(trace=True, trace_scripts=['https://cdn.example.test/sdk/p.js?*', 'https://cdn.example.test/sdk/ips.js?*']) as browser:
+            pass
+run(main())
 ```
 
 `new_profile(trace_scripts=...)` 和 `new_page(trace_scripts=...)` 可覆盖上层配置；省略时继承，显式传入 `None` 时清除上层筛选并跟踪所有脚本。iframe 继承父页面的模式，Worker 继承创建它的页面的模式；导航后的新 Realm 保留本页面配置。`page.trace` 仍只负责开启或关闭跟踪。

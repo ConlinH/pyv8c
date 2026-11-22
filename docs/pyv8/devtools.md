@@ -92,4 +92,4 @@ Handle.close 幂等；失败会抛出可观察的 RuntimeError/TimeoutError，�
 | DevtoolsDebugger / DevToolsServer / DevToolsTarget | 不再公开；使用 DevToolsOptions 和 DevToolsHandle |
 | Debugger.run_js / 隐式首句暂停 | on_ready 回调只报告就绪；低层显式 schedule_pause_on_next_statement |
 
-不提供第二套兼容实现。支持 Runtime、Debugger 与上述 Target 子集，不实现完整 Page、Network、DOM 检查。
+不提供第二套兼容实现。支持 Browser、Debugger 与上述 Target 子集，不实现完整 Page、Network、DOM 检查。

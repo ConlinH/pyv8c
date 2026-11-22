@@ -24,13 +24,22 @@ class TaskTicket:
             record.callback = None
             record.context = None
 
-    def cancel(self):
+    def _cancel_pending(self):
         with self._lock:
             if self._state != 'pending':
-                return False
+                return None
             self._state = 'cancelled'
-            self._release()
-            return True
+            record, self._record = self._record, None
+            if record is None:
+                return ()
+            retired = (record, record.callback, record.context)
+            record.callback = record.context = None
+        return retired
+
+    def cancel(self):
+        # Keep references alive until the cancellation lock has been released.
+        retired = self._cancel_pending()
+        return retired is not None
 
     def _start_locked(self):
         if self._state != 'pending':
@@ -167,30 +176,37 @@ class AgentTaskQueue:
         return ticket
 
     def adopt(self, records):
+        retired = []
         with self._lock:
             for record in sorted(records, key=lambda item: item.sequence):
                 if not self._valid(record):
-                    record.ticket.cancel()
+                    retired.extend((record, record.ticket._cancel_pending()))
                     continue
                 record.sequence = next(self._sequence)
                 self._enqueue(record)
         self._signal()
+        return retired
 
     def invalidate_document(self, owner):
+        retired = []
         with self._lock:
             for source, entries in self._sources.items():
                 kept = deque()
                 for record in entries:
                     if record.owner is owner and record.document_bound and not self._valid(record):
-                        record.ticket.cancel()
+                        retired.extend((record, record.ticket._cancel_pending()))
                     else:
                         kept.append(record)
                 self._sources[source] = kept
             self._rebuild_ready()
+        return retired
 
-    @staticmethod
-    def _valid(record):
-        return (record.ticket.pending and not record.owner.closed
+    def _valid(self, record):
+        # All callers hold this Agent's lock. Migrated records can still use
+        # their former Agent's cancellation lock, which must remain acquired.
+        ticket = record.ticket
+        pending = ticket._state == 'pending' if ticket._lock is self._lock else ticket.pending
+        return (pending and not record.owner.closed
                 and (not record.document_bound or record.context is record.owner._task_context))
 
     def pending(self, owner=None):
@@ -199,6 +215,7 @@ class AgentTaskQueue:
                        for entries in self._sources.values() for record in entries)
 
     def has_runnable_tasks(self, owner=None):
+        retired = None
         with self._lock:
             if self._closed:
                 return False
@@ -207,7 +224,10 @@ class AgentTaskQueue:
             for source in tuple(self._ready):
                 entries = self._sources[source]
                 while entries and not self._valid(entries[0]):
-                    entries.popleft().ticket.cancel()
+                    record = entries.popleft()
+                    if retired is None:
+                        retired = []
+                    retired.extend((record, record.ticket._cancel_pending()))
                 if not entries:
                     changed = True
                 elif not runnable:
@@ -247,6 +267,7 @@ class AgentTaskQueue:
                 lane._timer_queued = False
 
     def run_turn(self, *, allow_parser=True):
+        retired = None
         with self._lock:
             if self._closed:
                 return False
@@ -260,7 +281,9 @@ class AgentTaskQueue:
                 for _ in range(len(entries)):
                     record = entries.popleft()
                     if not self._valid(record):
-                        record.ticket.cancel()
+                        if retired is None:
+                            retired = []
+                        retired.extend((record, record.ticket._cancel_pending()))
                         continue
                     if source is TaskSource.PARSER and (not allow_parser or record.owner._host.parser_blocked()):
                         blocked.append(record)
@@ -283,6 +306,8 @@ class AgentTaskQueue:
                     break
             if selected is None:
                 return False
+        if retired is not None:
+            retired.clear()
         previous, self._current = self._current, selected
         try:
             # Timer delivery has its own callback/error/boundary machinery.
@@ -300,12 +325,14 @@ class AgentTaskQueue:
         return True
 
     def close(self):
+        retired = []
         with self._lock:
             self._closed = True
             for entries in self._sources.values():
                 for record in entries:
-                    record.ticket.cancel()
+                    retired.extend((record, record.ticket._cancel_pending()))
                 entries.clear()
+            retired.extend(self._lanes)
             self._lanes.clear()
             self._timer_lanes.clear()
             self._ready.clear()

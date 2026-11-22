@@ -2,25 +2,25 @@
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def page():
-    browser = Browser(cache=False, stub_logging="off")
+async def page():
+    browser = (await Browser(cache=False, stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content(
+    (await page.set_content(
         '<div id="target" style="color: red; margin-top: 2px; '
         'color: blue !important; broken"></div>',
         url="http://style.test/",
-    )
+     wait_until="commit"))
     try:
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_style_identity_cssom_and_initial_parse(page):
+async def test_style_identity_cssom_and_initial_parse(page):
     assert page.evaluate("""(() => {
         const e = target;
         return [e.style === e.style, Object.prototype.toString.call(e.style),
@@ -34,7 +34,7 @@ def test_style_identity_cssom_and_initial_parse(page):
     ]
 
 
-def test_inline_declarations_remain_live_across_attribute_and_cssom_writes(page):
+async def test_inline_declarations_remain_live_across_attribute_and_cssom_writes(page):
     assert page.evaluate("""(() => {
         const element = target, style = element.style;
         const original = style.color;
@@ -53,7 +53,7 @@ def test_inline_declarations_remain_live_across_attribute_and_cssom_writes(page)
                   ['', '', 0], '', '2px', 'important']
 
 
-def test_color_keywords_serialize_and_invalid_assignments_are_ignored(page):
+async def test_color_keywords_serialize_and_invalid_assignments_are_ignored(page):
     assert page.evaluate('''(() => {
       const e = document.createElement('div'); document.body.appendChild(e);
       e.style.color = 'AccentColor';
@@ -70,7 +70,7 @@ def test_color_keywords_serialize_and_invalid_assignments_are_ignored(page):
     ]
 
 
-def test_computed_style_inherits_and_starts_from_the_initial_value(page):
+async def test_computed_style_inherits_and_starts_from_the_initial_value(page):
     """A declared colour reaches a child; the inline object still reads its own only."""
     assert page.evaluate("""(() => {
         const style = document.createElement('style');
@@ -87,7 +87,7 @@ def test_computed_style_inherits_and_starts_from_the_initial_value(page):
     })()""") == ["rgb(4, 5, 6)", "pre", "rgb(4, 5, 6)", "rgb(0, 0, 255)", "", ""]
 
 
-def test_style_named_properties_and_custom_properties(page):
+async def test_style_named_properties_and_custom_properties(page):
     assert page.evaluate("""(() => {
         const s = target.style;
         s.backgroundColor = 'white';
@@ -104,7 +104,7 @@ def test_style_named_properties_and_custom_properties(page):
     ]
 
 
-def test_style_methods_priority_removal_and_css_text(page):
+async def test_style_methods_priority_removal_and_css_text(page):
     assert page.evaluate("""(() => {
         const s = target.style;
         s.setProperty('padding-top', '4px', 'IMPORTANT');
@@ -125,7 +125,7 @@ def test_style_methods_priority_removal_and_css_text(page):
     ) == [0, True, ""]
 
 
-def test_style_named_properties_only_exist_when_supported(page):
+async def test_style_named_properties_only_exist_when_supported(page):
     """``in`` and reads follow the properties Chrome supports."""
     assert page.evaluate("""(() => {
         const s = target.style;
@@ -147,7 +147,7 @@ def test_style_named_properties_only_exist_when_supported(page):
     ]
 
 
-def test_style_declared_unsupported_name_becomes_visible(page):
+async def test_style_declared_unsupported_name_becomes_visible(page):
     """Assigning a name no property provides still makes it exist."""
     assert page.evaluate("""(() => {
         const s = target.style;
@@ -158,7 +158,7 @@ def test_style_declared_unsupported_name_becomes_visible(page):
     })()""") == [[False, True, True], True, "1", "red"]
 
 
-def test_style_attribute_changes_refresh_existing_object(page):
+async def test_style_attribute_changes_refresh_existing_object(page):
     assert page.evaluate("""(() => {
         const s = target.style;
         target.setAttribute('style', 'padding: 1px; color: green');
@@ -168,7 +168,7 @@ def test_style_attribute_changes_refresh_existing_object(page):
     })()""") == [["padding: 1px; color: green;", "1px", "green"], "", 0, ""]
 
 
-def test_css_text_padding_shorthand_matches_chrome_cssom(page):
+async def test_css_text_padding_shorthand_matches_chrome_cssom(page):
     assert page.evaluate("""(() => {
         const box = document.createElement('div');
         box.style.cssText = `
@@ -194,7 +194,7 @@ def test_css_text_padding_shorthand_matches_chrome_cssom(page):
     ]
 
 
-def test_chrome_rejects_unrecognized_single_font_keyword(page):
+async def test_chrome_rejects_unrecognized_single_font_keyword(page):
     assert page.evaluate("""(() => {
       const box = document.createElement('div');
       box.style.cssText = 'font: -apple-system-body !important; color: red';
@@ -202,11 +202,11 @@ def test_chrome_rejects_unrecognized_single_font_keyword(page):
     })()""") == ['color: red;', '', 'red']
 
 
-def test_a_rule_answers_with_its_style_and_lets_the_page_restyle_it(page):
+async def test_a_rule_answers_with_its_style_and_lets_the_page_restyle_it(page):
     """A rule's declaration block is the page's to edit, and the rule's own text follows
     what it holds."""
-    page.set_content('<style id="sheet">p { color: red } .a { margin: 0 }</style>',
-                     url="http://style.test/")
+    (await page.set_content('<style id="sheet">p { color: red } .a { margin: 0 }</style>',
+                     url="http://style.test/", wait_until="commit"))
     assert page.evaluate("""(() => {
         const sheet = document.getElementById('sheet').sheet;
         const rules = sheet.cssRules;
@@ -220,9 +220,9 @@ def test_a_rule_answers_with_its_style_and_lets_the_page_restyle_it(page):
                  "p { color: blue; }", "blue"]
 
 
-def test_rewriting_style_text_replaces_the_sheet_and_preserves_old_rules(page):
+async def test_rewriting_style_text_replaces_the_sheet_and_preserves_old_rules(page):
     """Chrome detaches the original sheet when the owner's text is replaced."""
-    page.set_content('<style id="sheet">p { color: red }</style>', url="http://style.test/")
+    (await page.set_content('<style id="sheet">p { color: red }</style>', url="http://style.test/", wait_until="commit"))
     assert page.evaluate("""(() => {
         const element = document.getElementById('sheet');
         const sheet = element.sheet;
@@ -235,10 +235,10 @@ def test_rewriting_style_text_replaces_the_sheet_and_preserves_old_rules(page):
     })()""") == [[1, "p"], 1, "p", True, True, True, 2, "span"]
 
 
-def test_a_grouping_rule_holds_rules_a_page_can_add_to(page):
+async def test_a_grouping_rule_holds_rules_a_page_can_add_to(page):
     """A @media rule is a sheet inside a sheet: its own cssRules, and its own edits."""
-    page.set_content('<style id="sheet">@media screen { p { color: red } }</style>',
-                     url="http://style.test/")
+    (await page.set_content('<style id="sheet">@media screen { p { color: red } }</style>',
+                     url="http://style.test/", wait_until="commit"))
     assert page.evaluate("""(() => {
         const sheet = document.getElementById('sheet').sheet;
         const media = sheet.cssRules[0];
@@ -254,7 +254,7 @@ def test_a_grouping_rule_holds_rules_a_page_can_add_to(page):
     })()""") == [4, "screen", 1, "p", True, True, 0, [2, "div"], [1, "p"]]
 
 
-def test_box_shorthand_conflicts_and_longhand_removal(page):
+async def test_box_shorthand_conflicts_and_longhand_removal(page):
     assert page.evaluate('''(() => {
         const e = document.createElement('div'); document.body.appendChild(e);
         const s = e.style;
@@ -268,7 +268,7 @@ def test_box_shorthand_conflicts_and_longhand_removal(page):
     ]
 
 
-def test_inline_computed_dimensions_and_inherited_monospace_size(page):
+async def test_inline_computed_dimensions_and_inherited_monospace_size(page):
     assert page.evaluate('''(() => {
         const outer = document.createElement('div');
         outer.style.fontSize = '30px';
@@ -279,7 +279,7 @@ def test_inline_computed_dimensions_and_inherited_monospace_size(page):
     })()''') == ['30px', 'auto', 'auto']
 
 
-def test_box_shorthands_follow_stylesheet_cascade_and_important(page):
+async def test_box_shorthands_follow_stylesheet_cascade_and_important(page):
     assert page.evaluate('''(() => {
         const sheet = document.createElement('style');
         sheet.textContent = '.box { margin-left: 1px } .box { margin: 2px }';

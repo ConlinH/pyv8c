@@ -80,6 +80,10 @@ class CSSStyleDeclaration:
             return
         if self._block is not None:
             self._block = list(declarations)
+            if self._parent_rule is not None:
+                sheet = self._parent_rule._owner_sheet()
+                if sheet is not None:
+                    sheet.rules_changed()
             return
         if self._element is None: return
         previous_text = str(self._element.attributes.get('style', ''))
@@ -194,7 +198,7 @@ class CSSStyleDeclaration:
     def _indexed_names(self):
         names = []
         for name, value, _ in self._declarations():
-            if name in ('padding', 'margin') and _box_values(value) is not None:
+            if self._block is None and name in ('padding', 'margin') and _box_values(value) is not None:
                 names.extend(f'{name}-{side}' for side in _BOX_SIDES)
             else:
                 names.append(name)

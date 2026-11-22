@@ -18,6 +18,7 @@ from ..foundation.arguments import (
 )
 from .page_errors import InvalidStateError, PageSyntaxError, dom_exception
 from ..foundation.logging import logger
+from ..foundation.tasks import TaskSource
 from .dom.events import Event, EventTarget
 from .fileapi.blob import Blob, bytes_from_value
 from .fetch.events import CloseEvent, MessageEvent
@@ -64,23 +65,19 @@ class WebSocket(EventTarget):
         self._protocol = self._extensions = ""
         self._state_value, self._binary_type, self._buffered = self.CONNECTING, "blob", 0
         self._ws = None
-        if not services or not services.context_services.ws_available:
-            #: A browser always has an engine, so a missing one is the host's own gap.
-            #: The constructor still answers, and the page learns about it the way it
-            #: learns about any socket that cannot be opened: ``error``, then ``close``
-            #: with 1006.  Why stays in the host's log.
-            logger.warning("WebSocket needs an engine; set ws_engine= or real_network=True")
+        if not services or not services.websocket_services.available:
+            logger.debug("WebSocket transport unavailable for this realm")
             self._state_value = self.CLOSED
             if services is not None:
-                services.task_services.post_task(self._fail_without_engine)
+                services.task_services.post_task(self._fail_unavailable, TaskSource.NETWORKING, document_bound=True)
             return
         callbacks = {"open": self._on_open, "message": self._on_message,
                      "error": self._on_error, "close": self._on_close}
-        self._ws = services.context_services.websocket(self._url, protocols, callbacks)
-        services.context_services.track_websocket(self._ws)
+        self._ws = services.websocket_services.open(
+            self._url, protocols, callbacks, retired=self._on_retire)
 
-    def _fail_without_engine(self):
-        """What a socket that cannot be opened reports, without saying why."""
+    def _fail_unavailable(self):
+        """Report the failure without exposing internal transport details."""
         self._dispatch_event(Event("error", {"isTrusted": True}))
         self._dispatch_event(CloseEvent("close", {
             "isTrusted": True, "code": 1006, "reason": "", "wasClean": False}))
@@ -124,12 +121,12 @@ class WebSocket(EventTarget):
             raise missing_error('WebSocket', 'send', 1, 0, constructor=False)
         if self._state_value == self.CONNECTING:
             raise InvalidStateError("WebSocket is not open")
-        binary = bytes_from_value(value)
-        payload = binary if binary is not None and not isinstance(value, str) else usv_string(value)
+        binary = None if isinstance(value, str) else bytes_from_value(value)
+        payload = binary if binary is not None else usv_string(value)
         if self._state_value != self.OPEN:
             self._buffered += len(payload.encode('utf-8')) if isinstance(payload, str) else len(payload)
             return
-        if binary is not None and not isinstance(value, str) and hasattr(self._ws, "send_bytes"):
+        if binary is not None and hasattr(self._ws, "send_bytes"):
             self._ws.send_bytes(binary)
         else:
             self._ws.send(payload if isinstance(payload, str) else usv_string(value))
@@ -161,15 +158,18 @@ class WebSocket(EventTarget):
         self._dispatch_event(Event("open"))
 
     def _on_message(self, ws, data, is_text=True):
+        if self._state_value != self.OPEN:
+            return
         if is_text:
             value = str(data)
         elif self._binary_type == "blob":
             value = Blob([bytes_from_value(data) or b""])
         else:
             value = bytes_from_value(data) or b""
-        self._dispatch_event(MessageEvent("message", {"isTrusted": True, 
+        document = getattr(self._services, "document_services", None)
+        self._dispatch_event(MessageEvent("message", {"isTrusted": True,
             "data": value, "origin": self._services.realm_services.url,
-            "source": self._services.document_services.window,
+            "source": pyv8.Null if document is None else document.window,
         }))
 
     def _on_error(self, ws, error, net_error=None):
@@ -180,12 +180,17 @@ class WebSocket(EventTarget):
         self._state_value = self.CLOSED
         self._dispatch_event(Event("error", {"isTrusted": True}))
 
+    def _on_retire(self):
+        self._state_value = self.CLOSED
+
     def _on_close(self, ws, code, reason, was_clean=True):
         self._state_value = self.CLOSED
-        self._dispatch_event(CloseEvent("close", {"isTrusted": True, 
-            "code": code, "reason": reason, "wasClean": was_clean,
-        }))
-        self._services.context_services.discard_websocket(ws)
+        try:
+            self._dispatch_event(CloseEvent("close", {"isTrusted": True,
+                "code": code, "reason": reason, "wasClean": was_clean,
+            }))
+        finally:
+            self._services.websocket_services.discard(ws)
 
 __all__ = ["WebSocket"]
 

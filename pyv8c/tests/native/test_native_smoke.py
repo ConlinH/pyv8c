@@ -1,4 +1,5 @@
 import os
+import asyncio
 import subprocess
 import sys
 import tempfile
@@ -40,20 +41,20 @@ def _run(case):
 import faulthandler
 import os
 faulthandler.enable()
-from pyv8c import Browser
-print('before-browser', flush=True)
-b = Browser(idl_path=os.environ.get("PYV8C_TEST_IDL_PATH"))
-c = b.new_profile()
-p = c.new_page()
-print('before-content', flush=True)
-p.set_content({case!r}, url='http://example.test/')
-print('after-content', flush=True)
-value = p.evaluate("document.querySelector('#x') && document.querySelector('#x') === document.querySelector('#x')")
-print('after-evaluate', value, flush=True)
-p.close()
-c.close()
-b.close()
-print('closed', flush=True)
+from pyv8c.async_api import Browser, run
+async def main():
+    async with Browser(idl_path=os.environ.get("PYV8C_TEST_IDL_PATH")) as runtime:
+        c = runtime.new_profile()
+        p = c.new_page()
+        print('before-content', flush=True)
+        p.set_content({case!r}, url='http://example.test/')
+        print('after-content', flush=True)
+        value = p.evaluate("document.querySelector('#x') && document.querySelector('#x') === document.querySelector('#x')")
+        print('after-evaluate', value, flush=True)
+        p.close()
+        c.close()
+    print('closed', flush=True)
+run(main())
 """
     return subprocess.run(
         [sys.executable, "-X", "faulthandler", "-c", code],
@@ -61,9 +62,9 @@ print('closed', flush=True)
     )
 
 
-def test_native_lifecycle_smoke_cases():
+async def test_native_lifecycle_smoke_cases():
     # Two variants cover both parse paths; the point is a crash-free child process.
     for html in ("", "<div id='x' class='a'>text</div>"):
-        result = _run(html)
+        result = await asyncio.to_thread(_run, html)
         assert result.returncode == 0, (html, result.returncode, result.stdout, result.stderr)
         assert "closed" in result.stdout, (html, result.stdout, result.stderr)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import threading
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
@@ -9,11 +11,14 @@ from typing import TYPE_CHECKING, Literal
 
 from pyv8c import pyv8
 from ..foundation.logging import logger
+from ..foundation.futures import bridge_future, consume_future
 
 from ..foundation.arguments import is_nullish
 from ..foundation.host_errors import HostStateError, RealmBusyError
 from ..foundation.error_policy import control_exceptions, is_host_failure
 from ..foundation.lifecycle import ResourceScope
+from ..foundation.background import BackgroundWork
+from ..foundation.close_timing import close_phase
 from ..foundation.tasks import TaskQueue
 from ..foundation.urls import origin_tuple
 from ..web.bom.window import Window
@@ -119,13 +124,15 @@ class Page:
     Navigating replaces that realm, so a JS handle taken before a :meth:`goto` or
     :meth:`set_content` must not be used after it.
 
-    These methods marshal onto the realm's owner thread, so they may be called
-    from another thread; the JS objects they return may not (see
+    These methods and live JS handles belong to the application owner thread
+    and reject calls from foreign threads (see
     ``docs/pyv8c/usage.md``).
     """
 
     def __init__(self, profile, url="about:blank", *, trace=None, trace_scripts=None,
                  environment=None, parent=None, origin=None):
+        self._runtime = profile.browser._runtime
+        self._runtime.check_owner()
         self.profile = profile
         self.parent_page = parent
         self.top_page = parent.top_page if parent is not None else self
@@ -147,7 +154,11 @@ class Page:
         self._trace = profile.trace if trace is None else bool(trace)
         self.trace_scripts = trace_scripts
         self.closed = False
+        self._retiring = False
         self._resource_scope = ResourceScope()
+        self._background = BackgroundWork()
+        self._child_pages = set()
+        self._close_task = None
         self.resource_ownership = ResourceOwnership(self._resource_scope)
         self._close_lock = threading.Lock()
         self._closing = False
@@ -166,14 +177,12 @@ class Page:
         self.services = PageServices(
             profile, self.environment, self.trace, self._owned,
             self.navigation, self.scripts, self.resource_fetcher, self.frame_resources, self.document_resources, self.tasks,
-            self._resource_scope,
+            self._resource_scope, self._background,
         )
         self.services._origin = self.origin
         self.document = HTMLDocument(services=self.services, url=url, ready_state="complete")
         self.resource_loader = profile.browser.resource_loader
-        self.resource_interceptor = profile.browser.resource_interceptor
         self.cache_enabled = profile.browser.cache_enabled
-        self.network_backend = profile.network_backend
         self.window = Window(
             services=self.services,
             feature_runtime=profile.browser.bindings.runtime,
@@ -193,26 +202,40 @@ class Page:
         #: One owner thread for the page's lifetime; navigations hand it to the
         #: next realm instead of starting another.
         self.execution_group = (parent.execution_group if parent is not None else
-                                WindowExecutionGroup(frame_rate=profile.browser.frame_rate))
+                                self._create_execution_group())
         self.isolate = self.execution_group.isolate
         self.executor = self.execution_group.endpoint(self.tasks)
         try:
             self.realm = PageRealm(self, executor=self.executor)
+            self.services.bind_realm(self.realm)
+            self.realm.executor.attach_rejection_tracker(self.realm.rejections)
+            self.v8_context = self.realm.v8_context
+            Window._bind_context(self.v8_context, self.window)
+            if parent is None:
+                self.executor.call(self.navigation.initialize_empty_document)
         except BaseException:
-            self.tasks.close()
-            self.execution_group.executor.call(self.executor.close)
+            if getattr(self, "realm", None) is not None:
+                try:
+                    self._retire()
+                except BaseException:
+                    with profile._state_lock:
+                        profile.pages.append(self)
+                    raise
+            else:
+                self.tasks.close()
+                self.execution_group.executor.call(self.executor.close)
             raise
-        self.services.bind_realm(self.realm)
-        self.realm.executor.attach_rejection_tracker(self.realm.rejections)
-        self.v8_context = self.realm.v8_context
-        Window._bind_context(self.v8_context, self.window)
-        if parent is None:
-            self.executor.call(self.navigation.initialize_empty_document)
+        if parent is not None:
+            parent._child_pages.add(self)
 
     @property
     def trace(self) -> bool:
         """Whether trace events are reported for this page."""
         return self._trace
+
+    def _create_execution_group(self):
+        return self._runtime.create_execution_group(self.profile.browser.frame_rate)
+
 
     @trace.setter
     def trace(self, enabled: bool) -> None:
@@ -223,6 +246,7 @@ class Page:
         :raises RuntimeError: the Browser was not created traceable (the native
             context refuses the switch), or the page is already closed.
         """
+        self._check()
         if not isinstance(enabled, bool):
             raise TypeError("trace must be a bool")
 
@@ -325,6 +349,7 @@ class Page:
         and shared for the life of the page, so the position carries over from
         one move to the next.
         """
+        self._check()
         if self._mouse is None:
             from .input import MouseInput
             self._mouse = MouseInput(self)
@@ -340,6 +365,10 @@ class Page:
                 pass
         return getattr(previous_window, "_window_name", "")
 
+    def _retire_document_workers(self):
+        for worker in tuple(self._owned.workers):
+            worker.fn_terminate()
+
     def _renew_document_realm(self, url):
         """Give the page the Window and realm a new document comes with.
 
@@ -348,10 +377,6 @@ class Page:
         """
         previous_window, previous_realm = self.window, self.realm
         previous_proxy = self.global_proxy
-        # Workers belong to the document being retired. A pending source load
-        # may never deliver after this generation changes, so stop it explicitly.
-        for worker in tuple(self._owned.workers):
-            worker.fn_terminate()
         previous_realm.rejections.close()
         window = Window(
             services=self.services,
@@ -375,12 +400,16 @@ class Page:
             raise
         self.realm = new_realm
         self.services.bind_realm(self.realm)
+        # Existing resolvers retain their original context; new promises must
+        # be created in the committed realm rather than the previous document.
+        self.scripts.clear_js_helpers()
         self.realm.executor.attach_rejection_tracker(self.realm.rejections)
         self.v8_context = self.realm.v8_context
         Window._bind_context(self.v8_context, window)
         if self._devtools_target is not None:
             self._devtools_target.rebind_context(self.v8_context)
         Window._unbind_context(previous_realm.v8_context)
+        previous_realm.http_driver = None
         #: Kept for the references a page holds; retired with the page (``_close_owner``).
         if previous_realm.v8_context is not None:
             previous_realm.v8_context.detach()
@@ -388,110 +417,99 @@ class Page:
         return window
 
     @property
-    def url(self) -> str:
-        """The current document's URL, as the Window's ``location.href`` shows it."""
+    def url(self):
+        self._runtime.check_owner(allow_closing=True)
         return self.window.location.href
 
+
     @url.setter
-    def url(self, value: str) -> None:
-        """Navigate to *value*; assigning here is :meth:`goto`."""
-        self.goto(value)
+    def url(self, value):
+        raise HostStateError("navigation is awaited; use await page.goto(url)")
+
+
 
     # Web-facing code is served by ``self.services``; controllers reach each
     # other through the Page attributes, so only user-facing forwards remain.
 
-    def set_content(self,
-                    html: str = EMPTY_DOCUMENT,
-                    url: str = "about:blank") -> Page:
-        """Replace the document with *html* and parse it right away.
+    async def set_content(self, html: str = EMPTY_DOCUMENT, url: str = "about:blank",
+                          *, timeout=30, wait_until="load") -> Page:
+        """Inject markup and await the selected document lifecycle state."""
+        self._check_wait()
+        if wait_until not in ("commit", "domcontentloaded", "load"):
+            raise ValueError("wait_until must be 'commit', 'domcontentloaded', or 'load'")
+        deadline = _deadline(timeout)
+        self.realm.executor.call(self.navigation.set_content, html, url, timeout=_remaining(deadline))
+        if wait_until != "commit":
+            await self.wait_for_load_state(wait_until, timeout=_remaining(deadline))
+        return self
 
-        Parsing starts on the calling thread and continues until a
-        parser-blocking script makes it wait; the navigation lifecycle is not
-        replayed, so this is content injection rather than a navigation.
-
-        :param html: markup for the new document; the default is an empty
-            standards-mode document, while markup without a doctype
-            (``"<body></body>"``) parses as ``BackCompat``.
-        :param url: URL the new document reports.  Nothing is fetched from it, so
-            pass the address the content claims to come from to keep the origin
-            and relative URLs right.
-        :returns: this page.
-        :raises InvalidStateError: the page or its V8 context is closed.
-        """
-        return self.realm.executor.call(self.navigation.set_content, html, url)
-
-    def goto(self,
-             url: str,
-             *,
-             timeout: float | None = 30,
-             wait_until: Literal["commit", "domcontentloaded", "load"] | None = "load") -> Response | None:
-        """Load *url* as this page's document, the way a browser navigates.
-
-        Loading goes through the resource loader (``resource_loader``, the
-        interceptor, the cache), relative URLs resolve against the current URL,
-        and the returned response is the document that was committed.
-
-        :param url: absolute, or relative to the current document.
-        :param timeout: seconds allowed for the document request and for waiting
-            on *wait_until*.  ``None`` leaves the request unbounded and caps the
-            wait at 30 seconds; negative values are treated as 0.
-        :param wait_until: ``"commit"`` returns once the document is replaced;
-            ``"domcontentloaded"``/``"load"`` wait for that lifecycle state.
-            ``None`` is accepted and means ``"commit"``; ``"networkidle"`` is not
-            supported.
-        :returns: the document's
-            :class:`~pyv8c.web.fetch.response.Response`, or ``None`` when
-            navigation was refused -- for example by a ``beforeunload`` handler.
-        :raises TimeoutError: the requested lifecycle state was not reached in
-            time.
-        :raises ValueError: *wait_until* is not one of the accepted values.
-        :raises InvalidStateError: the page or its V8 context is closed.
-        """
-        if self.executor.is_owner_thread():
-            raise HostStateError('goto cannot synchronously wait on the owner thread; use request_navigation')
-        deadline = None if timeout is None else time.perf_counter() + max(0.0, float(timeout))
-        remaining = lambda: None if deadline is None else max(0.0, deadline - time.perf_counter())
-        operation = self.realm.executor.call(self._goto, url, timeout, wait_until, timeout=remaining())
+    async def goto(self, url, *, timeout=30, wait_until="load"):
+        self._check_wait()
+        deadline = _deadline(timeout)
+        operation = self.realm.executor.call(
+            self._goto, url, timeout, wait_until, timeout=_remaining(deadline)
+        )
         if not isinstance(operation, Future):
             return operation
+        waiting = bridge_future(operation)
+        waiting.add_done_callback(consume_future)
+        scope = asyncio.timeout(_remaining(deadline))
         try:
-            return operation.result(timeout=remaining())
-        except FutureTimeoutError:
-            self.executor.post(self.navigation.cancel, operation)
+            async with scope:
+                return await asyncio.shield(waiting)
+        except TimeoutError:
+            if not scope.expired():
+                raise
+            self.executor.call(self.navigation.cancel, operation, observer_cancelled=True)
             raise HostStateError(operation.navigation_operation.diagnostics) from None
+        except asyncio.CancelledError:
+            self.executor.call(self.navigation.cancel, operation, observer_cancelled=True)
+            raise
+
 
     def _goto(self, url, timeout, wait_until):
         """The navigation itself, named so a timeout says which call it was."""
         return self.navigation.goto(url, timeout=timeout, wait_until=wait_until)
 
-    def wait_for_load_state(self, state='load', timeout=30):
-        if self.executor.is_owner_thread():
-            raise HostStateError('cannot synchronously wait on the owner thread')
+    async def wait_for_load_state(self, state="load", timeout=30):
+        self._check_wait()
         deadline = _deadline(timeout)
-        future = self.executor.call(self.lifecycle.wait_for_state, state, timeout=_remaining(deadline))
+        scope = asyncio.timeout(_remaining(deadline))
+        future = None
+        def register_waiter():
+            nonlocal future
+            future = self.lifecycle.wait_for_state(state)
         try:
-            future.result(timeout=_remaining(deadline))
-        except FutureTimeoutError:
-            future.cancel()
-            raise TimeoutError(f'document did not reach {state} within {timeout}s') from None
+            async with scope:
+                self.executor.call(register_waiter, timeout=_remaining(deadline))
+                await bridge_future(future)
+        except TimeoutError:
+            if not scope.expired():
+                raise
+            raise TimeoutError(f"document did not reach {state} within {timeout}s") from None
+        finally:
+            if future is not None and not future.done():
+                future.cancel()
 
-    def wait_for(self, expression, timeout=30):
-        """Wait for a read-only JavaScript condition on the current document."""
-        if self.executor.is_owner_thread():
-            raise HostStateError('cannot synchronously wait on the owner thread')
+
+    async def wait_for(self, expression, timeout=30):
+        self._check_wait()
         deadline = _deadline(timeout)
         while True:
             remaining = _remaining(deadline)
             try:
-                if self.evaluate(f'Boolean(({expression}))', timeout=remaining):
+                if self.evaluate(f"Boolean(({expression}))", timeout=remaining):
                     return
             except RealmBusyError:
                 if deadline is not None and time.perf_counter() >= deadline:
-                    raise TimeoutError(f'condition did not become true within {timeout}s') from None
+                    raise TimeoutError(
+                        "condition did not become true within its deadline"
+                    ) from None
                 raise
             if deadline is not None and time.perf_counter() >= deadline:
-                raise TimeoutError(f'condition did not become true within {timeout}s')
-            time.sleep(min(0.01, remaining) if remaining is not None else 0.01)
+                raise TimeoutError("condition did not become true within its deadline")
+            await asyncio.sleep(min(0.01, remaining) if remaining is not None else 0.01)
+
 
     def evaluate(self,
                  script: str,
@@ -510,11 +528,22 @@ class Page:
         :raises pyv8.JSException: the script threw.
         :raises RuntimeError: the page is closed.
         """
-        def evaluate_data():
-            value = self.scripts.evaluate(script, filename=filename)
-            value = value.to_python() if isinstance(value, pyv8.JSObject) else value
-            return _snapshot_data(value, {})
-        return self.realm.executor.call(evaluate_data, timeout=timeout)
+        self._check()
+        return self.realm.executor.call(self._evaluate_data, script, filename,
+                                        timeout=timeout, _owns_checkpoint=True)
+
+    def _evaluate_data(self, script, filename):
+        # ScriptController completes the script checkpoint before we copy values.
+        # Copying an object may itself run JS getters; their jobs belong to a
+        # second boundary. Primitive results need no second native checkpoint.
+        value = self.scripts.evaluate(script, filename=filename)
+        if isinstance(value, (pyv8.JSObject, dict, list, tuple)):
+            try:
+                value = value.to_python() if isinstance(value, pyv8.JSObject) else value
+                return _snapshot_data(value, {})
+            finally:
+                self.executor.after_callback()
+        return _snapshot_data(value, {})
 
     def evaluate_handle(self,
                         script: str,
@@ -532,29 +561,35 @@ class Page:
         :raises pyv8.JSException: the script threw.
         :raises RuntimeError: the page is closed.
         """
+        self._check()
         return self.realm.executor.call(
-            self.scripts.evaluate, script, filename=filename,
+            self.scripts.evaluate, script, filename=filename, _owns_checkpoint=True,
         )
 
-    def run_until_idle(self, timeout: float = 1.0) -> bool:
-        """Wait for this Agent's runnable work and checkpoints, excluding future I/O.
-
-        Zero only queries current state. Future timers, network requests and live
-        workers are not runnable work; use wait_for/load-state for those goals.
-        Ready V8 foreground tasks in the shared execution group count as work;
-        background compilation that has not posted its completion does not.
-        """
+    async def run_until_idle(self, timeout=1):
+        self._check_wait()
         if self.closed:
-            raise HostStateError('Page is closed')
-        deadline = time.perf_counter() + max(0.0, float(timeout))
+            raise HostStateError("Page is closed")
+        deadline = time.perf_counter() + max(0, float(timeout))
         while True:
+            self._check_wait()
             if self.execution_group.is_idle(self.realm.agent):
                 return True
-            if not timeout or time.perf_counter() >= deadline:
+            if time.perf_counter() >= deadline:
                 return False
-            if self.executor.is_owner_thread():
-                raise HostStateError('cannot synchronously wait for idle on the owner thread')
-            time.sleep(min(0.001, max(0.0, deadline-time.perf_counter())))
+            await asyncio.sleep(0.001)
+
+    async def sleep(self, seconds):
+        """Wait *seconds* while this page's event loop keeps running.
+
+        Unlike a host ``time.sleep``, awaited page tasks can make progress
+        during the wait. No script runs and no condition is checked, so this
+        cannot raise ``JavaScriptTerminated``; use :meth:`wait_for` to wait
+        on a business condition.
+        """
+        self._check_wait()
+        await asyncio.sleep(max(0.0, float(seconds)))
+
 
     def dispatch_event(self,
                        event_type: str,
@@ -581,22 +616,121 @@ class Page:
         :raises HostStateError: *selector* matches nothing.
         :raises TypeError: *event_class* is not an ``Event`` interface.
         """
+        self._check()
         return self.realm.executor.call(
             self.lifecycle.dispatch_event, event_type,
             target=target, selector=selector, event_class=event_class, init=init,
         )
 
-    def query_selector(self, selector: str) -> Node | None:
+    def _deep_roots(self):
+        """Yield ``(page, root)`` in staged order: the page's light tree, then
+        its shadow trees (open and closed) in tree order, then descendant
+        frames recursively.  This matches docs/pyv8c/usage.md; it is not a
+        single flattened tree order.
+
+        A query root is a Document or a ShadowRoot; ``select(root, ...)`` already
+        walks a fragment's descendants, so handing it a ShadowRoot reaches a closed
+        tree that page script cannot see.  The page is returned alongside the root
+        because a hit node must be driven by the mouse of the realm that owns it.
+        """
+        from ..web.html.iframe import HTMLIFrameElement
+
+        def tree_walk(root):
+            """Descendants in tree order, entering every shadow tree in place.
+
+            ``_subtree_nodes`` uses a LIFO stack and reverses siblings, so it
+            cannot define which match is "first".  ``_descendants`` keeps tree
+            order; shadow trees are entered at their host, as insertion does.
+            """
+            for node in root._descendants():
+                yield node
+                shadow = getattr(node, '_shadow_root', None)
+                if shadow is not None:
+                    yield from tree_walk(shadow)
+
+        def walk(page, seen):
+            if id(page) in seen:
+                return
+            seen.add(id(page))
+            yield page, page.document
+            shadows = []
+            frames = []
+            for node in tree_walk(page.document):
+                if getattr(node, '_shadow_root', None) is not None:
+                    shadows.append(node._shadow_root)
+                if isinstance(node, HTMLIFrameElement):
+                    frames.append(node)
+            for shadow in shadows:
+                yield page, shadow
+            # Frame order comes from the DOM, not from _owned.frames: child
+            # pages mount asynchronously, so that set has no tree order.
+            for iframe in frames:
+                services = getattr(iframe, '_child_services', None)
+                child = services._page_realm.page if services is not None else None
+                if child is not None and not child.closed:
+                    yield from walk(child, seen)
+
+        yield from walk(self, set())
+
+    def _resolve_deep(self, selector, *, deep):
+        """Return ``(node, owning_page)`` for the first match, or ``None``.
+
+        Runs inside the owner's executor call.  With ``deep=False`` this is just
+        the light tree of the current document, matching the historical behaviour
+        of :meth:`query_selector`.  With ``deep=True`` it walks the staged roots
+        from :meth:`_deep_roots` and returns the first CSS match, paired with the
+        page whose mouse may drive it.  A malformed selector raises PageSyntaxError.
+        """
+        from ..web.css.selectors import select
+
+        roots = self._deep_roots() if deep else ((self, self.document),)
+        for page, root in roots:
+            node = select(root, selector, first=True)
+            if node is not None:
+                return node, page
+        return None
+
+    def query_selector(self, selector: str, *, deep: bool = False) -> Node | None:
         """Return the host-side node matching a CSS selector.
 
-        :param selector: CSS selector, evaluated against the current document.
+        :param selector: CSS selector.
+        :param deep: when true, search in staged order -- the current light tree,
+            then shadow trees (open and closed), then descendant frames; the
+            first match wins.  See docs/pyv8c/usage.md.
         :returns: the DOM node handle, or ``None`` when nothing matches.
+        :raises PageSyntaxError: *selector* is not valid CSS.
         """
+        self._check()
         def resolve():
-            node = self.document.fn_querySelector(str(selector))
-            return None if node is pyv8.Null else node
+            found = self._resolve_deep(str(selector), deep=deep)
+            return None if found is None else found[0]
 
         return self.realm.executor.call(resolve)
+
+    async def wait_for_selector(self, selector: str, *, deep: bool = False,
+                                timeout: float | None = 30) -> Node | None:
+        """Wait until *selector* matches and return the node.
+
+        Uses the same resolution as :meth:`query_selector`, including ``deep``,
+        so a widget inside a shadow tree or a frame can be awaited directly.
+        """
+        self._check_wait()
+        deadline = _deadline(timeout)
+        while True:
+            remaining = _remaining(deadline)
+            try:
+                node = self.query_selector(selector, deep=deep)
+                if node is not None:
+                    return node
+            except RealmBusyError:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    raise TimeoutError(
+                        f'selector {selector!r} did not match within {timeout}s'
+                    ) from None
+                raise
+            if deadline is not None and time.perf_counter() >= deadline:
+                raise TimeoutError(f'selector {selector!r} did not match within {timeout}s')
+            await asyncio.sleep(min(0.01, remaining) if remaining is not None else 0.01)
 
     def set_visibility(self, hidden: bool) -> bool:
         """Set the document's visibility and fire the events that follow.
@@ -608,23 +742,29 @@ class Page:
             nothing and returns ``False``, matching the browser's
             "only on transition" behaviour.
         """
+        self._check()
         return self.realm.executor.call(self.lifecycle.set_visibility, hidden)
 
-    def _require_element(self, selector: str):
-        """The node *selector* matches, or the error a missing one is worth."""
-        node = self.query_selector(selector)
-        if node is None:
-            raise HostStateError(f"No element matches the selector {selector!r}")
-        return node
+    def _require_element(self, selector: str, *, deep: bool = False):
+        """The node *selector* matches, or the error a missing one is worth.
 
-    def click(self,
+        Returns ``(node, owning_page)`` so input is dispatched by the realm that
+        owns the node -- a frame's node cannot be clicked by the parent's mouse.
+        """
+        found = self._resolve_deep(str(selector), deep=deep)
+        if found is None:
+            raise HostStateError(f"No element matches the selector {selector!r}")
+        return found
+
+    async def click(self,
               selector: str,
               *,
               button: str = "left",
               click_count: int = 1,
               force: bool = False,
               delay: float | None = None,
-              duration: float | None = None) -> None:
+              duration: float | None = None,
+              deep: bool = False) -> None:
         """Click the element *selector* matches, the way a user would.
 
         The mouse is moved to the element's centre and pressed and released
@@ -640,76 +780,153 @@ class Page:
             it, which is the one thing that would otherwise refuse the click.
         :param delay: seconds the button stays down before it is released.
         :param duration: seconds the approach move is spread over.
+        :param deep: when true, search shadow trees and descendant frames for the
+            selector; the matching node is clicked by the realm that owns it.
         :raises HostStateError: *selector* matches nothing.
         :raises InvalidStateError: the element has no box to click, or its
             centre is covered by another element and *force* is false.
         """
-        return self.mouse.click_element(
-            self._require_element(selector), button=button, click_count=click_count,
+        self._check()
+        node, owner = self.realm.executor.call(
+            lambda: self._require_element(selector, deep=deep)
+        )
+        return await owner.mouse.click_element(
+            node, button=button, click_count=click_count,
             force=force, delay=delay, duration=duration,
         )
 
-    def dblclick(self, selector: str, *, button: str = "left", force: bool = False,
-                 delay: float | None = None, duration: float | None = None) -> None:
+    async def dblclick(self, selector: str, *, button: str = "left", force: bool = False,
+                 delay: float | None = None, duration: float | None = None,
+                 deep: bool = False) -> None:
         """Double-click the element *selector* matches.
 
         Two clicks counted as one run, so the second reports ``detail`` 2 and a
-        ``dblclick`` follows it.
+        ``dblclick`` follows it.  *deep* has the same meaning as in :meth:`click`.
         """
-        node = self._require_element(selector)
-        self.mouse.move_to_element(node, force=force, duration=duration)
-        return self.mouse.dblclick(button=button, delay=delay)
+        self._check()
+        node, owner = self.realm.executor.call(
+            lambda: self._require_element(selector, deep=deep)
+        )
+        generation = owner.navigation.generation
+        await owner.mouse.move_to_element(node, force=force, duration=duration)
+        owner._check_document_generation(generation)
+        return await owner.mouse.dblclick(button=button, delay=delay)
 
-    def hover(self, selector: str, *, force: bool = False,
+    async def hover(self, selector: str, *, force: bool = False,
               duration: float | None = None, curve: str | None = None,
-              seed: int | None = None) -> None:
+              seed: int | None = None, deep: bool = False) -> None:
         """Move the mouse to the centre of the element *selector* matches.
 
         The element is left hovered, which is what the boundary events report:
-        a page watching ``mouseover`` sees the move arrive.
+        a page watching ``mouseover`` sees the move arrive.  *deep* has the same
+        meaning as in :meth:`click`.
         """
-        return self.mouse.move_to_element(
-            self._require_element(selector), force=force, duration=duration,
-            curve=curve, seed=seed,
+        self._check()
+        node, owner = self.realm.executor.call(
+            lambda: self._require_element(selector, deep=deep)
+        )
+        return await owner.mouse.move_to_element(
+            node, force=force, duration=duration, curve=curve, seed=seed,
         )
 
-    def close(self) -> None:
+    async def close(self) -> None:
+        """Dispose the realm and await its owned background work."""
+        self._runtime.check_thread()
+        self._runtime.check_loop()
+        task = self._begin_close()
+        if task is not None:
+            await asyncio.shield(task)
+
+    def _begin_close(self):
+        self._runtime.check_thread()
+        if self.closed:
+            if self._runtime.closed:
+                return
+            task = self._close_task
+            if task is not None and task.done() and not task.cancelled() and task.exception() is None:
+                return
+        self._runtime.check_owner(allow_closing=True)
+        if not self.closed:
+            self._retire()
+        return self._ensure_close_task()
+
+    def _ensure_close_task(self):
+        if self._close_task is None or (
+            self._close_task.done() and (self._close_task.cancelled() or self._close_task.exception() is not None)
+        ):
+            self._close_task = self._runtime.loop.create_task(self._finish_close())
+            self._close_task.add_done_callback(consume_future)
+        return self._close_task
+
+    async def _finish_close(self):
+        # Finalization may start on a JS/Inspector stack.
+        await asyncio.sleep(0)
+        with close_phase(self, "child-pages"):
+            results = await asyncio.gather(*(child.close() for child in tuple(self._child_pages)),
+                                           return_exceptions=True)
+        first_error = next((result for result in results if isinstance(result, BaseException)), None)
+        try:
+            with close_phase(self, "background"):
+                await self._background.wait()
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+        if first_error is not None:
+            raise first_error
+        self.profile._discard_page(self)
+        if self.parent_page is not None:
+            self.parent_page._child_pages.discard(self)
+
+    async def __aenter__(self):
+        self._check_wait()
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+
+    def _retire(self) -> None:
         """Close the page and everything it owns.
 
-        Idempotent and safe to call from another thread; a concurrent caller is
-        left to the owner thread's teardown instead of closing twice.  Frames,
+        Idempotent on the Runtime owner; reentrant cleanup does not close twice.  Frames,
         workers, WebSockets, pending resources, DevTools registration and the
         realm itself are released.  The first failure is remembered and re-raised
         after the rest was attempted, which leaves the page able to retry.  A
         closed page refuses further work: its realm executor raises
         ``RuntimeError``.
         """
+        if threading.get_ident() != self._runtime.owner:
+            raise HostStateError("Page APIs belong to the Browser owner thread")
+        if self.closed:
+            return
+        self._runtime.check_owner(allow_closing=True)
+        self._retiring = True
+        with close_phase(self, "interrupt-requests"):
+            self._background.begin_retirement()
         with self._close_lock:
             if self.closed:
                 return
-            # A concurrent close already runs the owner-thread teardown, so the
+            # A reentrant close already runs the owner-thread teardown, so the
             # scope stays OPEN and a failed owner call can be retried.
             if self._closing:
                 return
             self._closing = True
-        # A paused inspector loop or a start-paused gate blocks the realm owner;
-        # wake it before asking that owner to tear down synchronously.
-        if not self.realm.executor.is_owner_thread():
-            target = self._devtools_target
-            if target is not None:
-                target.wake_waiting_owner()
-            self.execution_group.request_stop(None if self.parent_page is None else self.executor)
         try:
-            return self.realm.executor.close_page(self._close_owner)
+            with close_phase(self, "retire-owner"):
+                return self.realm.executor.close_page(self._close_owner)
         finally:
             with self._close_lock:
                 self._closing = False
             # The scope closes after all owner-thread cleanup; a dispatch that
             # timed out before starting leaves it OPEN for a later close().
             if self.closed:
-                self._resource_scope.close()
-                if self.execution_group.closed:
-                    self.execution_group.executor.close()
+                try:
+                    self._resource_scope.close()
+                    if self.execution_group.closed:
+                        self.execution_group.executor.close()
+                finally:
+                    # Every entry point (public close, CDP, frame retirement)
+                    # publishes the same owned completion task.
+                    self._ensure_close_task()
 
     def _close_owner(self):
         if self.closed:
@@ -733,9 +950,12 @@ class Page:
         if not getattr(self, "_unload_dispatched", False):
             self._unload_dispatched = True
             if self.navigation.has_navigation:
-                attempt(self.lifecycle.dispatch_beforeunload)
-                attempt(self.lifecycle.dispatch_page_hide, False)
-                attempt(self.lifecycle.dispatch_unload)
+                with close_phase(self, "beforeunload"):
+                    attempt(self.lifecycle.dispatch_beforeunload)
+                with close_phase(self, "pagehide"):
+                    attempt(self.lifecycle.dispatch_page_hide, False)
+                with close_phase(self, "unload"):
+                    attempt(self.lifecycle.dispatch_unload)
         # Drop cached JS scripts before the V8 context goes away.
         self.scripts.clear_js_helpers()
         self.scripts.reset()
@@ -743,7 +963,7 @@ class Page:
         if angle is not None:
             attempt(angle.close_page, self.services)
         attempt(self.services.task_services.cancel_animation_frames)
-        attempt(self.net.close)
+        attempt(self.net._retire)
         attempt(self.tasks.close)
         attempt(self.executor.cancel_pending)
         attempt(self.document_resources.reset)
@@ -751,15 +971,11 @@ class Page:
         self.realm.rejections.close()
         self.lifecycle.load_waiters.clear()
         for frame in self._owned.drain("frames"):
-            if attempt(frame.close):
+            if attempt(frame._retire):
                 self.services.context_services.discard_frame(frame)
             else:
                 self._owned.track("frames", frame)
-        for ws in self._owned.drain("websockets"):
-            if not self.network_backend or attempt(self.network_backend.close_websocket, ws):
-                self.services.context_services.discard_websocket(ws)
-            else:
-                self._owned.track("websockets", ws)
+        attempt(self.services.websocket_services.retire)
         for worker in self._owned.drain("workers"):
             if attempt(worker.fn_terminate):
                 self.services.worker_services.discard_worker(worker)
@@ -792,7 +1008,6 @@ class Page:
         self.v8_context = None
         self.global_proxy = None
         self.closed = True
-        self.profile._discard_page(self)
         parent_cleanup = getattr(self, "_parent_scope_cleanup", None)
         if callable(parent_cleanup):
             parent_cleanup()
@@ -801,4 +1016,23 @@ class Page:
         # happens when another thread's close() timed out while waiting.
         self._resource_scope.close()
 
+    def _check(self):
+        self._runtime.check_owner()
+        if self._retiring:
+            raise HostStateError("Page is closed or closing")
+
+
+    def _check_wait(self):
+        self._check()
+        if asyncio.get_running_loop() is not self._runtime.loop:
+            raise HostStateError("waits belong to the Browser event loop")
+        if self.closed:
+            raise HostStateError("Page is closed")
+        if pyv8.current_context(self.isolate) is not None:
+            raise HostStateError("cannot suspend a host wait inside a running JS stack")
+
+    def _check_document_generation(self, generation):
+        self._check_wait()
+        if self.navigation.generation != generation:
+            raise HostStateError("document changed during input")
 

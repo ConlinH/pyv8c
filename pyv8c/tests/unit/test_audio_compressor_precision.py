@@ -3,7 +3,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c._audio_native import CompressorDSP  # noqa: E402
+from pyv8c._native import audio  # noqa: E402
 
 
 @pytest.mark.parametrize('rate,expected', [
@@ -14,7 +14,7 @@ from pyv8c._audio_native import CompressorDSP  # noqa: E402
              0.31698259711265564, 0.39751070737838745]),
 ])
 def test_compressor_matches_chrome_for_fixed_signal(rate, expected):
-    compressor = CompressorDSP(rate)
+    compressor = audio.CompressorDSP(rate)
     indices = {0, 263, 264, 287, 288, 1024, 4500, 4999}
     actual = []
     for i in range(5000):
@@ -28,7 +28,7 @@ def test_blocks_and_single_samples_share_state_across_division_boundaries():
     values = [((i % 31) - 15) / 15 for i in range(850)]
     params = [(-50 + i * .001, 20 + i * .002, 4 + i * .001, .003, .25)
               for i in range(len(values))]
-    single, blocks = CompressorDSP(44100), CompressorDSP(44100)
+    single, blocks = audio.CompressorDSP(44100), audio.CompressorDSP(44100)
     expected = [single.process(value, p) for value, p in zip(values, params)]
     actual = []
     start = 0
@@ -43,7 +43,7 @@ def test_blocks_and_single_samples_share_state_across_division_boundaries():
 
 
 def test_invalid_block_parameters_do_not_change_compressor_state():
-    compressor = CompressorDSP(44100)
+    compressor = audio.CompressorDSP(44100)
     with pytest.raises(ValueError):
         compressor.process_block([0.5] * 33, [(-50, 40, 12, 0, .25)])
     assert compressor.frame == 0
@@ -55,7 +55,7 @@ def test_invalid_block_parameters_do_not_change_compressor_state():
     ((-50, 1000, 1000, 2, -3), (-50, 40, 20, 1, 0)),
 ])
 def test_compressor_clamps_out_of_range_parameters(out_of_range, clamped):
-    actual, expected = CompressorDSP(44100), CompressorDSP(44100)
+    actual, expected = audio.CompressorDSP(44100), audio.CompressorDSP(44100)
     for i in range(600):
         value = ((i % 31) - 15) / 15
         assert actual.process(value, out_of_range) == expected.process(value, clamped)
@@ -63,7 +63,7 @@ def test_compressor_clamps_out_of_range_parameters(out_of_range, clamped):
 
 
 def test_compressor_clamps_automated_values_after_interpolation():
-    actual, expected = CompressorDSP(44100), CompressorDSP(44100)
+    actual, expected = audio.CompressorDSP(44100), audio.CompressorDSP(44100)
     for i in range(1000):
         threshold = -50 - 950 * i / 4410
         value = ((i % 31) - 15) / 15

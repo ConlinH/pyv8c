@@ -1,7 +1,7 @@
 import pytest
 from pyv8c import pyv8
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 PAGE_HTML = ("<body><div id='root'>"
              "<div id='box' class='alpha beta'>"
@@ -11,17 +11,17 @@ PAGE_HTML = ("<body><div id='root'>"
 
 
 @pytest.fixture
-def page():
-    browser = Browser(stub_logging="off")
+async def page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     instance = browser.new_profile().new_page()
-    instance.set_content(PAGE_HTML)
+    (await instance.set_content(PAGE_HTML, wait_until="commit"))
     try:
         yield instance
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_element_identity_and_constructor_mapping(page):
+async def test_element_identity_and_constructor_mapping(page):
     result = page.evaluate(
         "(() => { const div = document.createElement('div'); "
         "const span = document.createElement('span'); "
@@ -38,7 +38,7 @@ def test_element_identity_and_constructor_mapping(page):
                       "my-widget", "MY-WIDGET"]
 
 
-def test_element_attribute_round_trip(page):
+async def test_element_attribute_round_trip(page):
     result = page.evaluate(
         "(() => { const div = document.createElement('div'); "
         "const out = []; "
@@ -78,7 +78,7 @@ def test_element_attribute_round_trip(page):
     ]
 
 
-def test_class_list_is_live_reflection_of_class_attribute(page):
+async def test_class_list_is_live_reflection_of_class_attribute(page):
     # add/toggle/value: corpus ``class_list_add_and_contains``, ``class_list_toggle_replace_and_value``.
     result = page.evaluate(
         "(() => { const div = document.createElement('div'); "
@@ -90,7 +90,7 @@ def test_class_list_is_live_reflection_of_class_attribute(page):
     assert result == [[2, "a", "b", True], "b", False, 1]
 
 
-def test_inner_html_outer_html_and_fragment_context_parsing(page):
+async def test_inner_html_outer_html_and_fragment_context_parsing(page):
     result = page.evaluate(
         "(() => { const box = document.getElementById('box'); "
         "box.innerHTML = '<p>a</p><p>b</p>text<i></i>'; "
@@ -121,7 +121,7 @@ def test_inner_html_outer_html_and_fragment_context_parsing(page):
     ]
 
 
-def test_children_traversal_and_child_node_mixins(page):
+async def test_children_traversal_and_child_node_mixins(page):
     result = page.evaluate(
         "(() => { const root = document.createElement('div'); "
         "const a = document.createElement('a'); "
@@ -156,7 +156,7 @@ def test_children_traversal_and_child_node_mixins(page):
     ]
 
 
-def test_element_selection_and_insert_adjacent(page):
+async def test_element_selection_and_insert_adjacent(page):
     result = page.evaluate(
         "(() => { const box = document.getElementById('box'); "
         "box.innerHTML = '<section id=\"s\">"
@@ -194,7 +194,7 @@ def test_element_selection_and_insert_adjacent(page):
     ]
 
 
-def test_html_element_reflected_title_and_hidden(page):
+async def test_html_element_reflected_title_and_hidden(page):
     result = page.evaluate(
         "(() => { const div = document.createElement('div'); "
         "div.title = 'tt'; div.hidden = true; "

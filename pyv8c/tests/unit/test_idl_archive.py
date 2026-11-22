@@ -18,7 +18,7 @@ def _document(version=None):
 
 
 @pytest.mark.parametrize("version", [8, 9, 11])
-def test_unsupported_format_versions_are_rejected(version):
+async def test_unsupported_format_versions_are_rejected(version):
     with pytest.raises(ValueError, match="unsupported IDL version"):
         module._read_document(_document(version))
 
@@ -34,7 +34,7 @@ def _member(archive):
         return opened.read("idl.json")
 
 
-def test_a_zip_path_writes_one_member_named_after_the_archive(tmp_path):
+async def test_a_zip_path_writes_one_member_named_after_the_archive(tmp_path):
     archive = write_idl(tmp_path / "idl.zip", _document())
     plain = write_idl(tmp_path / "idl.json", _document())
 
@@ -44,7 +44,7 @@ def test_a_zip_path_writes_one_member_named_after_the_archive(tmp_path):
     assert Idl.load(archive, profile=None).digest == Idl.load(plain, profile=None).digest
 
 
-def test_the_archive_is_the_smaller_spelling_of_one_document(tmp_path):
+async def test_the_archive_is_the_smaller_spelling_of_one_document(tmp_path):
     """Why a release ships the archive: same bytes inside, a fraction of the size outside."""
     document = {"idl": {"version": module.IDL_VERSION},
                 "interfaces": {f"Interface{index}": {"parent": "Node"} for index in range(400)}}
@@ -54,7 +54,7 @@ def test_the_archive_is_the_smaller_spelling_of_one_document(tmp_path):
     assert archive.stat().st_size < plain.stat().st_size / 4
 
 
-def test_the_archive_expands_beside_itself_and_caches_what_it_decoded(tmp_path):
+async def test_the_archive_expands_beside_itself_and_caches_what_it_decoded(tmp_path):
     archive = write_idl(tmp_path / "idl.zip", _document())
     sidecar, cache = tmp_path / "idl.json", tmp_path / "idl.pyv8ccache"
 
@@ -68,7 +68,7 @@ def test_the_archive_expands_beside_itself_and_caches_what_it_decoded(tmp_path):
     assert timings["idl_binary_cache"] is False
 
 
-def test_a_cache_hit_skips_the_parse_and_the_checks(tmp_path):
+async def test_a_cache_hit_skips_the_parse_and_the_checks(tmp_path):
     document = tmp_path / "idl.json"
     write_idl(document, _document())
     Idl.load(document, profile=None)
@@ -80,7 +80,7 @@ def test_a_cache_hit_skips_the_parse_and_the_checks(tmp_path):
     assert timings["idl_binary_cache"] is True
 
 
-def test_load_timings_are_owned_by_each_call(tmp_path):
+async def test_load_timings_are_owned_by_each_call(tmp_path):
     document = write_idl(tmp_path / "idl.json", _document())
     _forget()
     first, second = {}, {}
@@ -90,7 +90,7 @@ def test_load_timings_are_owned_by_each_call(tmp_path):
     assert second['idl_cached'] is True
 
 
-def test_a_broken_cache_is_rebuilt_instead_of_reported(tmp_path):
+async def test_a_broken_cache_is_rebuilt_instead_of_reported(tmp_path):
     document = tmp_path / "idl.json"
     write_idl(document, _document())
     cache = tmp_path / "idl.pyv8ccache"
@@ -105,7 +105,7 @@ def test_a_broken_cache_is_rebuilt_instead_of_reported(tmp_path):
     assert cache.read_bytes().startswith(module._CACHE_MAGIC)
 
 
-def test_a_rewritten_archive_wins_over_its_stale_sidecar(tmp_path):
+async def test_a_rewritten_archive_wins_over_its_stale_sidecar(tmp_path):
     archive = write_idl(tmp_path / "idl.zip", _document())
     sidecar = tmp_path / "idl.json"
     sidecar.write_bytes(b'{"idl": {"version": 0}, "interfaces": {"Gone": {}}}')
@@ -118,7 +118,7 @@ def test_a_rewritten_archive_wins_over_its_stale_sidecar(tmp_path):
     assert sidecar.read_bytes() == _member(archive)
 
 
-def test_an_archive_the_reader_cannot_trust_is_refused(tmp_path):
+async def test_an_archive_the_reader_cannot_trust_is_refused(tmp_path):
     two = tmp_path / "two.zip"
     with zipfile.ZipFile(two, "w") as opened:
         opened.writestr("idl.json", b"{}")
@@ -137,13 +137,13 @@ def test_an_archive_the_reader_cannot_trust_is_refused(tmp_path):
         Idl.load(wrong, profile=None)
 
 
-def test_the_document_this_build_reads_is_the_archive_it_ships():
-    """The one artifact in the tree, and the name a Browser reports for it."""
+async def test_the_document_this_build_reads_is_the_archive_it_ships():
+    """The one artifact in the tree, and the name a Runtime reports for it."""
     assert Path(module.DEFAULT_IDL_PATH).name == "idl.zip"
     assert Path(module.DEFAULT_IDL_PATH).is_file()
 
 
-def test_failed_cache_replacement_preserves_the_published_cache(tmp_path, monkeypatch):
+async def test_failed_cache_replacement_preserves_the_published_cache(tmp_path, monkeypatch):
     path = tmp_path / 'idl.pyv8ccache'
     path.write_bytes(b'published')
     def fail(*args, **kwargs):
@@ -154,7 +154,7 @@ def test_failed_cache_replacement_preserves_the_published_cache(tmp_path, monkey
     assert sorted(p.name for p in tmp_path.iterdir()) == ['idl.pyv8ccache']
 
 
-def test_sidecar_remains_complete_while_its_replacement_is_written(tmp_path):
+async def test_sidecar_remains_complete_while_its_replacement_is_written(tmp_path):
     path = tmp_path / 'idl.json'
     path.write_bytes(b'old-complete')
     def write(handle):

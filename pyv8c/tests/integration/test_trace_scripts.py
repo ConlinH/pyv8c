@@ -2,7 +2,7 @@
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 def _created(events):
@@ -10,7 +10,7 @@ def _created(events):
             if event[0] == "method" and event[2] == "createElement"]
 
 
-def test_external_script_filter_includes_async_callbacks_and_redirect_url():
+async def test_external_script_filter_includes_async_callbacks_and_redirect_url():
     events = []
 
     def loader(url, _request):
@@ -30,14 +30,14 @@ def test_external_script_filter_includes_async_callbacks_and_redirect_url():
             """}
         raise AssertionError(url)
 
-    browser = Browser(real_network=False, resource_loader=loader, trace=True,
+    browser = (await Browser(real_network=False, resource_loader=loader, trace=True,
                       trace_scripts="https://example.test/actual-a.js?*",
-                      trace_callback=lambda *event: events.append(event), stub_logging="off")
+                      trace_callback=lambda *event: events.append(event), stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<script src='/a.js?version=2'></script><script src='/b.js'></script>",
-                         url="https://example.test/")
-        page.wait_for("window.timerDone === true", timeout=3)
+        (await page.set_content("<script src='/a.js?version=2'></script><script src='/b.js'></script>",
+                         url="https://example.test/", wait_until="commit"))
+        (await page.wait_for("window.timerDone === true", timeout=3))
         assert any(filename == "https://example.test/actual-a.js?version=2"
                    for _source, filename in page.scripts._compiled)
         created = _created(events)
@@ -45,14 +45,14 @@ def test_external_script_filter_includes_async_callbacks_and_redirect_url():
         assert "sync-b" not in created
         assert all(len(event) == 8 for event in events)
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_profile_page_overrides_and_trace_switch():
+async def test_profile_page_overrides_and_trace_switch():
     events = []
-    browser = Browser(real_network=False, trace=True, traceable=True,
+    browser = (await Browser(real_network=False, trace=True, traceable=True,
                       trace_scripts="https://example.test/a.js",
-                      trace_callback=lambda *event: events.append(event), stub_logging="off")
+                      trace_callback=lambda *event: events.append(event), stub_logging="off").__aenter__())
     try:
         profile = browser.new_profile(trace_scripts="https://example.test/b.js")
         page = profile.new_page(trace_scripts="https://example.test/c.js")
@@ -71,10 +71,10 @@ def test_profile_page_overrides_and_trace_switch():
         unfiltered.evaluate("document.createElement('all')")
         assert _created(events) == ["all"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_frame_and_worker_inherit_filter_across_navigation():
+async def test_frame_and_worker_inherit_filter_across_navigation():
     events = []
 
     def loader(url, _request):
@@ -88,36 +88,36 @@ def test_frame_and_worker_inherit_filter_across_navigation():
             return {"url": url, "body": "<script src='/target.js'></script>"}
         raise AssertionError(url)
 
-    browser = Browser(real_network=False, resource_loader=loader, trace=True,
+    browser = (await Browser(real_network=False, resource_loader=loader, trace=True,
                       trace_scripts="https://example.test/*target.js",
-                      trace_callback=lambda *event: events.append(event), stub_logging="off")
+                      trace_callback=lambda *event: events.append(event), stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<iframe src='/child'></iframe>", url="https://example.test/")
-        page.run_until_idle(timeout=3)
+        (await page.set_content("<iframe src='/child'></iframe>", url="https://example.test/", wait_until="commit"))
+        (await page.run_until_idle(timeout=3))
         assert "frame-target" in _created(events)
-        page.goto("https://example.test/next")
+        (await page.goto("https://example.test/next"))
         assert _created(events).count("frame-target") >= 2
 
         worker_page = browser.new_profile().new_page(trace_scripts="https://example.test/worker.js")
-        worker_page.set_content("<body></body>", url="https://example.test/")
+        (await worker_page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         worker_page.evaluate("""const worker = new Worker('/worker.js');
             worker.onmessage = event => window.workerValue = event.data;""")
-        worker_page.wait_for("window.workerValue === 'worker-target'", timeout=5)
+        (await worker_page.wait_for("window.workerValue === 'worker-target'", timeout=5))
         assert any(event[7] == "Worker" and event[0] == "construct" and
                    event[2] == "Event" for event in events)
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize("patterns", [[], [""], [42], 42])
-def test_invalid_patterns_rejected(patterns):
+async def test_invalid_patterns_rejected(patterns):
     with pytest.raises((TypeError, ValueError), match="trace_scripts"):
-        Browser(trace_scripts=patterns)
+        (await Browser(trace_scripts=patterns).__aenter__())
 
 
-def test_invalid_profile_and_page_patterns_rejected():
-    browser = Browser(real_network=False)
+async def test_invalid_profile_and_page_patterns_rejected():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         with pytest.raises(ValueError, match="trace_scripts"):
             browser.new_profile(trace_scripts=[])
@@ -126,4 +126,4 @@ def test_invalid_profile_and_page_patterns_rejected():
             profile.new_page(trace_scripts=[""])
         assert profile.pages == []
     finally:
-        browser.close()
+        (await browser.close())

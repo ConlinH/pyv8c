@@ -221,31 +221,31 @@ def _run(session, cases):
     return answers
 
 
-def _run_here(cases, idl_path=None):
+async def _run_here(cases, idl_path=None):
     """The same readings from pyv8c, through the same scripts."""
     from loguru import logger
 
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser, run
 
     logger.remove()
-    browser = Browser(cache=False, stub_logging="off", real_network=False, idl_path=idl_path)
+    browser = (await Browser(cache=False, stub_logging="off", real_network=False, idl_path=idl_path).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://text-layout.test/")
-        page.wait_for_load_state('load', timeout=2)
+        (await page.set_content("<body></body>", url="https://text-layout.test/"))
+        (await page.wait_for_load_state('load', timeout=2))
         answers = {}
         for name, html, readout in cases:
-            page.set_content("<body></body>", url="https://text-layout.test/")
-            page.wait_for_load_state('load', timeout=2)
+            (await page.set_content("<body></body>", url="https://text-layout.test/"))
+            (await page.wait_for_load_state('load', timeout=2))
             answers[name] = page.evaluate(_script(html, readout))
-        page.set_content("<body></body>", url="https://text-layout.test/")
+        (await page.set_content("<body></body>", url="https://text-layout.test/"))
         answers["line-heights"] = page.evaluate(FACE_SCRIPT % (json.dumps(list(FACES)),
                                                                json.dumps(list(SIZES))))
         answers["line-height-styles"] = page.evaluate(STYLE_SCRIPT)
         answers["canvas"] = page.evaluate(CANVAS_SCRIPT % json.dumps(list(CANVAS_TEXTS)))
         return {"browser": "pyv8c", "cases": answers}
     finally:
-        browser.close()
+        (await browser.close())
 
 
 def _flatten(value, prefix=""):
@@ -304,7 +304,7 @@ def main(argv=None):
             print(f"  {name:20s} {value}")
         return 0
 
-    mine = _run_here(cases, idl_path)
+    mine = (run(_run_here(cases, idl_path)))
     found = differences(reference["cases"], mine["cases"])
     unexpected = 0
     for key, theirs, ours in found:
@@ -319,6 +319,8 @@ def main(argv=None):
     print(f"{len(found)} differences over {total} readings, {unexpected} of them unexpected")
     return 1 if unexpected else 0
 
+
+from pyv8c.async_api import Browser, run
 
 if __name__ == "__main__":
     raise SystemExit(main())

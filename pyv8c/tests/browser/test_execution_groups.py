@@ -1,73 +1,80 @@
 import threading
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_frames_share_owner_and_agent_but_independent_pages_do_not():
-    with_browser = Browser(real_network=False, stub_logging='off')
+async def test_frames_share_group_and_agent_while_pages_share_owner_only():
+    with_browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         profile = with_browser.new_profile()
         page, other = profile.new_page(), profile.new_page()
-        page.set_content('<body><iframe></iframe></body>')
+        (await page.set_content('<body><iframe></iframe></body>', wait_until="commit"))
         child = page.document.fn_querySelector('iframe')._child_services._page_realm.page
         assert page.execution_group is child.execution_group
         assert page.realm.agent is child.realm.agent
         assert page.realm.agent is not other.realm.agent
         assert page.executor.call(threading.get_ident) == child.executor.call(threading.get_ident)
-        assert page.executor.call(threading.get_ident) != other.executor.call(threading.get_ident)
-        child.close()
+        assert page.execution_group is not other.execution_group
+        assert page.isolate is not other.isolate
+        assert page.executor.call(threading.get_ident) == other.executor.call(threading.get_ident) == threading.get_ident()
+        await child.close()
         assert not page.executor.closed
         assert page.evaluate('1+1') == 2
     finally:
-        with_browser.close()
+        (await with_browser.close())
 
 
-def test_same_origin_frames_share_microtasks_in_enqueue_order():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_same_origin_frames_share_microtasks_in_enqueue_order():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><iframe></iframe></body>')
+        (await page.set_content('<body><iframe></iframe></body>', wait_until="commit"))
         assert page.evaluate('''globalThis.log=[];
             frames[0].eval("Promise.resolve().then(()=>parent.log.push('child'))");
             Promise.resolve().then(()=>log.push('parent')); 'scheduled'
         ''') == 'scheduled'
         assert page.evaluate('log') == ['child', 'parent']
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_origin_navigation_changes_agent_without_replacing_group():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_origin_navigation_changes_agent_without_replacing_group():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         group = page.execution_group
         opaque = page.realm.agent
-        page.set_content('<body></body>', 'https://one.test/')
+        (await page.set_content('<body></body>', 'https://one.test/', wait_until="commit"))
         first = page.realm.agent
         assert first is not opaque
-        page.set_content('<body></body>', 'https://two.test/')
+        (await page.set_content('<body></body>', 'https://two.test/', wait_until="commit"))
         assert page.realm.agent is not first
-        page.set_content('<body></body>', 'https://one.test/again')
+        (await page.set_content('<body></body>', 'https://one.test/again', wait_until="commit"))
         assert page.realm.agent is first
         assert page.execution_group is group
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_external_close_joins_the_last_group_owner():
-    browser = Browser(real_network=False, stub_logging='off')
-    try:
-        page = browser.new_profile().new_page()
-        thread = page.execution_group.executor._thread
-        page.close()
-        assert not thread.is_alive()
-    finally:
-        browser.close()
+async def test_foreign_close_is_rejected_and_owner_close_releases_the_group():
+    import asyncio
+    import pytest
+    from pyv8c.foundation.host_errors import HostStateError
+    async with Browser(real_network=False, stub_logging="off") as runtime:
+        page = runtime.new_page()
+        group = page.execution_group
+        assert not hasattr(group.executor, "_thread")
+        with pytest.raises(HostStateError, match="owner thread"):
+            await asyncio.to_thread(lambda: asyncio.run(page.close()))
+        assert page.evaluate("42") == 42
+        (await page.close())
+        assert page.closed and group.closed and group.executor.closed
+        assert group.executor._soon is None and group.executor._timer is None
 
 
-def test_evaluate_function_result_can_be_printed_outside_the_realm():
-    from pyv8c import Browser
-    browser = Browser(real_network=False)
+async def test_evaluate_function_result_can_be_printed_outside_the_realm():
+    from pyv8c.async_api import Browser
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         result = page.evaluate("window.AbsoluteOrientationSensor")
@@ -82,14 +89,14 @@ def test_evaluate_function_result_can_be_printed_outside_the_realm():
         assert isinstance(handle, pyv8.JSFunction)
         assert "AbsoluteOrientationSensor" in page.executor.call(repr, handle)
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_evaluate_noncopyable_objects_are_safe_to_print():
+async def test_evaluate_noncopyable_objects_are_safe_to_print():
     from pyv8c import pyv8
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser
 
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         if page.evaluate("typeof Temporal !== 'undefined'"):
@@ -106,4 +113,4 @@ def test_evaluate_noncopyable_objects_are_safe_to_print():
         assert isinstance(handle, pyv8.JSObject)
         assert page.executor.call(repr, handle) == "[object Map]"
     finally:
-        browser.close()
+        (await browser.close())

@@ -29,9 +29,9 @@ dist/
 pyv8c/pyv8c/pyv8/_pyv8*.pyd
 pyv8c/pyv8c/pyv8/_pyv8*.so
 pyv8c/pyv8c/pyv8/icudtl.dat
-pyv8c/pyv8c/_audio_native*.pyd
-pyv8c/pyv8c/_audio_native*.so
-pyv8c/audio_native/target/
+pyv8c/pyv8c/_native/*.pyd
+pyv8c/pyv8c/_native/*.so
+pyv8c/native/target/
 
 # Extracted bundled-IDL caches. Releases only contain the ZIP artifact.
 pyv8c/pyv8c/idl/*.json
@@ -40,6 +40,7 @@ pyv8c/pyv8c/idl/*.pyv8ccache
 pyv8c/idls/*.json
 pyv8c/idls/*.pyv8ccache
 
-# One machine's readings, written by tools/collect_fonts.py and collect_text_layout.py --compare.
+# One machine's readings, written by collect_fonts.py, collect_text_layout.py and benchmark.py --record.
 tools/fonts-baseline.json
 tools/text-layout-baseline.json
+benchmarks/perf_baseline.json

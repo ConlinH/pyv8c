@@ -5,12 +5,14 @@ unimplemented.  The URL attributes share one resolution helper, and the
 stylesheet tests guard the cascade entry points that keep ``layout`` from
 rescanning the document on every read.
 """
+
+import asyncio
 import json
 
 import pytest
 from loguru import logger
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 CONTENT = """
 <html><head><title>  Live   Page </title>
@@ -34,18 +36,18 @@ CONTENT = """
 
 
 @pytest.fixture
-def page():
-    browser = Browser(stub_logging="off")
+async def page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content(CONTENT, url="https://dom.test/dir/page")
-    page.run_until_idle(timeout=1)
+    (await page.set_content(CONTENT, url="https://dom.test/dir/page", wait_until="commit"))
+    (await page.run_until_idle(timeout=1))
     try:
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_document_implementation_factories(page):
+async def test_document_implementation_factories(page):
     assert page.evaluate("document.implementation === document.implementation") is True
     assert page.evaluate("document.implementation.hasFeature()") is True
     assert page.evaluate("""
@@ -65,7 +67,7 @@ def test_document_implementation_factories(page):
     """) == ["html", "p", "s", "ROOT", 1]
 
 
-def test_current_script_is_set_only_while_a_script_runs(page):
+async def test_current_script_is_set_only_while_a_script_runs(page):
     assert page.evaluate("window.__current") == "SCRIPT"
     assert page.evaluate("""
         (function () {
@@ -78,7 +80,7 @@ def test_current_script_is_set_only_while_a_script_runs(page):
     assert page.evaluate("String(document.currentScript)") == "null"
 
 
-def test_document_fragment_queries_its_own_subtree(page):
+async def test_document_fragment_queries_its_own_subtree(page):
     assert page.evaluate("""
         (function () {
             const fragment = document.createDocumentFragment();
@@ -93,7 +95,7 @@ def test_document_fragment_queries_its_own_subtree(page):
     """) == [1, "SPAN", 1]
 
 
-def test_link_media_and_anchor_url_members(page):
+async def test_link_media_and_anchor_url_members(page):
     assert page.evaluate("""
         (function () {
             const link = document.querySelector('link');
@@ -126,7 +128,7 @@ def test_link_media_and_anchor_url_members(page):
     assert page.evaluate("document.createElement('a').origin") == ""
 
 
-def test_textarea_option_and_select_values(page):
+async def test_textarea_option_and_select_values(page):
     assert page.evaluate("""
         (function () {
             const area = document.querySelector('textarea');
@@ -148,7 +150,7 @@ def test_textarea_option_and_select_values(page):
     """) == [["a", True, False, "a", "B"], ["B", False, True], ["", False, False]]
 
 
-def test_a_mutation_observer_reports_child_and_attribute_changes(page):
+async def test_a_mutation_observer_reports_child_and_attribute_changes(page):
     page.evaluate("""(() => {
         window.__records = [];
         const target = document.createElement('div');
@@ -166,7 +168,7 @@ def test_a_mutation_observer_reports_child_and_attribute_changes(page):
     ]
 
 
-def test_a_mutation_observer_hears_only_what_it_asked_for(page):
+async def test_a_mutation_observer_hears_only_what_it_asked_for(page):
     """Records are queued, not delivered: ``takeRecords`` takes them first."""
     assert page.evaluate("""(() => {
         const heard = [];
@@ -185,10 +187,10 @@ def test_a_mutation_observer_hears_only_what_it_asked_for(page):
     })()""") == [["attributes"], 0, 0]
 
 
-def test_xpath_walks_the_document(page):
+async def test_xpath_walks_the_document(page):
     # Predicates and snapshots: corpus ``xpath_predicates_and_snapshots``.
-    page.set_content('<p class="x">one</p><p class="x">two</p><p>three</p>',
-                     url="https://secure.test/")
+    (await page.set_content('<p class="x">one</p><p class="x">two</p><p>three</p>',
+                     url="https://secure.test/", wait_until="commit"))
     assert page.evaluate("""(() => {
         const href = document.evaluate("//a/@href", document, null,
             XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
@@ -198,14 +200,15 @@ def test_xpath_walks_the_document(page):
     })()""") == [0, "two"]
 
 
-def test_a_frames_window_keeps_its_identity_across_a_navigation(page):
-    page.set_content('<body><iframe id="f" src="about:blank"></iframe></body>',
-                     url="https://frame.test/")
+async def test_a_frames_window_keeps_its_identity_across_a_navigation(page):
+    (await page.set_content('<body><iframe id="f" src="about:blank"></iframe></body>',
+                     url="https://frame.test/", wait_until="commit"))
     assert page.evaluate("""(() => {
         window.__saved = document.getElementById('f').contentWindow;
         return window.__saved === document.getElementById('f').contentWindow;
     })()""") is True
     page.evaluate("document.getElementById('f').srcdoc = '<p>second</p>'")
+    await page.wait_for("document.getElementById('f').contentDocument.body.textContent==='second'", timeout=1)
     assert page.evaluate("""(() => {
         const frame = document.getElementById('f');
         return [window.__saved === frame.contentWindow,
@@ -214,7 +217,7 @@ def test_a_frames_window_keeps_its_identity_across_a_navigation(page):
     })()""") == [True, True, "second"]
 
 
-def test_an_inserted_frame_answers_content_window_at_once(page):
+async def test_an_inserted_frame_answers_content_window_at_once(page):
     """A frame gets its window where it is inserted, not on the task after the turn.
 
     A browser has the initial about:blank window the moment the frame joins the document,
@@ -222,15 +225,15 @@ def test_an_inserted_frame_answers_content_window_at_once(page):
     and a null there throws inside it.  Only the document the frame
     asks for arrives later.
     """
-    page.set_content("""<body><script>
+    (await page.set_content("""<body><script>
         const frame = document.createElement('iframe');
         frame.src = 'about:blank';
         document.body.appendChild(frame);
         window.__inline = [String(frame.contentWindow), document.readyState,
                            frame.contentDocument !== null,
                            frame.contentWindow.document !== null];
-    </script></body>""", url="https://frames.test/")
-    page.run_until_idle(timeout=1)
+    </script></body>""", url="https://frames.test/", wait_until="commit"))
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("__inline") == ['[object Window]', 'loading', True, True]
     assert page.evaluate("""(() => {
         const frame = document.querySelector('iframe');
@@ -239,14 +242,14 @@ def test_an_inserted_frame_answers_content_window_at_once(page):
     })()""") == ['about:blank', 'object', 'string']
 
 
-def test_a_navigation_gives_the_page_a_new_window_and_keeps_the_context(page):
-    page.set_content("<body>first</body>", url="https://nav.test/one")
+async def test_a_navigation_gives_the_page_a_new_window_and_keeps_the_context(page):
+    (await page.set_content("<body>first</body>", url="https://nav.test/one", wait_until="commit"))
     page.evaluate("""(() => {
         window.__mark = 'first';
         window.name = 'kept';
         sessionStorage.setItem('k', 'v');
     })()""")
-    page.set_content("<body>second</body>", url="https://nav.test/two")
+    (await page.set_content("<body>second</body>", url="https://nav.test/two", wait_until="commit"))
     assert page.evaluate("""(() => {
         return [window.__mark === undefined, window.name,
                 sessionStorage.getItem('k'), location.href,
@@ -255,19 +258,19 @@ def test_a_navigation_gives_the_page_a_new_window_and_keeps_the_context(page):
     })()""") == [True, "kept", "v", "https://nav.test/two", True, True, True, "second"]
 
 
-def test_a_frames_top_and_parent_follow_their_pages_navigations(page):
-    page.set_content('<body><iframe src="about:blank"></iframe></body>',
-                     url="https://top.test/first")
+async def test_a_frames_top_and_parent_follow_their_pages_navigations(page):
+    (await page.set_content('<body><iframe src="about:blank"></iframe></body>',
+                     url="https://top.test/first", wait_until="commit"))
     child = next(iter(page._owned.frames))
-    assert child.evaluate("[parent.location.href, top.location.href]") == \
+    assert child.evaluate("[parent.location.href, top.location.href]") ==\
         ["https://top.test/first", "https://top.test/first"]
-    page.set_content("<body></body>", url="https://top.test/second")
-    assert child.evaluate("[parent.location.href, top.location.href]") == \
+    (await page.set_content("<body></body>", url="https://top.test/second", wait_until="commit"))
+    assert child.evaluate("[parent.location.href, top.location.href]") ==\
         ["https://top.test/second", "https://top.test/second"]
 
 
-def test_low_frequency_child_objects_are_created_on_first_read(page):
-    page.set_content("<body></body>", url="https://secure.test/")
+async def test_low_frequency_child_objects_are_created_on_first_read(page):
+    (await page.set_content("<body></body>", url="https://secure.test/", wait_until="commit"))
     screen = page.window.screen
     assert screen._values.cached_names == frozenset()
     assert page.evaluate("screen.orientation === screen.orientation") is True
@@ -279,8 +282,8 @@ def test_low_frequency_child_objects_are_created_on_first_read(page):
     assert navigator._features.cached_names == {"locks"}
 
 
-def test_a_lock_request_runs_its_callback(page):
-    page.set_content("<body></body>", url="https://secure.test/")
+async def test_a_lock_request_runs_its_callback(page):
+    (await page.set_content("<body></body>", url="https://secure.test/", wait_until="commit"))
     page.evaluate("""window.__held = [];
         navigator.locks.request('res', lock => {
           window.__held.push(lock.name, lock.mode);
@@ -288,12 +291,12 @@ def test_a_lock_request_runs_its_callback(page):
         });""")
     # Web Locks dispatches the callback as a task; another evaluation is not a
     # guarantee that the task has run yet.
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__held") == ["res", "exclusive"]
     assert page.evaluate("typeof navigator.locks.query") == "function"
 
 
-def test_canvas_text_baseline_round_trips(page):
+async def test_canvas_text_baseline_round_trips(page):
     assert page.evaluate("""
         (function () {
             const context = document.createElement('canvas').getContext('2d');
@@ -310,7 +313,7 @@ def test_canvas_text_baseline_round_trips(page):
     """) == ["alphabetic", "middle", "middle", "middle"]
 
 
-def test_webgl_reads_back_the_colour_it_cleared_to(page):
+async def test_webgl_reads_back_the_colour_it_cleared_to(page):
     assert page.evaluate("""(() => {
         const canvas = document.createElement('canvas');
         const gl = canvas.getContext('webgl');
@@ -325,7 +328,7 @@ def test_webgl_reads_back_the_colour_it_cleared_to(page):
     })()""") == ["0,0,0,0", "64,128,191,255", "0.25,0.5,0.75,1", 0]
 
 
-def test_webgl_color_mask_holds_back_the_channels_it_covers(page):
+async def test_webgl_color_mask_holds_back_the_channels_it_covers(page):
     assert page.evaluate("""(() => {
         const canvas = document.createElement('canvas');
         const gl = canvas.getContext('webgl');
@@ -339,7 +342,7 @@ def test_webgl_color_mask_holds_back_the_channels_it_covers(page):
     })()""") == ["255,0,255,0", "true,false,true,false"]
 
 
-def test_webgl_draw_path_answers_without_an_error(page):
+async def test_webgl_draw_path_answers_without_an_error(page):
     assert page.evaluate("""(() => {
         const gl = document.createElement('canvas').getContext('webgl');
         const shader = gl.createShader(gl.VERTEX_SHADER);
@@ -364,14 +367,14 @@ def test_webgl_draw_path_answers_without_an_error(page):
     })()""") == 0
 
 
-def test_feature_policy_needs_a_feature_name(page):
+async def test_feature_policy_needs_a_feature_name(page):
     assert page.evaluate("""(() => {
         try { document.featurePolicy.allowsFeature(); return 'no throw'; }
         catch (error) { return error.name + ': ' + error.message; }
     })()""").startswith("TypeError: Failed to execute 'allowsFeature' on 'PermissionsPolicy'")
 
 
-def test_attribute_style_map_refuses_what_chrome_refuses(page):
+async def test_attribute_style_map_refuses_what_chrome_refuses(page):
     """The writable map validates names and values, the read-only view only names."""
     assert page.evaluate("""(() => {
         const element = document.createElement('div');
@@ -417,7 +420,7 @@ def test_attribute_style_map_refuses_what_chrome_refuses(page):
     ]
 
 
-def test_a_transferred_message_port_arrives_in_the_events_ports(page):
+async def test_a_transferred_message_port_arrives_in_the_events_ports(page):
     """A transfer moves the port: the sender's reference is neutered, the twin stays
     entangled with the port the receiving side finds in ``event.ports``.
     """
@@ -436,12 +439,12 @@ def test_a_transferred_message_port_arrives_in_the_events_ports(page):
         };
         postMessage('init', '*', [channel.port2]);
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == ["init", 1, True, "from-port1"]
     assert page.evaluate("window.__neutered") is False
 
 
-def test_the_exception_prototype_behaves_like_chromium(page):
+async def test_the_exception_prototype_behaves_like_chromium(page):
     """``DOMException``'s surface, as Chromium's own assertions state it.
 
     Every assertion below is a case in
@@ -483,7 +486,7 @@ def test_the_exception_prototype_behaves_like_chromium(page):
                       True, True, False]
 
 
-def test_a_plain_object_is_cloned_without_a_word_of_complaint(page):
+async def test_a_plain_object_is_cloned_without_a_word_of_complaint(page):
     """Most of what a message carries is plain data, which is no structured kind at all.
 
     The realm answers ``null`` for it and the clone takes the plain snapshot; that
@@ -499,14 +502,14 @@ def test_a_plain_object_is_cloned_without_a_word_of_complaint(page):
             channel.port2.onmessage = event => { window.__seen = event.data; };
             channel.port1.postMessage({plain: {deep: [1, 'two', false]}, more: true});
         })()""")
-        page.run_until_idle(timeout=1)
+        (await page.run_until_idle(timeout=1))
     finally:
         logger.remove(token)
     assert page.evaluate("window.__seen") == {"plain": {"deep": [1, "two", False]}, "more": True}
     assert not any("could not be read" in line for line in messages), messages
 
 
-def test_a_posted_message_is_a_copy_taken_when_it_is_posted(page):
+async def test_a_posted_message_is_a_copy_taken_when_it_is_posted(page):
     """A port carries a snapshot, as a browser does.
 
     What the sender does to its object after the call is not seen on the other side,
@@ -530,11 +533,11 @@ def test_a_posted_message_is_a_copy_taken_when_it_is_posted(page):
         payload.list.push(3);
         new Uint8Array(payload.buffer)[0] = 42;
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [1, "1,2", 7]
 
 
-def test_a_port_that_outlives_its_worker_still_delivers(monkeypatch):
+async def test_a_port_that_outlives_its_worker_still_delivers(monkeypatch):
     """A message a worker posted through a port arrives after that worker is gone.
 
     The page holds its own queue shut for the moment the worker needs to post and
@@ -572,23 +575,23 @@ def test_a_port_that_outlives_its_worker_still_delivers(monkeypatch):
         assert runtime._realm is None
         closed.set()
     monkeypatch.setattr(WorkerRuntime, '_cleanup_owner', cleanup)
-    browser = Browser(stub_logging="off", real_network=False, resource_loader=loader)
+    browser = (await Browser(stub_logging="off", real_network=False, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto("http://port.test/")
-        assert ready.wait(2)
+        (await page.goto("http://port.test/"))
+        assert (await asyncio.to_thread(ready.wait, 2))
         def post_while_parent_queue_is_blocked():
             page.evaluate("worker.postMessage('go', [channel.port2])")
             assert closed.wait(2), "worker realm must close before parent delivery"
         page.executor.call(post_while_parent_queue_is_blocked)
-        page.wait_for("window.__seen.length===2 || window.__error!==''", timeout=2)
+        (await page.wait_for("window.__seen.length===2 || window.__error!==''", timeout=2))
         assert page.evaluate("window.__error") == ""
         assert page.evaluate("window.__seen") == [7, "1,2"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_post_message_carries_binary_data(page):
+async def test_post_message_carries_binary_data(page):
     """An ``ArrayBuffer`` a page posts arrives as one, with its bytes.
 
     A clone that walks enumerable properties alone finds nothing on a buffer, so it
@@ -603,11 +606,11 @@ def test_post_message_carries_binary_data(page):
         };
         postMessage(new Uint8Array([1, 2, 3, 4]).buffer, '*');
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [True, 4, "1,2,3,4"]
 
 
-def test_a_transfer_list_refuses_what_it_cannot_move(page):
+async def test_a_transfer_list_refuses_what_it_cannot_move(page):
     assert page.evaluate("""(() => {
         const answers = [];
         const channel = new MessageChannel();
@@ -626,7 +629,7 @@ def test_a_transfer_list_refuses_what_it_cannot_move(page):
     ]
 
 
-def test_a_transfer_list_hands_over_an_arraybuffer(page):
+async def test_a_transfer_list_hands_over_an_arraybuffer(page):
     """A transferred buffer is handed over rather than copied: the realm that gave it
     up has nothing left of it, and the other end reads a buffer with those bytes."""
     assert page.evaluate("""(() => {
@@ -641,11 +644,11 @@ def test_a_transfer_list_hands_over_an_arraybuffer(page):
         channel.port1.postMessage(buffer, [buffer]);
         return buffer.byteLength;
     })()""") == 0
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [True, 4, "1,2,3,4"]
 
 
-def test_a_posted_view_arrives_as_the_same_kind_of_view(page):
+async def test_a_posted_view_arrives_as_the_same_kind_of_view(page):
     """What crosses is the kind of value that was posted, not only its bytes.
 
     A browser hands the other realm the same view over its own copy of the bytes, and an
@@ -675,7 +678,7 @@ def test_a_posted_view_arrives_as_the_same_kind_of_view(page):
                                    window: new DataView(new Uint8Array([1, 2, 3]).buffer),
                                    list: [new Uint8Array([5, 6])]});
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [
         "[object Int32Array]", 0, 8, 8,
         "[object Float64Array]", 0, 8, 8,
@@ -686,7 +689,7 @@ def test_a_posted_view_arrives_as_the_same_kind_of_view(page):
     ]
 
 
-def test_a_posted_map_set_date_and_regexp_arrive_as_themselves(page):
+async def test_a_posted_map_set_date_and_regexp_arrive_as_themselves(page):
     """A browser's clone keeps the kind of value it was given.
 
     A ``Map`` arrives a ``Map`` with its entries, a ``Set`` a ``Set``, a ``Date`` the
@@ -715,7 +718,7 @@ def test_a_posted_map_set_date_and_regexp_arrive_as_themselves(page):
             nested: new Map([['inner', new Set(['x'])]]),
         });
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [
         "[object Map]", True, 1, 2, 2,
         "[object Set]", True, 2,
@@ -725,7 +728,7 @@ def test_a_posted_map_set_date_and_regexp_arrive_as_themselves(page):
     ]
 
 
-def test_views_of_one_buffer_share_it_after_crossing(page):
+async def test_views_of_one_buffer_share_it_after_crossing(page):
     """One buffer is one buffer on the other side.
 
     A browser clones a buffer once and builds every view of it over that clone, so a
@@ -752,11 +755,11 @@ def test_views_of_one_buffer_share_it_after_crossing(page):
                                    separate: new Uint8Array(other),
                                    nested: new Map([['inner', new DataView(buffer)]])});
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [True, True, True, False, 1, 2]
 
 
-def test_a_posted_error_arrives_as_the_same_kind_of_error(page):
+async def test_a_posted_error_arrives_as_the_same_kind_of_error(page):
     """An error crosses as the error it was: the same kind, the same name, the same
     message.  A ``DOMException`` keeps the name its legacy ``code`` follows from, and
     the ports a message carries are a frozen array, as a browser hands them over."""
@@ -774,7 +777,7 @@ def test_a_posted_error_arrives_as_the_same_kind_of_error(page):
                                    type_error: new TypeError('bad type'),
                                    dom: new DOMException('nope', 'NotFoundError')});
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [
         "[object Error]", True, "Error", "boom", "string",
         "[object Error]", True, "TypeError", "bad type", "string",
@@ -783,7 +786,7 @@ def test_a_posted_error_arrives_as_the_same_kind_of_error(page):
     ]
 
 
-def test_what_cannot_be_cloned_says_which_value_it_was(page):
+async def test_what_cannot_be_cloned_says_which_value_it_was(page):
     """Chrome names the value it refuses: a weak map or a promise by its kind, and a
     function by its own source.  The error the host raises for it carries a stack, as a
     browser's own ``DOMException`` does -- unlike one a page makes with ``new``."""
@@ -800,7 +803,7 @@ def test_what_cannot_be_cloned_says_which_value_it_was(page):
                 "() => 1 could not be cloned.", "string"]
 
 
-def test_a_posted_file_arrives_as_a_file(page):
+async def test_a_posted_file_arrives_as_a_file(page):
     """A ``File`` crosses as the file it was, not as the blob it is made of: its bytes,
     and the name and timestamp that make it more than a blob.  A blob beside it stays a
     blob, and one nested inside a ``Map`` is a file where it arrives."""
@@ -824,7 +827,7 @@ def test_a_posted_file_arrives_as_a_file(page):
             nested: new Map([['inner', new File(['xyz'], 'b.bin', {lastModified: stamp})]]),
         });
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [
         "[object File]", True, True, "a.txt", "text/plain", 5, 1700000000000,
         "[object Blob]", False, True, "(no name)", "text/plain", 2, -1,
@@ -832,7 +835,7 @@ def test_a_posted_file_arrives_as_a_file(page):
     ]
 
 
-def test_a_posted_view_carries_the_bytes_it_holds(page):
+async def test_a_posted_view_carries_the_bytes_it_holds(page):
     """A view is the bytes it holds, not the numbers it shows.
 
     An ``Int32Array`` of ``[300, -2]`` is eight bytes, and a ``DataView`` holds whatever
@@ -855,11 +858,11 @@ def test_a_posted_view_carries_the_bytes_it_holds(page):
                                    half: new Float64Array([1.5]),
                                    window: new DataView(new Uint8Array([1, 2, 3]).buffer)});
     })()""")
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert page.evaluate("window.__seen") == [300, -2, 1.5, "1,2,3"]
 
 
-def test_a_transfer_list_refuses_a_buffer_that_is_already_detached(page):
+async def test_a_transfer_list_refuses_a_buffer_that_is_already_detached(page):
     assert page.evaluate("""(() => {
         const channel = new MessageChannel();
         const buffer = new Uint8Array([1, 2]).buffer;
@@ -870,7 +873,7 @@ def test_a_transfer_list_refuses_a_buffer_that_is_already_detached(page):
                  " ArrayBuffer at index 0 is already detached.")
 
 
-def test_is_type_supported_answers_the_codecs_the_build_carries(page):
+async def test_is_type_supported_answers_the_codecs_the_build_carries(page):
     assert page.evaluate("""(() => [
         MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
         MediaSource.isTypeSupported('video/mp4; codecs="mp4v.20.8"'),
@@ -881,14 +884,14 @@ def test_is_type_supported_answers_the_codecs_the_build_carries(page):
     ])()""") == [True, False, False, True, False, False]
 
 
-def test_is_type_supported_needs_a_type(page):
+async def test_is_type_supported_needs_a_type(page):
     assert page.evaluate("""(() => {
         try { MediaSource.isTypeSupported(); return 'no throw'; }
         catch (error) { return error.name + ': ' + error.message; }
     })()""").startswith("TypeError: Failed to execute 'isTypeSupported' on 'MediaSource'")
 
 
-def test_rtp_receiver_capabilities_are_the_reference_builds(page):
+async def test_rtp_receiver_capabilities_are_the_reference_builds(page):
     assert page.evaluate("""(() => {
         const audio = RTCRtpReceiver.getCapabilities('audio');
         const video = RTCRtpReceiver.getCapabilities('video');
@@ -901,7 +904,7 @@ def test_rtp_receiver_capabilities_are_the_reference_builds(page):
                  "channels,clockRate,mimeType,sdpFmtpLine", "null"]
 
 
-def test_a_dom_matrix_parses_serializes_and_transforms(page):
+async def test_a_dom_matrix_parses_serializes_and_transforms(page):
     assert page.evaluate("""(() => {
         const ids = m => m.toString();
         const identity = new DOMMatrix();
@@ -926,7 +929,7 @@ def test_a_dom_matrix_parses_serializes_and_transforms(page):
     ]
 
 
-def test_a_dom_matrix_keeps_its_2d_flag_and_fills_a_point(page):
+async def test_a_dom_matrix_keeps_its_2d_flag_and_fills_a_point(page):
     assert page.evaluate("""(() => {
         const sticky = new DOMMatrix();
         sticky.multiplySelf(new DOMMatrix('matrix3d(1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1)'));
@@ -944,7 +947,7 @@ def test_a_dom_matrix_keeps_its_2d_flag_and_fills_a_point(page):
                  '{"x":1,"y":2,"z":3,"w":4}', "[object DOMPoint]"]
 
 
-def test_a_dom_parser_builds_a_document_that_belongs_to_no_window(page):
+async def test_a_dom_parser_builds_a_document_that_belongs_to_no_window(page):
     assert page.evaluate("""(() => {
         const doc = new DOMParser().parseFromString(
             '<!DOCTYPE html><body><p id=x>hi</p></body>', 'text/html');
@@ -957,7 +960,7 @@ def test_a_dom_parser_builds_a_document_that_belongs_to_no_window(page):
                  "html", True, "", "HTMLParagraphElement"]
 
 
-def test_a_dom_parser_refuses_a_type_outside_the_enum(page):
+async def test_a_dom_parser_refuses_a_type_outside_the_enum(page):
     assert page.evaluate("""(() => {
         const answers = [];
         for (const call of [() => new DOMParser().parseFromString('<a/>', 'text/plain'),
@@ -974,7 +977,7 @@ def test_a_dom_parser_refuses_a_type_outside_the_enum(page):
     ]
 
 
-def test_an_xml_parse_keeps_namespaces_and_reports_its_own_error(page):
+async def test_an_xml_parse_keeps_namespaces_and_reports_its_own_error(page):
     assert page.evaluate("""(() => {
         const good = new DOMParser().parseFromString(
             '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1"/></svg>', 'image/svg+xml');
@@ -988,7 +991,7 @@ def test_an_xml_parse_keeps_namespaces_and_reports_its_own_error(page):
                  "[object SVGCircleElement]", "root", 1]
 
 
-def test_stylesheet_cascade_and_layout_still_apply(page):
+async def test_stylesheet_cascade_and_layout_still_apply(page):
     """The cascade reads the sheet once per entry point, not once per element."""
     assert page.evaluate("getComputedStyle(document.querySelector('.item')).color") == "rgb(255, 0, 0)"
     # Inherited through the parent chain.
@@ -1004,7 +1007,7 @@ def test_stylesheet_cascade_and_layout_still_apply(page):
     """) == [40, 10, 16]
 
 
-def test_url_attributes_resolve_and_write_the_attribute(page):
+async def test_url_attributes_resolve_and_write_the_attribute(page):
     """The URL attributes read back absolute and keep the attribute written."""
     assert page.evaluate("""
         (function () {
@@ -1061,18 +1064,18 @@ STYLE_CONTENT = """
 
 
 @pytest.fixture
-def style_page():
-    browser = Browser(stub_logging="off")
+async def style_page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content(STYLE_CONTENT, url="https://dom.test/dir/page")
-    page.run_until_idle(timeout=1)
+    (await page.set_content(STYLE_CONTENT, url="https://dom.test/dir/page", wait_until="commit"))
+    (await page.run_until_idle(timeout=1))
     try:
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_stylesheet_cache_follows_runtime_changes(style_page):
+async def test_stylesheet_cache_follows_runtime_changes(style_page):
     """The sheet is parsed once per change, not once per measurement."""
     from pyv8c.web.css.cascade import document_rules
 

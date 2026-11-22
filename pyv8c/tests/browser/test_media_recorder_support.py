@@ -1,20 +1,20 @@
 """MediaRecorder MIME probes observed in Chrome 155 and the Costco SDK."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def _evaluate(script):
-    browser = Browser(real_network=False)
+async def _evaluate(script):
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://media.test/')
+        (await page.set_content('<body></body>', url='https://media.test/', wait_until="commit"))
         return page.evaluate(script)
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_sdk_recording_mime_queries_return_chrome_booleans():
-    result = _evaluate('''(() => {
+async def test_sdk_recording_mime_queries_return_chrome_booleans():
+    result = (await _evaluate('''(() => {
       const inputs = [
         'video/webm', 'audio/webm', 'video/webm;codecs=vp8',
         'video/webm;codecs=daala', 'video/webm;codecs=h264',
@@ -31,12 +31,12 @@ def test_sdk_recording_mime_queries_return_chrome_booleans():
         'video/mp4;codecs=av01.0.19M.08,opus'
       ];
       return inputs.map(type => MediaRecorder.isTypeSupported(type));
-    })()''')
+    })()'''))
     assert result == [True, True, True, False, True, True, True] + [True] * 10
 
 
-def test_recording_support_parses_container_codec_and_errors_like_chrome():
-    result = _evaluate('''(() => {
+async def test_recording_support_parses_container_codec_and_errors_like_chrome():
+    result = (await _evaluate('''(() => {
       const types = ['', 'video/webm;codecs=vp8,opus',
         'video/webm;codecs=vp8,', 'video/webm;codecs=,vp8',
         'audio/webm;codecs=vp8', 'audio/webm;codecs=opus,pcm',
@@ -48,7 +48,7 @@ def test_recording_support_parses_container_codec_and_errors_like_chrome():
       try { MediaRecorder.isTypeSupported(); }
       catch (error) { missing = [error.name, error.message]; }
       return {values: types.map(type => MediaRecorder.isTypeSupported(type)), missing};
-    })()''')
+    })()'''))
     assert result == {
         'values': [True, True, False, False, False, True, False, True,
                    False, True, False, True, True],

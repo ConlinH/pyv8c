@@ -3,6 +3,7 @@
 
 #include "bridge_base.h"
 #include <memory>
+#include <optional>
 
 #include <v8.h>
 #include <Python.h>
@@ -14,6 +15,9 @@ IsolateState* current_isolate_state();
 class IsolateLockScope
 {
 public:
+    // Observe existing entries without starting a V8 thread/Locker. A contended
+    // foreign isolate retains the nested-execution error contract.
+    static bool has_thread_entry(IsolateState* state);
     explicit IsolateLockScope(IsolateState* state, bool try_only = false);
     ~IsolateLockScope();
 
@@ -27,7 +31,7 @@ private:
     IsolateState* state_;
     IsolateState* previous_;
     v8::Isolate* isolate_;
-    std::unique_ptr<v8::Locker> locker_;
+    std::optional<v8::Locker> locker_;
     bool entered_;
     bool nested_;
     PyObject* python_owner_;

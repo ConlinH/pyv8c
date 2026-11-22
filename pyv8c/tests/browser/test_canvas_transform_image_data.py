@@ -1,20 +1,20 @@
 """Canvas operations used by browser fingerprint and ordinary page drawing."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def _evaluate(script):
-    browser = Browser(real_network=False)
+async def _evaluate(script):
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://canvas.test/')
+        (await page.set_content('<body></body>', url='https://canvas.test/', wait_until="commit"))
         return page.evaluate(script)
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_affine_transform_and_half_open_rectangle_pixels_match_chrome():
-    result = _evaluate('''(() => {
+async def test_affine_transform_and_half_open_rectangle_pixels_match_chrome():
+    result = (await _evaluate('''(() => {
       const canvas=document.createElement('canvas'); canvas.width=canvas.height=10;
       const ctx=canvas.getContext('2d');
       const matrix=()=>{const m=ctx.getTransform();return [m.a,m.b,m.c,m.d,m.e,m.f]};
@@ -32,7 +32,7 @@ def test_affine_transform_and_half_open_rectangle_pixels_match_chrome():
       const rotatedPixels=[pixel(3,4),pixel(4,4),pixel(3,5),pixel(4,5)];
       return {initial,translated,combined,reset,restored,translatedPixels,
               cleared,rotatedPixels};
-    })()''')
+    })()'''))
     transparent = [0, 0, 0, 0]
     red = [255, 0, 0, 255]
     assert result == {
@@ -47,8 +47,8 @@ def test_affine_transform_and_half_open_rectangle_pixels_match_chrome():
     }
 
 
-def test_image_data_dirty_write_ignores_transform_and_uses_live_data():
-    result = _evaluate('''(() => {
+async def test_image_data_dirty_write_ignores_transform_and_uses_live_data():
+    result = (await _evaluate('''(() => {
       const canvas=document.createElement('canvas'); canvas.width=canvas.height=10;
       const ctx=canvas.getContext('2d');
       const pixel=(x,y)=>Array.from(ctx.getImageData(x,y,1,1).data);
@@ -66,7 +66,7 @@ def test_image_data_dirty_write_ignores_transform_and_uses_live_data():
         try {operation();errors.push('accepted')} catch(e) {errors.push(e.name)}
       }
       return {dirty,blank:[blank.width,blank.height,Array.from(blank.data.slice(0,4))],errors};
-    })()''')
+    })()'''))
     assert result == {
         'dirty': [[0, 0, 0, 0], [0, 255, 0, 255],
                   [0, 0, 0, 0], [255, 255, 0, 255]],
@@ -75,8 +75,8 @@ def test_image_data_dirty_write_ignores_transform_and_uses_live_data():
     }
 
 
-def test_image_data_constructor_preserves_typed_array_and_pixels():
-    result = _evaluate('''(() => {
+async def test_image_data_constructor_preserves_typed_array_and_pixels():
+    result = (await _evaluate('''(() => {
       const bytes = new Uint8ClampedArray([13,19,32,40,255,255,0,1,255,128,0,2,102,255,102,5]);
       const image = new ImageData(bytes, 4, 1);
       const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 1;
@@ -85,17 +85,17 @@ def test_image_data_constructor_preserves_typed_array_and_pixels():
       const pixels = Array.from(ctx.getImageData(0, 0, 4, 1).data);
       image.data[0] = 99;
       return {same: image.data === bytes, first: bytes[0], pixels};
-    })()''')
+    })()'''))
     assert result == {'same': True, 'first': 99,
                       'pixels': [13,19,32,40,255,255,0,1,255,128,0,2,102,255,102,5]}
 
 
-def test_image_data_canvas_round_trip_matches_premultiplied_pixels():
-    result = _evaluate('''(() => {
+async def test_image_data_canvas_round_trip_matches_premultiplied_pixels():
+    result = (await _evaluate('''(() => {
       const pixels = new Uint8ClampedArray([10,20,30,40,255,128,64,1,200,100,50,2,123,231,89,5]);
       const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 1;
       const context = canvas.getContext('2d');
       context.putImageData(new ImageData(pixels, 4, 1), 0, 0);
       return Array.from(context.getImageData(0, 0, 4, 1).data);
-    })()''')
+    })()'''))
     assert list(result) == [13,19,32,40,255,255,0,1,255,128,0,2,102,255,102,5]

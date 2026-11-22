@@ -64,6 +64,8 @@ def parse_rules(text):
 def _rule_class(kind, prelude):
     if kind != "grouping":
         return CSSStyleRule
+    if _prelude_name(prelude)[0] == "font-face":
+        return CSSFontFaceRule
     return CSSMediaRule if _prelude_name(prelude)[0] == "media" else CSSGroupingRule
 
 
@@ -95,6 +97,9 @@ def insert_rule(owner, text, index):
         raise IndexSizeError(RANGE_MESSAGE)
     kind, prelude, block = parsed[0]
     rules.insert(index, _build(kind, prelude, block, owner._owner_sheet(), owner))
+    sheet = owner._owner_sheet()
+    if sheet is not None:
+        sheet.rules_changed()
     return index
 
 
@@ -124,22 +129,31 @@ class CSSRule:
         return " " * indent + "%s { %s }" % (self._prelude, self._block.strip())
 
 
-@interface('CSSStyleRule', 'CSSRule')
-class CSSStyleRule(CSSRule):
-    """A selector and the declarations it carries."""
-
-    RULE_TYPE = 1
-
+class _DeclarationRule(CSSRule):
+    """The live declaration block shared by style and font-face rules."""
     def _init_rule(self, prelude, block, sheet, parent):
         super()._init_rule(prelude, block, sheet, parent)
         self._style = CSSStyleDeclaration(block=block, parent_rule=self)
 
-    def get_selectorText(self): return self._prelude
     def get_style(self): return self._style
     def _serialise(self, indent=0):
         body = " ".join("%s: %s%s;" % (name, value, " !important" if priority else "")
                         for name, value, priority in self._style._declarations())
         return " " * indent + "%s { %s }" % (self._prelude, body)
+
+
+@interface('CSSStyleRule', 'CSSRule')
+class CSSStyleRule(_DeclarationRule):
+    """A selector and the declarations it carries."""
+    RULE_TYPE = 1
+
+    def get_selectorText(self): return self._prelude
+
+
+@interface('CSSFontFaceRule', 'CSSRule')
+class CSSFontFaceRule(_DeclarationRule):
+    """A font-face declaration block, retained when other rules are edited."""
+    RULE_TYPE = 5
 
 
 @interface('CSSGroupingRule', 'CSSRule')
@@ -148,10 +162,10 @@ class CSSGroupingRule(CSSRule):
 
     def _init_rule(self, prelude, block, sheet, parent):
         super()._init_rule(prelude, block, sheet, parent)
-        self._rules = []
+        self._rules = None
 
     def get_cssRules(self):
-        if not self._rules and self._block.strip():
+        if self._rules is None:
             self._rules = build_rules(self._block, self._owner_sheet(), self)
         return CSSRuleList(self._rules)
 
@@ -173,6 +187,9 @@ class CSSGroupingRule(CSSRule):
         if not 0 <= position < len(rules):
             raise IndexSizeError(RANGE_MESSAGE)
         del rules[position]
+        sheet = self._owner_sheet()
+        if sheet is not None:
+            sheet.rules_changed()
         return None
 
 
@@ -223,6 +240,6 @@ class CSSRuleList(ReadOnlyIndexedPropertyMixin):
         position = integer(index)
         return self._rules[position] if 0 <= position < len(self._rules) else pyv8.Null
 
-__all__ = ["CSSGroupingRule", "CSSConditionRule", "CSSMediaRule", "CSSRule",
+__all__ = ["CSSGroupingRule", "CSSConditionRule", "CSSMediaRule", "CSSFontFaceRule", "CSSRule",
            "CSSRuleList", "CSSStyleRule", "MediaList", "build_rules", "insert_rule",
            "parse_rules"]

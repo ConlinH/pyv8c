@@ -1,7 +1,7 @@
 """An analyser reports the spectrum a real Chrome reports for the same graph."""
 import math
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 RATE = 8000
 
@@ -10,18 +10,18 @@ RATE = 8000
 PEAK_DB = 20 * math.log10(0.42 / 2)
 
 
-def _open():
-    browser = Browser(stub_logging="off")
+async def _open():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content("<body></body>", url="https://repro.test/index.html")
-    page.run_until_idle(timeout=2)
+    (await page.set_content("<body></body>", url="https://repro.test/index.html", wait_until="commit"))
+    (await page.run_until_idle(timeout=2))
     return browser, page
 
 
-def _render(page, body):
+async def _render(page, body):
     page.evaluate("window.__rendered = null;")
     page.evaluate("(async () => {" + body + "})()")
-    page.run_until_idle(timeout=30)
+    (await page.run_until_idle(timeout=30))
     return page.evaluate("window.__rendered")
 
 
@@ -52,12 +52,12 @@ def _spectrum(frequency=1000, fft_size=32, smoothing=0.0, length=4096, connect=T
     """
 
 
-def test_a_tone_lands_in_the_bin_its_frequency_names():
-    browser, page = _open()
+async def test_a_tone_lands_in_the_bin_its_frequency_names():
+    browser, page = (await _open())
     try:
-        bins, spectrum = _render(page, _spectrum())
+        bins, spectrum = (await _render(page, _spectrum()))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert bins == 16
     peak = max(range(bins), key=lambda index: spectrum[index])
@@ -69,10 +69,10 @@ def test_a_tone_lands_in_the_bin_its_frequency_names():
     assert all(value < -100 for value in spectrum[9:])
 
 
-def test_smoothing_takes_one_step_for_the_whole_render():
-    browser, page = _open()
+async def test_smoothing_takes_one_step_for_the_whole_render():
+    browser, page = (await _open())
     try:
-        result = _render(page, f"""
+        result = (await _render(page, f"""
             const context = new OfflineAudioContext(1, 4096, {RATE});
             const analyser = context.createAnalyser();
             analyser.fftSize = 32;
@@ -87,23 +87,23 @@ def test_smoothing_takes_one_step_for_the_whole_render():
                 return data[4];
             }};
             window.__rendered = [read(), read(), read()];
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     first, second, third = result
     assert abs(first - (PEAK_DB + 20 * math.log10(0.2))) < 1e-4, result
     assert first == second == third, result
 
 
-def test_the_spectrum_matches_the_one_chrome_reports():
+async def test_the_spectrum_matches_the_one_chrome_reports():
     """A 700 Hz tone leaks across every bin; where there is signal the values are
     Chrome's, and below -100 dB each engine reports its own floating-point floor."""
-    browser, page = _open()
+    browser, page = (await _open())
     try:
-        bins, spectrum = _render(page, _spectrum(frequency=700))
+        bins, spectrum = (await _render(page, _spectrum(frequency=700)))
     finally:
-        browser.close()
+        (await browser.close())
 
     wanted = [-139.862, -29.545248, -16.398142, -13.73333, -20.141911, -39.468781,
               -79.622406, -75.81382, -79.476242, -83.281189, -86.834496, -90.197327,
@@ -116,30 +116,30 @@ def test_the_spectrum_matches_the_one_chrome_reports():
         assert abs(measured - target) < 0.01, (index, measured, target)
 
 
-def test_the_gain_scales_the_spectrum():
-    browser, page = _open()
+async def test_the_gain_scales_the_spectrum():
+    browser, page = (await _open())
     try:
-        _, spectrum = _render(page, _spectrum(gain=0.5))
+        _, spectrum = (await _render(page, _spectrum(gain=0.5)))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert abs(spectrum[4] - (PEAK_DB - 20 * math.log10(2))) < 1e-4, spectrum[4]
 
 
-def test_a_tone_off_the_destination_is_still_measured():
-    browser, page = _open()
+async def test_a_tone_off_the_destination_is_still_measured():
+    browser, page = (await _open())
     try:
-        _, spectrum = _render(page, _spectrum(connect=False))
+        _, spectrum = (await _render(page, _spectrum(connect=False)))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert abs(spectrum[4] - PEAK_DB) < 1e-4, spectrum[4]
 
 
-def test_silence_and_an_unfed_analyser_read_minus_infinity():
-    browser, page = _open()
+async def test_silence_and_an_unfed_analyser_read_minus_infinity():
+    browser, page = (await _open())
     try:
-        unfed, silent = _render(page, f"""
+        unfed, silent = (await _render(page, f"""
             const idle = new Float32Array(4);
             new OfflineAudioContext(1, 128, {RATE}).createAnalyser()
                 .getFloatFrequencyData(idle);
@@ -152,36 +152,36 @@ def test_silence_and_an_unfed_analyser_read_minus_infinity():
             const data = new Float32Array(16);
             analyser.getFloatFrequencyData(data);
             window.__rendered = [Array.from(idle), Array.from(data)];
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert unfed == [float("-inf")] * 4
     assert silent == [float("-inf")] * 16
 
 
-def test_a_short_array_is_filled_and_a_long_one_keeps_its_tail():
-    browser, page = _open()
+async def test_a_short_array_is_filled_and_a_long_one_keeps_its_tail():
+    browser, page = (await _open())
     try:
-        short, tail = _render(page, _spectrum() + f"""
+        short, tail = (await _render(page, _spectrum() + f"""
             const short = new Float32Array(4);
             analyser.getFloatFrequencyData(short);
             const long = new Float32Array(analyser.frequencyBinCount + 3);
             long.fill(123);
             analyser.getFloatFrequencyData(long);
             window.__rendered = [Array.from(short), Array.from(long).slice(-3)];
-        """, )
+        """, ))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert abs(short[2] - -33.979401) < 1e-4, short
     assert tail == [123, 123, 123]
 
 
-def test_the_window_is_the_most_recent_samples():
-    browser, page = _open()
+async def test_the_window_is_the_most_recent_samples():
+    browser, page = (await _open())
     try:
-        unfed, narrow, wide = _render(page, f"""
+        unfed, narrow, wide = (await _render(page, f"""
             const unfed = new Float32Array(4);
             new OfflineAudioContext(1, 128, {RATE}).createAnalyser()
                 .getFloatTimeDomainData(unfed);
@@ -199,9 +199,9 @@ def test_the_window_is_the_most_recent_samples():
                 return Array.from(data);
             }};
             window.__rendered = [Array.from(unfed), await read(32), await read(2048)];
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert unfed == [0.0] * 4
     # 1000 Hz at 8000 is eight samples a cycle, and this window starts on one.
@@ -211,15 +211,15 @@ def test_the_window_is_the_most_recent_samples():
     assert [round(value, 6) for value in wide[-2:]] == [-1.0, -0.707107]
 
 
-def test_the_waveform_matches_chrome_at_a_fractional_phase():
+async def test_the_waveform_matches_chrome_at_a_fractional_phase():
     """700 Hz does not land on a sample boundary, so Chrome's own oscillator shows its
     accumulation error here: the two agree to about a ten-thousandth."""
-    browser, page = _open()
+    browser, page = (await _open())
     try:
-        _, window = _render(page, _spectrum(frequency=700,
-                                            method="getFloatTimeDomainData"))
+        _, window = (await _render(page, _spectrum(frequency=700,
+                                            method="getFloatTimeDomainData")))
     finally:
-        browser.close()
+        (await browser.close())
 
     wanted = [-0.587908, -0.923937, -0.987664, -0.760306, -0.308872, 0.233593, 0.707214,
               0.972405, 0.951008, 0.649331, 0.156284, -0.382825, -0.809106, -0.996928,
@@ -231,28 +231,28 @@ def test_the_waveform_matches_chrome_at_a_fractional_phase():
         assert abs(measured - target) < 1e-3, (index, measured, target)
 
 
-def test_a_shorter_array_takes_the_start_and_a_longer_keeps_its_tail():
-    browser, page = _open()
+async def test_a_shorter_array_takes_the_start_and_a_longer_keeps_its_tail():
+    browser, page = (await _open())
     try:
-        short, tail = _render(page, _spectrum(method="getFloatTimeDomainData") + """
+        short, tail = (await _render(page, _spectrum(method="getFloatTimeDomainData") + """
             const short = new Float32Array(4);
             analyser.getFloatTimeDomainData(short);
             const long = new Float32Array(40);
             long.fill(9);
             analyser.getFloatTimeDomainData(long);
             window.__rendered = [Array.from(short), Array.from(long).slice(32)];
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert [round(value, 6) for value in short] == [0.0, 0.707107, 1.0, 0.707107], short
     assert tail == [9] * 8
 
 
-def test_the_argument_has_to_be_a_float32_array():
-    browser, page = _open()
+async def test_the_argument_has_to_be_a_float32_array():
+    browser, page = (await _open())
     try:
-        names = _render(page, f"""
+        names = (await _render(page, f"""
             const context = new OfflineAudioContext(1, 128, {RATE});
             const analyser = context.createAnalyser();
             const refused = (call, value) => {{
@@ -268,8 +268,8 @@ def test_the_argument_has_to_be_a_float32_array():
                            refused(call, new Float32Array(0)));
             }}
             window.__rendered = names;
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert names == ["TypeError"] * 4 + ["allowed"] + ["TypeError"] * 4 + ["allowed"], names

@@ -7,25 +7,25 @@ the child, and the object outlives the child's navigations (Chromium's
 """
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def frames():
+async def frames():
     def loader(url, request):
         return {"body": '<body id="child">child</body>', "url": url}
 
-    browser = Browser(resource_loader=loader, cache=False, stub_logging="off")
+    browser = (await Browser(resource_loader=loader, cache=False, stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content('<iframe src="http://a.test/child"></iframe>', url='http://a.test/main')
-    page.run_until_idle(timeout=1)
+    (await page.set_content('<iframe src="http://a.test/child"></iframe>', url='http://a.test/main', wait_until="commit"))
+    (await page.run_until_idle(timeout=1))
     try:
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_reachable_frame_window_is_the_frame_itself(frames):
+async def test_a_reachable_frame_window_is_the_frame_itself(frames):
     assert frames.evaluate('''(() => {
         const frame = document.querySelector('iframe');
         const w = frame.contentWindow;
@@ -48,7 +48,7 @@ def test_a_reachable_frame_window_is_the_frame_itself(frames):
                  'Window', '[object Window]', '[object Window]', True]
 
 
-def test_members_reached_through_a_frame_window_run_on_the_frame(frames):
+async def test_members_reached_through_a_frame_window_run_on_the_frame(frames):
     assert frames.evaluate('''(() => {
         const w = document.querySelector('iframe').contentWindow;
         w.setTimeout(() => { w.__ran = true; }, 0);
@@ -58,28 +58,28 @@ def test_members_reached_through_a_frame_window_run_on_the_frame(frames):
     })()''') == ['function', 'function', True]
 
     child = next(iter(frames._owned.frames))
-    child.run_until_idle(timeout=1)
+    (await child.run_until_idle(timeout=1))
     assert child.evaluate('[window.__ran === true, window.__heard]') == [True, True]
 
 
-def _until(page, expression, expected, attempts=8):
+async def _until(page, expression, expected, attempts=8):
     """Pump the frame until *expression* answers *expected*; a navigation lands asynchronously."""
     for _ in range(attempts):
-        page.run_until_idle(timeout=1)
+        (await page.run_until_idle(timeout=1))
         for frame in list(page._owned.frames):
-            frame.run_until_idle(timeout=1)
+            (await frame.run_until_idle(timeout=1))
         if page.evaluate(expression) == expected:
             return True
     return False
 
 
-def test_a_frame_window_keeps_its_identity_across_navigations(frames):
+async def test_a_frame_window_keeps_its_identity_across_navigations(frames):
     assert frames.evaluate('''(() => {
         window.saved = document.querySelector('iframe').contentWindow;
         document.querySelector('iframe').src = 'http://a.test/next';
         return true;
     })()''') is True
-    assert _until(frames, 'saved.document.URL', 'http://a.test/next')
+    assert (await _until(frames, 'saved.document.URL', 'http://a.test/next'))
     assert frames.evaluate('''(() => [
         saved === document.querySelector('iframe').contentWindow,
         saved === window[0],
@@ -88,7 +88,7 @@ def test_a_frame_window_keeps_its_identity_across_navigations(frames):
 
     # A second navigation, asked for through the same reference.
     frames.evaluate("saved.location = 'http://a.test/final'")
-    assert _until(frames, 'saved.document.URL', 'http://a.test/final')
+    assert (await _until(frames, 'saved.document.URL', 'http://a.test/final'))
     assert frames.evaluate('''(() => [
         saved === document.querySelector('iframe').contentWindow,
         saved === window[0],

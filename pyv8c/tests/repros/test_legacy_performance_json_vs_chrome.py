@@ -25,14 +25,14 @@ SCRIPT = '''(() => {
 })()'''
 
 
-def test_legacy_performance_json_matches_chrome():
+async def test_legacy_performance_json_matches_chrome():
     case=Repro('legacy-performance-json',SCRIPT,html='<!doctype html><title>timing</title>')
     try:
-        with chrome_reference() as reference:
-            expected=reference.observe(case)
+        async with chrome_reference() as reference:
+            expected=(await reference.observe(case))
     except ReferenceUnavailable as exc:
         pytest.skip(str(exc))
-    actual=observe_here(case)
+    actual=(await observe_here(case))
     assert not expected.error
     assert actual==expected
     for value in actual.value.values():

@@ -1,4 +1,6 @@
 """Generate a fresh reCAPTCHA token in pyv8c and verify an intentionally invalid login."""
+
+import asyncio
 import argparse
 from html import escape
 import json
@@ -8,7 +10,7 @@ import re
 import signal
 import subprocess
 import sys
-from threading import Event, Lock, Thread
+from threading import Lock
 import time
 from urllib.parse import urljoin, urlsplit
 
@@ -18,7 +20,7 @@ sys.path[:0] = [str(WORKSPACE / 'pyv8'), str(WORKSPACE / 'pyv8c')]
 
 from pyv8c import pyv8
 from loguru import logger
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 HOME = 'https://app.checkinpax.com/'
 LOGIN = 'https://api.checkinpax.com/api/login'
@@ -31,7 +33,7 @@ SITE_KEY = re.compile(r'''["'`](6L[A-Za-z0-9_-]{38})["'`]''')
 SDK_HOSTS = {'www.google.com', 'www.gstatic.com', 'fonts.gstatic.com'}
 
 
-def run(proxy=None, timeout=90):
+async def run(proxy=None, timeout=90):
     """Everything used for verification is fetched or generated during this call."""
     started = time.monotonic()
     state = {'verified': False, 'target': HOME}
@@ -46,7 +48,7 @@ def run(proxy=None, timeout=90):
             if remaining <= 0:
                 raise TimeoutError('The local verification flow exceeded its deadline.')
             try:
-                response = page.net.request(method, url, timeout=min(20, remaining), **kwargs)
+                response = page.profile.network_backend.request_sync(page.net.build(method, url, timeout=min(20, remaining), **kwargs))
                 parts = urlsplit(url)
                 logger.info('{} {}{} -> {}', method, parts.netloc, parts.path, response.status)
                 return response
@@ -90,13 +92,13 @@ def run(proxy=None, timeout=90):
         return result
 
     try:
-        browser = Browser(
+        browser = (await Browser(
             cache=False, proxy=proxy, resource_interceptor=intercept, stub_logging='off',
             # environment={'user_agent': USER_AGENT},
             http_options={'impersonate': 'chrome150', 'timeout': 20},
-        )
+        ).__aenter__())
         page = browser.new_profile().new_page()
-        home = request('GET', HOME)
+        home = (await asyncio.to_thread(request, 'GET', HOME))
         state['home_status'] = home.status
         if home.status != 200:
             raise RuntimeError(f'Homepage returned {home.status}.')
@@ -107,7 +109,7 @@ def run(proxy=None, timeout=90):
                 url = urljoin(HOME, src)
                 if urlsplit(url).hostname != 'app.checkinpax.com' or '/assets/' not in url:
                     continue
-                asset = request('GET', url)
+                asset = (await asyncio.to_thread(request, 'GET', url))
                 if asset.status != 200:
                     raise RuntimeError(f'Application script returned {asset.status}.')
                 keys.update(SITE_KEY.findall(asset.text))
@@ -116,7 +118,7 @@ def run(proxy=None, timeout=90):
         key = keys.pop()
         # The application's execute call is reproduced with the original SDK.
         # No React build, captured token, modified SDK or external browser is used.
-        page.set_content('''<!doctype html><html><head>
+        (await page.set_content('''<!doctype html><html><head>
             <script src="https://www.google.com/recaptcha/api.js?render=%s"></script>
             </head><body><form id="login"><button id="submit" type="submit">Log in</button></form>
             <script>window.localToken=null;window.localErrors=[];
@@ -124,11 +126,11 @@ def run(proxy=None, timeout=90):
                 grecaptcha.ready(function(){grecaptcha.execute(%s,{action:'submit'})
                     .then(function(token){window.localToken=token;},
                           function(error){window.localErrors.push(String(error));});});};
-            </script></body></html>''' % (escape(key, quote=True), json.dumps(key)), url=HOME)
+            </script></body></html>''' % (escape(key, quote=True), json.dumps(key)), url=HOME))
         initialized = time.monotonic()
         clicked = False
         while time.monotonic() - started < timeout:
-            time.sleep(.1)
+            (await asyncio.sleep(.1))
             current = page.evaluate('''({ready:typeof grecaptcha==='object'&&
                 typeof grecaptcha.execute==='function',token:window.localToken,
                 errors:window.localErrors})''')
@@ -138,7 +140,7 @@ def run(proxy=None, timeout=90):
             # Allow the invisible widget and its worker to initialize, as they do
             # while a user fills the login form. This does not supply any proof.
             if current.get('ready') and not clicked and time.monotonic() - initialized >= 12:
-                page.click('#submit', force=True, delay=.06)
+                (await page.click('#submit', force=True, delay=.06))
                 clicked = True
             token = current.get('token')
             if isinstance(token, str) and token:
@@ -148,9 +150,9 @@ def run(proxy=None, timeout=90):
                 if not issued_here:
                     raise RuntimeError('The SDK returned a fallback token, not a token from this reload.')
                 state['reCaptchaToken_length'] = len(token)
-                response = request('POST', LOGIN, json={
+                response = (await asyncio.to_thread(request, 'POST', LOGIN, json={
                     'email': EMAIL, 'password': PASSWORD, 'reCaptchaToken': token,
-                }, headers={'Origin': HOME.rstrip('/'), 'Referer': HOME})
+                }, headers={'Origin': HOME.rstrip('/'), 'Referer': HOME}))
                 print('login response:', response.text, flush=True)
                 state['login_status'] = response.status
                 state['response'] = json.loads(response.text)
@@ -164,22 +166,13 @@ def run(proxy=None, timeout=90):
     finally:
         state['elapsed_seconds'] = round(time.monotonic() - started, 2)
         if browser is not None:
-            closed = Event()
-
-            def close():
-                try:
-                    browser.close()
-                finally:
-                    closed.set()
-
-            Thread(target=close, daemon=True).start()
-            closed.wait(10)
+            await browser.close()
     return state
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--proxy', default=os.environ.get('RECAPTCHA_PROXY'),
+    parser.add_argument('--proxy', default='http://127.0.0.1:6696',
                         help='For example http://127.0.0.1:6696; defaults to RECAPTCHA_PROXY.')
     parser.add_argument('--timeout', type=float, default=90)
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
@@ -192,7 +185,7 @@ def main():
     logger.remove()
     logger.add(sys.stderr, level='INFO', format='{time:HH:mm:ss} | {message}')
     if args.worker:
-        result = run(args.proxy, args.timeout)
+        result = (await run(args.proxy, args.timeout))
         if result.get('error'):
             logger.error('{}', result['error'])
         logger.info('verified={} elapsed={}s', result['verified'], result['elapsed_seconds'])
@@ -203,17 +196,17 @@ def main():
         command.extend(['--proxy', args.proxy])
     child = subprocess.Popen(command, start_new_session=os.name != 'nt')
     try:
-        return child.wait(timeout=args.timeout + 25)
+        return (await asyncio.to_thread(child.wait, timeout=args.timeout + 25))
     except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
         if os.name == 'nt':
             subprocess.run(['taskkill', '/PID', str(child.pid), '/T', '/F'],
                            capture_output=True, timeout=10, check=False)
         else:
             os.killpg(child.pid, signal.SIGKILL)
-        child.wait(timeout=10)
+        (await asyncio.to_thread(child.wait, timeout=10))
         logger.error('The isolated run stopped: {}', type(error).__name__)
         return 124 if isinstance(error, subprocess.TimeoutExpired) else 130
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))

@@ -22,7 +22,7 @@ class FrameResourceController:
             # Removal can happen while the parent realm executes; closing the
             # child synchronously would wait on an executor that script can
             # reach, so the teardown is dispatched after the parent turn.
-            page.tasks.post(page.close)
+            page.tasks.post(page._retire)
 
     def dispatch_frame_completion(self, node, ok):
         """The events a frame's document load fires on the frame element."""
@@ -140,13 +140,11 @@ class FrameResourceController:
 
     def _child_frame_page(self, iframe, target):
         """Return the live child page for ``iframe``, creating it on demand."""
-        from ..page import Page
-
         page = self.page
         child_services = getattr(iframe, "_child_services", None)
         child = child_services._page_realm.page if child_services is not None else None
         if child is None or child.closed:
-            child = Page(page.profile, url=target, environment=page.environment, parent=page,
+            child = page.profile._create_page(url=target, environment=page.environment, parent=page,
                          trace_scripts=page.trace_scripts,
                          origin=self._frame_origin(iframe))
             iframe._child_services = child.services

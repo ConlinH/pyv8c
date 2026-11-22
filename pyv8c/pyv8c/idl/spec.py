@@ -19,8 +19,9 @@ field the member's kind cannot answer is refused here, before a page ever sees i
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
+from weakref import WeakKeyDictionary
 
 from pyv8c.pyv8 import AttributeSpec, IdlSpec, MethodSpec
 from pyv8c.pyv8.flag import FlagLocation
@@ -233,30 +234,46 @@ def _location(location) -> int:
             "interface": FlagLocation.kInterface}.get(location, FlagLocation.kPrototype)
 
 
-#: Built declarations, one per class and document: a class states its differences once.
-_SPECS: dict = {}
-_MEMBERS: dict = {}
-_UNRESOLVED: dict = {}
+#: Declarations belong to one document/profile view, without keeping that view alive.
+#: A registered base's declarations describe its own interface, not each descendant.
+@dataclass
+class _Declarations:
+    specs: dict = field(default_factory=dict)
+    members: dict = field(default_factory=dict)
+    unresolved: dict = field(default_factory=dict)
+
+
+_DECLARATIONS = WeakKeyDictionary()
 _STATED: dict = {}
+
+
+def _declarations(idl):
+    found = _DECLARATIONS.get(idl)
+    if found is None:
+        found = _Declarations()
+        _DECLARATIONS[idl] = found
+    return found
 
 
 def idl_spec(cls, idl, interface_name) -> IdlSpec:
     """The native description of *cls*: its own interface-level overrides and member specs."""
-    key = (cls, idl.digest, interface_name, stated_key(cls))
-    found = _SPECS.get(key)
+    key = (cls, _identity(cls, interface_name), stated_key(cls))
+    cache = _declarations(idl).specs
+    found = cache.get(key)
     if found is None:
         methods, attributes = members_of(cls, idl, interface_name)
-        found = _SPECS[key] = IdlSpec(methods=methods, attributes=attributes,
-                                      **_interface_fields(cls))
+        found = cache[key] = IdlSpec(methods=methods, attributes=attributes,
+                                   **_interface_fields(cls))
     return found
 
 
 def members_of(cls, idl, interface_name) -> tuple:
     """``(methods, attributes)`` one class states for *interface_name*, in one pass."""
-    key = (cls, idl.digest, interface_name, stated_key(cls))
-    found = _MEMBERS.get(key)
+    key = (cls, _identity(cls, interface_name), stated_key(cls))
+    cache = _declarations(idl).members
+    found = cache.get(key)
     if found is None:
-        found = _MEMBERS[key] = _member_specs(cls, idl, interface_name)
+        found = cache[key] = _member_specs(cls, idl, interface_name)
     return found
 
 
@@ -312,10 +329,11 @@ def unresolved_members(cls, idl, interface_name) -> tuple:
 def _unresolved_in(base, idl, interface_name) -> tuple:
     """What one class of the chain states and the document does not carry, answered once."""
     own = _identity(base, interface_name)
-    key = (base, idl.digest, own, stated_key(base))
-    found = _UNRESOLVED.get(key)
+    key = (base, own, stated_key(base))
+    cache = _declarations(idl).unresolved
+    found = cache.get(key)
     if found is None:
-        found = _UNRESOLVED[key] = tuple(
+        found = cache[key] = tuple(
             (own, member_name) for member_name in _member_statements(base)
             if _kind(idl, own, member_name) is None)
     return found

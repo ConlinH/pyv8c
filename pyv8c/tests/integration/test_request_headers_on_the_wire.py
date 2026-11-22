@@ -5,6 +5,8 @@ and not only the set.  The two exceptions are libcurl's: it puts ``Host`` first 
 moves a caller-supplied ``Connection`` to the end (``docs/pyv8c/request-headers.md``).
 """
 
+import asyncio
+
 import base64
 import hashlib
 import http.server
@@ -18,7 +20,7 @@ pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importabl
 pytest.importorskip("curl_cffi", reason="the curl_cffi engine is not installed")
 pytestmark = pytest.mark.native
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 from _shared_web_pages import PAGE, PNG
@@ -144,7 +146,7 @@ class _SocketServer(threading.Thread):
 
 
 @pytest.fixture(scope="module")
-def wire():
+async def wire():
     """Two HTTP origins (same host, different port) and one socket server."""
     servers = []
     for _ in range(2):
@@ -157,19 +159,19 @@ def wire():
         same_origin = f"http://127.0.0.1:{servers[0].server_port}"
         cross_origin = f"http://127.0.0.1:{servers[1].server_port}"
         ws = f"ws://127.0.0.1:{sockets.port}/socket"
-        browser = Browser(real_network=True, stub_logging="off")
+        browser = (await Browser(real_network=True, stub_logging="off").__aenter__())
         try:
             page = browser.new_profile().new_page()
-            page.goto(f"{same_origin}/page", wait_until="load")
-            page.net.fetch("/js/fetch-get")
-            page.net.fetch("/js/fetch-post", method="POST", body='{"a": 1}',
-                       headers={"content-type": "application/json"})
-            page.net.fetch(f"{cross_origin}/js/cross-simple")
-            page.net.xhr("/js/xhr-get")
+            (await page.goto(f"{same_origin}/page", wait_until="load"))
+            (await page.net.fetch("/js/fetch-get"))
+            (await page.net.fetch("/js/fetch-post", method="POST", body='{"a": 1}',
+                       headers={"content-type": "application/json"}))
+            (await page.net.fetch(f"{cross_origin}/js/cross-simple"))
+            (await page.net.xhr("/js/xhr-get"))
             page.evaluate(f"new WebSocket('{ws}')")
-            assert sockets.received.wait(5), "the WebSocket handshake did not arrive"
+            assert (await asyncio.to_thread(sockets.received.wait, 5)), "the WebSocket handshake did not arrive"
         finally:
-            browser.close()
+            (await browser.close())
         with LOCK:
             records = list(RECORDS)
     finally:
@@ -181,7 +183,7 @@ def wire():
         except OSError:
             pass
         sockets.socket.close()
-        sockets.join(3)
+        (await asyncio.to_thread(sockets.join, 3))
         assert not sockets.is_alive()
     yield {"records": records, "http": same_origin, "cross": cross_origin}
 
@@ -198,7 +200,7 @@ def names(headers):
     return list(headers)
 
 
-def test_navigation_matches_chrome(wire):
+async def test_navigation_matches_chrome(wire):
     headers = sent(wire, "/page")
     assert names(headers) == NAVIGATION
     assert headers["user-agent"] == CHROME_UA
@@ -217,7 +219,7 @@ def test_navigation_matches_chrome(wire):
     assert headers["sec-ch-ua-platform"] == '"Windows"'
 
 
-def test_subresources_match_chrome(wire):
+async def test_subresources_match_chrome(wire):
     for path, destination, accept in (
         ("/sub.css", "style", "text/css,*/*;q=0.1"),
         ("/sub.js", "script", "*/*"),
@@ -233,7 +235,7 @@ def test_subresources_match_chrome(wire):
         assert "origin" not in headers, path
 
 
-def test_a_frame_is_a_navigation_without_user_activation(wire):
+async def test_a_frame_is_a_navigation_without_user_activation(wire):
     headers = sent(wire, "/frame.html")
     assert names(headers) == FRAME
     assert headers["sec-fetch-dest"] == "iframe"
@@ -242,7 +244,7 @@ def test_a_frame_is_a_navigation_without_user_activation(wire):
     assert "sec-fetch-user" not in headers
 
 
-def test_media_asks_by_range_uncompressed(wire):
+async def test_media_asks_by_range_uncompressed(wire):
     headers = sent(wire, "/clip.mp4")
     assert names(headers) == MEDIA
     assert headers["sec-fetch-dest"] == "video"
@@ -250,7 +252,7 @@ def test_media_asks_by_range_uncompressed(wire):
     assert headers["range"] == "bytes=0-"
 
 
-def test_fetch_and_xhr_match_chrome(wire):
+async def test_fetch_and_xhr_match_chrome(wire):
     for path in ("/js/fetch-get", "/js/xhr-get"):
         headers = sent(wire, path)
         assert names(headers) == SUBRESOURCE, path
@@ -260,7 +262,7 @@ def test_fetch_and_xhr_match_chrome(wire):
         assert "origin" not in headers, path
 
 
-def test_a_posted_fetch_carries_origin_and_the_body_length(wire):
+async def test_a_posted_fetch_carries_origin_and_the_body_length(wire):
     headers = sent(wire, "/js/fetch-post", "POST")
     assert names(headers) == POSTED
     assert headers["content-type"] == "application/json"
@@ -268,7 +270,7 @@ def test_a_posted_fetch_carries_origin_and_the_body_length(wire):
     assert headers["content-length"] == "8"
 
 
-def test_a_cross_origin_fetch_only_tells_the_origin(wire):
+async def test_a_cross_origin_fetch_only_tells_the_origin(wire):
     headers = sent(wire, "/js/cross-simple")
     assert names(headers) == CROSS_ORIGIN
     assert headers["origin"] == wire["http"]
@@ -276,7 +278,7 @@ def test_a_cross_origin_fetch_only_tells_the_origin(wire):
     assert headers["referer"] == f"{wire['http']}/"
 
 
-def test_a_compressed_response_is_still_readable():
+async def test_a_compressed_response_is_still_readable():
     """The header advertises compression, so the transport has to keep decoding it."""
     import gzip
     import json
@@ -301,19 +303,20 @@ def test_a_compressed_response_is_still_readable():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        browser = Browser(real_network=True, stub_logging="off")
+        browser = (await Browser(real_network=True, stub_logging="off").__aenter__())
         try:
-            page = browser.new_profile().new_page(f"http://127.0.0.1:{server.server_port}/")
-            assert page.net.fetch("/data").json() == {"ok": True}
+            page = browser.new_profile().new_page()
+            await page.goto(f"http://127.0.0.1:{server.server_port}/")
+            assert (await page.net.fetch("/data")).json() == {"ok": True}
         finally:
-            browser.close()
+            (await browser.close())
     finally:
         server.shutdown()
-        thread.join()
+        (await asyncio.to_thread(thread.join))
         server.server_close()
 
 
-def test_the_websocket_handshake_carries_the_environment(wire):
+async def test_the_websocket_handshake_carries_the_environment(wire):
     headers = sent(wire, "/socket")
     assert headers["origin"] == wire["http"]
     assert headers["user-agent"] == CHROME_UA

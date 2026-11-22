@@ -1,33 +1,33 @@
 """Body/frameset handler aliases, compared with local Chrome 156."""
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_body_inline_load_starts_business_script():
+async def test_body_inline_load_starts_business_script():
     requests = []
     def loader(url, request):
         requests.append(url)
         return {'body': 'globalThis.businessReady=true;',
                 'headers': {'content-type': 'text/javascript'}}
-    browser = Browser(real_network=False, resource_loader=loader)
+    browser = (await Browser(real_network=False, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('''<script>globalThis.events=[];</script>
+        (await page.set_content('''<script>globalThis.events=[];</script>
             <body onload="events.push([this===window,event.target===document,
                 event.currentTarget===window]);const s=document.createElement('script');
                 s.src='/business.js';document.head.appendChild(s)"></body>''',
-            url='https://lifecycle.test/')
-        page.run_until_idle(timeout=3)
+            url='https://lifecycle.test/', wait_until="commit"))
+        (await page.run_until_idle(timeout=3))
         assert page.evaluate('[events,!!globalThis.businessReady,document.body.onload===window.onload]') == [
             [[True, True, True]], True, True]
         assert requests == ['https://lifecycle.test/business.js']
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize('tag', ['body', 'frameset'])
-def test_detached_body_handler_aliases_window_but_listener_stays_on_element(page, tag):
+async def test_detached_body_handler_aliases_window_but_listener_stays_on_element(page, tag):
     assert page.evaluate('''(() => {
         const element=document.createElement(''' + repr(tag) + ''');const calls=[];
         const fn=function(){calls.push(this===window?'window':'element')};
@@ -41,7 +41,7 @@ def test_detached_body_handler_aliases_window_but_listener_stays_on_element(page
     })()''') == [True, ['listener', 'window'], True]
 
 
-def test_body_handler_attribute_write_remove_and_idl_share_window_slot(page):
+async def test_body_handler_attribute_write_remove_and_idl_share_window_slot(page):
     assert page.evaluate('''(() => {
         const body=document.body;globalThis.calls=[];
         body.setAttribute('onresize','calls.push(this===window)');
@@ -60,7 +60,7 @@ def test_body_handler_attribute_write_remove_and_idl_share_window_slot(page):
     })()''') == [True, True, [True, True]]
 
 
-def test_inert_document_body_cannot_replace_active_window_handler(page):
+async def test_inert_document_body_cannot_replace_active_window_handler(page):
     assert page.evaluate('''(() => {
         const fn=()=>{};window.onload=fn;
         const doc=document.implementation.createHTMLDocument('inert');
@@ -70,7 +70,7 @@ def test_inert_document_body_cannot_replace_active_window_handler(page):
     })()''') == [True, True]
 
 
-def test_normal_element_load_and_body_click_keep_element_target(page):
+async def test_normal_element_load_and_body_click_keep_element_target(page):
     assert page.evaluate('''(() => {
         const body=document.body,div=document.createElement('div');const calls=[];
         body.onclick=function(){calls.push(this===body)};
@@ -80,15 +80,15 @@ def test_normal_element_load_and_body_click_keep_element_target(page):
     })()''') == [[True, True], True, True]
 
 
-def test_navigation_discards_body_window_handler(page):
-    page.set_content('<body onresize="globalThis.stale=true">',url='https://lifecycle.test/first')
-    page.set_content('<body><script>globalThis.fresh=true</script>',url='https://lifecycle.test/second')
+async def test_navigation_discards_body_window_handler(page):
+    (await page.set_content('<body onresize="globalThis.stale=true">',url='https://lifecycle.test/first', wait_until="commit"))
+    (await page.set_content('<body><script>globalThis.fresh=true</script>',url='https://lifecycle.test/second', wait_until="commit"))
     page.evaluate("window.dispatchEvent(new Event('resize'))")
     assert page.evaluate('[fresh,globalThis.stale===undefined,window.onresize===null]') == [True, True, True]
 
 
 @pytest.mark.parametrize('tag', ['body','frameset'])
-def test_inline_window_error_handler_receives_all_five_arguments(page, tag):
+async def test_inline_window_error_handler_receives_all_five_arguments(page, tag):
     assert page.evaluate('''(() => {
         const element=document.createElement('''+repr(tag)+''');globalThis.calls=[];
         globalThis.failure=new Error('boom');
@@ -102,7 +102,7 @@ def test_inline_window_error_handler_receives_all_five_arguments(page, tag):
 
 
 @pytest.mark.parametrize('result,prevented', [('true',True),('false',False),('1',False)])
-def test_idl_window_error_handler_return_true_cancels_error(page, result, prevented):
+async def test_idl_window_error_handler_return_true_cancels_error(page, result, prevented):
     assert page.evaluate('''(() => {
         window.onerror=function(){return '''+result+'''};
         const event=new ErrorEvent('error',{cancelable:true});
@@ -111,7 +111,7 @@ def test_idl_window_error_handler_return_true_cancels_error(page, result, preven
     })()''') == [not prevented,prevented]
 
 
-def test_plain_window_error_and_element_error_receive_event_object(page):
+async def test_plain_window_error_and_element_error_receive_event_object(page):
     assert page.evaluate('''(() => {
         const calls=[];const plain=new Event('error',{cancelable:true});
         window.onerror=function(event){calls.push([event===plain,arguments.length]);return false};

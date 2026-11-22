@@ -7,7 +7,7 @@ a valid custom element name, which Chromium answers with a plain ``HTMLElement``
 """
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.html.registry import HTML_CLASSES, TAG_CLASSES, class_for_tag
 from pyv8c.web.html.elements import HTMLUnknownElement
 
@@ -27,17 +27,17 @@ CUSTOM_TAGS = ("my-widget", "x-y", "DIV-")
 
 
 @pytest.fixture
-def document_page():
-    browser = Browser(stub_logging="off")
+async def document_page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     instance = browser.new_profile().new_page()
-    instance.set_content(PAGE_HTML, url="https://example.test/")
+    (await instance.set_content(PAGE_HTML, url="https://example.test/", wait_until="commit"))
     try:
         yield instance
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_class_for_tag_resolves_modelled_tags_and_falls_back():
+async def test_class_for_tag_resolves_modelled_tags_and_falls_back():
     for tag in ("div", "span", "form", "table", "select", "option", "button",
                 "a", "html", "head", "body", "script", "style", "link", "meta",
                 "template", "canvas", "input") + IRREGULAR_TAGS:
@@ -55,7 +55,7 @@ def test_class_for_tag_resolves_modelled_tags_and_falls_back():
     assert "unknown" not in TAG_CLASSES
 
 
-def test_unknown_names_are_unknown_and_custom_ones_are_plain_elements(document_page):
+async def test_unknown_names_are_unknown_and_custom_ones_are_plain_elements(document_page):
     assert document_page.evaluate("""
         (() => {
           const parsed = id => document.getElementById(id).constructor.name;
@@ -68,7 +68,7 @@ def test_unknown_names_are_unknown_and_custom_ones_are_plain_elements(document_p
              "HTMLUnknownElement", "HTMLElement", "HTMLDivElement", True]
 
 
-def test_parser_and_create_element_agree_on_every_local_name(document_page):
+async def test_parser_and_create_element_agree_on_every_local_name(document_page):
     assert document_page.evaluate("""
         (() => {
           const names = ['img', 'td', 'tr', 'textarea', 'iframe', 'canvas', 'input',
@@ -85,7 +85,7 @@ def test_parser_and_create_element_agree_on_every_local_name(document_page):
     """) == []
 
 
-def test_create_element_accepts_chrome_html_names(document_page):
+async def test_create_element_accepts_chrome_html_names(document_page):
     assert document_page.evaluate("""
         ['_', 'äx', 'a=b', ':foo', 'foo:bar', '😀'].map(name => {
           const element = document.createElement(name);
@@ -95,7 +95,7 @@ def test_create_element_accepts_chrome_html_names(document_page):
               [':foo', ':FOO'], ['foo:bar', 'FOO:BAR'], ['😀', '😀']]
 
 
-def test_create_element_rejects_invalid_html_names(document_page):
+async def test_create_element_rejects_invalid_html_names(document_page):
     assert document_page.evaluate("""
         ['1x', 'a b', 'a/b', 'a>b', ''].map(name => {
           try { document.createElement(name); return 'accepted'; }
@@ -110,7 +110,7 @@ def test_create_element_rejects_invalid_html_names(document_page):
     ]
 
 
-def test_document_fragment_children_is_live_collection(document_page):
+async def test_document_fragment_children_is_live_collection(document_page):
     assert document_page.evaluate("""
         (() => {
           const fragment = document.createDocumentFragment();
@@ -124,14 +124,14 @@ def test_document_fragment_children_is_live_collection(document_page):
     """) == ['[object HTMLCollection]', 'function', True, 1, ['_']]
 
 
-def test_document_and_element_children_keep_identity(document_page):
+async def test_document_and_element_children_keep_identity(document_page):
     assert document_page.evaluate("""
         [document.children === document.children,
          document.body.children === document.body.children]
     """) == [True, True]
 
 
-def test_modelled_tags_resolve_to_their_interface(document_page):
+async def test_modelled_tags_resolve_to_their_interface(document_page):
     assert document_page.evaluate("""
         ['img', 'td', 'tr', 'textarea', 'iframe', 'canvas', 'input', 'script', 'template',
          'select', 'option', 'a'].map(tag => document.createElement(tag).constructor.name)
@@ -141,7 +141,7 @@ def test_modelled_tags_resolve_to_their_interface(document_page):
              "HTMLSelectElement", "HTMLOptionElement", "HTMLAnchorElement"]
 
 
-def test_html_unknown_element_is_exposed_but_not_constructible(document_page):
+async def test_html_unknown_element_is_exposed_but_not_constructible(document_page):
     assert document_page.evaluate("""
         (() => {
           const unknown = document.createElement('foo');

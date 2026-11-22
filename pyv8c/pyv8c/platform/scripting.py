@@ -67,16 +67,24 @@ class ScriptController:
         return self._realm.enqueue_microtask(callback)
 
     def evaluate(self, script, filename=None):
-        if self.page.closed or self.page.profile.closed:
-            raise HostStateError("Page is closed")
-        target = self.page._devtools_target
-        if target is not None:
-            target.before_script()
+        return self.run(self._evaluate_script, script, filename)
+
+    def _evaluate_script(self, script, filename):
+        return self.page.v8_context.exec_js(self._compiled_script(script, filename))
+
+    def run(self, operation, *args):
         try:
-            return self.page.v8_context.exec_js(self._compiled_script(script, filename))
-        finally:
+            if self.page.closed or self.page.profile.closed:
+                raise HostStateError("Page is closed")
+            target = self.page._devtools_target
             if target is not None:
-                target.after_script()
+                target.before_script()
+            try:
+                return operation(*args)
+            finally:
+                if target is not None:
+                    target.after_script()
+        finally:
             self.page.executor.after_callback()
 
     def _compiled_script(self, script, filename):

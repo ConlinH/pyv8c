@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 import itertools
 
-from .handles import LoadHandle
+from ...foundation.load_handle import LoadHandle
 
 @dataclass(slots=True)
 class DocumentResource:

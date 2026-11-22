@@ -1,25 +1,25 @@
 """Every dispatched event reports itself at debug level."""
 from loguru import logger
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 PAGE = ("<body><script>addEventListener('load', () => {});"
         "addEventListener('DOMContentLoaded', () => {});</script></body>")
 
 
-def test_each_dispatch_reports_itself():
+async def test_each_dispatch_reports_itself():
     messages = []
     token = logger.add(lambda message: messages.append(str(message)), level="DEBUG",
                        format="{message}")
     try:
-        browser = Browser(stub_logging="off")
+        browser = (await Browser(stub_logging="off").__aenter__())
         try:
             page = browser.new_profile().new_page()
-            page.set_content(PAGE, url="https://repro.test/index.html")
-            page.run_until_idle(timeout=2)
+            (await page.set_content(PAGE, url="https://repro.test/index.html", wait_until="commit"))
+            (await page.run_until_idle(timeout=2))
             page.evaluate("dispatchEvent(new Event('probe'))")
         finally:
-            browser.close()
+            (await browser.close())
     finally:
         logger.remove(token)
 

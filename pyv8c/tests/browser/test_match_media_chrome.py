@@ -1,13 +1,13 @@
 """Media queries exercised by the Costco frame, compared with local Chrome 155."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_orientation_equal_dimensions_are_portrait_including_hidden_iframe():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_orientation_equal_dimensions_are_portrait_including_hidden_iframe():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://example.test/')
+        (await page.set_content('<body></body>', url='https://example.test/', wait_until="commit"))
         assert page.evaluate("""(() => {
           return ['width:100px;height:100px;border:0', 'display:none'].map(css => {
             const f = document.createElement('iframe'); f.style.cssText = css;
@@ -17,18 +17,18 @@ def test_orientation_equal_dimensions_are_portrait_including_hidden_iframe():
           });
         })()""") == [[100, 100, True, False], [0, 0, True, False]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_resolution_screen_and_desktop_media_features():
-    browser = Browser(real_network=False, stub_logging="off", environment={
+async def test_resolution_screen_and_desktop_media_features():
+    browser = (await Browser(real_network=False, stub_logging="off", environment={
         "viewport.width": 1280, "viewport.height": 720,
         "screen.width": 2560, "screen.height": 1080,
         "viewport.device_scale_factor": 1,
-    })
+    }).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         assert page.evaluate("""(() => {
             const queries = [
                 '(min-resolution:0.625dppx)', '(min-resolution:5dppx)',
@@ -47,16 +47,16 @@ def test_resolution_screen_and_desktop_media_features():
                     False, False, False, False, False, False, True,
                     True, False, True, True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_media_query_list_initializes_event_target_and_uses_dpr():
-    browser = Browser(real_network=False, stub_logging="off", environment={
+async def test_media_query_list_initializes_event_target_and_uses_dpr():
+    browser = (await Browser(real_network=False, stub_logging="off", environment={
         "viewport.device_scale_factor": 2,
-    })
+    }).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         assert page.evaluate("""(() => {
             const query = '(min-resolution:2dppx)';
             const list = matchMedia(query);
@@ -71,13 +71,13 @@ def test_media_query_list_initializes_event_target_and_uses_dpr():
                     matchMedia('(resolution:192dpi)').matches];
         })()""") == [True, "(min-resolution:2dppx)", True, False, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_dpcm_rounds_to_hundredths_of_dppx():
-    browser = Browser(real_network=False, stub_logging="off", environment={
+async def test_dpcm_rounds_to_hundredths_of_dppx():
+    browser = (await Browser(real_network=False, stub_logging="off", environment={
         "viewport.device_scale_factor": 1,
-    })
+    }).__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate("""[
@@ -87,14 +87,14 @@ def test_dpcm_rounds_to_hundredths_of_dppx():
             matchMedia('(min-resolution:96.1dpi)').matches
         ]""") == [True, False, True, False]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_aspect_ratio_compares_cross_products_for_zero_size_frames():
-    browser = Browser(real_network=False)
+async def test_aspect_ratio_compares_cross_products_for_zero_size_frames():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>')
+        (await page.set_content('<body></body>', wait_until="commit"))
         assert page.evaluate("""(() => {
           const queries = ['(aspect-ratio:0.25)', '(aspect-ratio:4)',
             '(min-aspect-ratio:2.125)', '(max-aspect-ratio:2.125)',
@@ -114,13 +114,13 @@ def test_aspect_ratio_compares_cross_products_for_zero_size_frames():
             [False, False, False, True, False, False, False],
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_resolution_rounds_fractional_device_scale_factor_to_binary32():
-    browser = Browser(real_network=False, environment={
+async def test_resolution_rounds_fractional_device_scale_factor_to_binary32():
+    browser = (await Browser(real_network=False, environment={
         'viewport.device_scale_factor': 1.0000000149011612,
-    })
+    }).__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate("""[
@@ -133,4 +133,4 @@ def test_resolution_rounds_fractional_device_scale_factor_to_binary32():
           matchMedia('(max-resolution:1e100dpi)').matches
         ]""") == [True, True, True, True, False, False, True]
     finally:
-        browser.close()
+        (await browser.close())

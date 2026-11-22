@@ -7,7 +7,7 @@ one engine from another by comparing them.
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.foundation import system_fonts
 from pyv8c.foundation import text as text_engine
 from pyv8c.foundation.environment import BrowserEnvironment
@@ -24,17 +24,17 @@ MEASURE = """
 """
 
 
-def _measure(environment=None, font='16px "Arial"'):
+async def _measure(environment=None, font='16px "Arial"'):
     import json
 
-    browser = Browser(cache=False, stub_logging="off", real_network=False,
-                      environment=environment)
+    browser = (await Browser(cache=False, stub_logging="off", real_network=False,
+                      environment=environment).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://canvas.test/")
+        (await page.set_content("<body></body>", url="http://canvas.test/", wait_until="commit"))
         return page.evaluate(MEASURE % (json.dumps(font), json.dumps(TEXT)))
     finally:
-        browser.close()
+        (await browser.close())
 
 
 def _latin_family():
@@ -45,40 +45,40 @@ def _latin_family():
     return record.family
 
 
-def test_a_canvas_width_is_the_width_the_same_text_has_in_a_box():
+async def test_a_canvas_width_is_the_width_the_same_text_has_in_a_box():
     family = _latin_family()
-    measured = _measure(font=f'16px "{family}"')
+    measured = (await _measure(font=f'16px "{family}"'))
     expected = layout.text_width(TEXT, {"font-size": "16px", "font-family": family},
                                  BrowserEnvironment())
     assert measured == pytest.approx(expected, abs=0.5), (measured, expected)
 
 
-def test_a_canvas_follows_a_profile_that_carries_its_own_fonts():
+async def test_a_canvas_follows_a_profile_that_carries_its_own_fonts():
     """The point of the shared table: a profile changes what a canvas measures, too."""
     fake = {"postscript_name": "FakeOnly-Regular", "full_name": "FakeOnly",
             "family": "FakeOnly", "style": "Regular",
             "path": r"C:\Windows\Fonts\consola.ttf", "index": 0}
     environment = BrowserEnvironment({"fonts.records": [fake]})
-    measured = _measure(environment={"fonts.records": [fake]}, font='16px "FakeOnly"')
+    measured = (await _measure(environment={"fonts.records": [fake]}, font='16px "FakeOnly"'))
     expected = layout.text_width(TEXT, {"font-size": "16px", "font-family": "FakeOnly"},
                                  environment)
     assert measured == pytest.approx(expected, abs=0.5), (measured, expected)
     # The same canvas with the machine's own table measures something else for that name:
     # it has no such face, so the default family stands in.
-    assert _measure(font='16px "FakeOnly"') != pytest.approx(measured, abs=0.5)
+    assert (await _measure(font='16px "FakeOnly"')) != pytest.approx(measured, abs=0.5)
 
 
-def test_a_family_no_table_knows_uses_the_environment_default():
+async def test_a_family_no_table_knows_uses_the_environment_default():
     """The configured browser default supplies the fallback for an unknown family."""
-    unknown = _measure(font='16px "Definitely Not A Font 123"')
-    standard = _measure(font='16px sans-serif')
+    unknown = (await _measure(font='16px "Definitely Not A Font 123"'))
+    standard = (await _measure(font='16px sans-serif'))
     assert unknown == pytest.approx(standard, abs=1e-9)
 
 
-def test_canvas_default_font_uses_chrome_fractional_advance_precision():
+async def test_canvas_default_font_uses_chrome_fractional_advance_precision():
     if not any(record.family == 'Noto Sans SC' and record.path for record in system_fonts.records()):
         pytest.skip('Noto Sans SC is not installed')
-    browser = Browser(real_network=False, stub_logging='off')
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate('''(() => {
@@ -86,13 +86,13 @@ def test_canvas_default_font_uses_chrome_fractional_advance_precision():
           return ['', ' ', 'm', 'mm'].map(value => ctx.measureText(value).width);
         })()''') == [0, 2.239990234375, 9.259994506835938, 18.519989013671875]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_point_size_is_read_as_pixels_at_96_dpi():
+async def test_a_point_size_is_read_as_pixels_at_96_dpi():
     """``12pt`` is 16px, which is the conversion the layout uses as well."""
-    assert _measure(font='12pt "Arial"') == pytest.approx(
-        _measure(font='16px "Arial"'), abs=0.5)
+    assert (await _measure(font='12pt "Arial"')) == pytest.approx(
+        (await _measure(font='16px "Arial"')), abs=0.5)
 
 
 BOXES = """
@@ -110,21 +110,21 @@ BOXES = """
 """
 
 
-def _boxes(font, text=TEXT):
+async def _boxes(font, text=TEXT):
     import json
 
-    browser = Browser(cache=False, stub_logging="off", real_network=False)
+    browser = (await Browser(cache=False, stub_logging="off", real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://canvas.test/")
+        (await page.set_content("<body></body>", url="http://canvas.test/", wait_until="commit"))
         return page.evaluate(BOXES % (json.dumps(font), json.dumps(text)))
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_the_boxes_come_from_the_face_that_was_measured_with():
+async def test_the_boxes_come_from_the_face_that_was_measured_with():
     family = _latin_family()
-    answer = _boxes(f'16px "{family}"')
+    answer = (await _boxes(f'16px "{family}"'))
     record = layout._face_for([family], BrowserEnvironment())
     path = system_fonts.file_for(record)
     assert path is not None
@@ -140,23 +140,23 @@ def test_the_boxes_come_from_the_face_that_was_measured_with():
     assert answer["right"] >= answer["width"] - 2, answer
 
 
-def test_a_profile_family_without_a_local_file_still_reports_its_font_box():
+async def test_a_profile_family_without_a_local_file_still_reports_its_font_box():
     """Segoe UI is in the Windows catalog. Without the file, the box is the local fallback."""
-    answer = _boxes('16px "Segoe UI"', text="H")
+    answer = (await _boxes('16px "Segoe UI"', text="H"))
     assert answer["width"] > 0, answer
     assert answer["fontAscent"] > 0, answer
 
 
-def test_an_empty_run_has_the_face_box_and_no_ink():
-    answer = _boxes('16px "Arial"', text="")
+async def test_an_empty_run_has_the_face_box_and_no_ink():
+    answer = (await _boxes('16px "Arial"', text=""))
     assert answer["width"] == 0 and answer["ascent"] == 0 and answer["descent"] == 0, answer
     assert answer["fontAscent"] > 0, answer
 
 
-def test_the_baselines_are_the_known_zero():
+async def test_the_baselines_are_the_known_zero():
     """The surface publishes ten members; the em-height pair and the three baselines stay
     zero because that is what a page reads from Chrome 155 as well."""
-    answer = _boxes('16px "Arial"')
+    answer = (await _boxes('16px "Arial"'))
     assert answer["hanging"] == 0 and answer["alphabetic"] == 0, answer
     assert answer["ideographic"] == 0, answer
     # The em-height pair is not one of the ten members this surface publishes, and Chrome
@@ -192,37 +192,37 @@ INK = """
 """
 
 
-def _ink(baseline="alphabetic", align="left", x=4):
+async def _ink(baseline="alphabetic", align="left", x=4):
     import json
 
-    browser = Browser(cache=False, stub_logging="off", real_network=False)
+    browser = (await Browser(cache=False, stub_logging="off", real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://canvas.test/")
+        (await page.set_content("<body></body>", url="http://canvas.test/", wait_until="commit"))
         return page.evaluate(INK % (json.dumps(baseline), json.dumps(align), x))
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_text_baseline_names_where_the_run_sits():
+async def test_text_baseline_names_where_the_run_sits():
     """``top`` puts the em box's top at *y*; ``alphabetic`` puts the baseline there."""
-    alphabetic = _ink("alphabetic")
-    top = _ink("top")
+    alphabetic = (await _ink("alphabetic"))
+    top = (await _ink("top"))
     assert 5 <= alphabetic[1] <= 16, alphabetic
     assert 17 <= top[1] <= 23, top
     assert top[1] - alphabetic[1] >= 6, (alphabetic, top)
 
 
-def test_text_align_names_where_the_run_ends():
-    left = _ink("alphabetic", "left", 4)
-    right = _ink("alphabetic", "right", 60)
-    center = _ink("alphabetic", "center", 40)
+async def test_text_align_names_where_the_run_ends():
+    left = (await _ink("alphabetic", "left", 4))
+    right = (await _ink("alphabetic", "right", 60))
+    center = (await _ink("alphabetic", "center", 40))
     assert abs(left[0] - 4) <= 2, left
     assert abs(right[2] - 60) <= 2, right
     assert abs((center[0] + center[2]) / 2 - 40) <= 3, center
 
 
-def test_a_canvas_font_reads_back_serialized():
+async def test_a_canvas_font_reads_back_serialized():
     """``ctx.font`` answers the shorthand Chrome would print, not what was assigned."""
     script = """(() => {
       const ctx = document.createElement('canvas').getContext('2d');
@@ -233,11 +233,11 @@ def test_a_canvas_font_reads_back_serialized():
       }
       return out;
     })()"""
-    browser = Browser(cache=False, stub_logging="off", real_network=False)
+    browser = (await Browser(cache=False, stub_logging="off", real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://canvas.test/")
+        (await page.set_content("<body></body>", url="http://canvas.test/", wait_until="commit"))
         assert page.evaluate(script) == [
             "14px Arial", 'bold 14px "Times New Roman"', "10px sans-serif"]
     finally:
-        browser.close()
+        (await browser.close())

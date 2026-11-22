@@ -7,6 +7,8 @@ This collection describes the current implementation and interface contracts. Co
 | Document | Contents |
 | --- | --- |
 | [Usage guide](pyv8c/usage.md) | Creating objects, page execution, waiting, environment configuration, input and shutdown |
+| [Interface contract](pyv8c/api-contract.md) | Object ownership, sync/async boundaries, timeouts, shutdown and deep queries |
+| [Cooperative Browser](pyv8c/cooperative-runtime.md) | Sync/async entry points, same-thread waits and lifecycle |
 | [Architecture](pyv8c/architecture.md) | Module layers, binding assembly, ownership and state ownership |
 | [Task scheduling](pyv8c/task-scheduling.md) | Execution groups, agents, task sources, microtasks, timers and rendering opportunities |
 | [Resource loading](pyv8c/resource-loading.md) | Interceptors, loaders, redirects, caching and document resource lifecycle |
@@ -15,10 +17,10 @@ This collection describes the current implementation and interface contracts. Co
 | [Windows and same-origin access](pyv8c/window-security.md) | iframes, WindowProxy, origins and cross-origin access |
 | [IDL format](pyv8c/idl-format.md) | Interface baselines, iteration metadata, extraction and environment profiles |
 | [Debugger](pyv8c/devtools.md) | Inspector, connections, pausing, sub-targets and shutdown |
-| [Runtime tracing](pyv8c/tracing.md) | Trace configuration, event format, threading constraints and observation boundaries |
+| [Browser tracing](pyv8c/tracing.md) | Trace configuration, event format, threading constraints and observation boundaries |
 | [Development guide](pyv8c/development.md) | Implementation conventions, verification commands, behavior comparison and performance measurement |
 | [pyv8 user guide](pyv8/user-guide.md) | Native binding APIs, lifecycle and troubleshooting; builds run from the repository root |
-| [Benchmarks](../../benchmarks/README.md) | Cross-package benchmarks, historical data and performance comparisons |
+| [Benchmarks](../../benchmarks/README.md) | Unified benchmark entry point, case catalog, measurement methodology and reproducibility |
 | [Development tools](../../tools/README.md) | Purpose and operating boundaries of the repository tools |
 | [Page behavior comparison skill](../../skills/pyv8c-challenge-parity/SKILL.md) | Locating browser semantic differences using websites or local pages |
 

@@ -19,7 +19,7 @@ from ...foundation.environment import environment_of
 from ...foundation.font_sizes import font_size_term as _font_size_term
 from ...foundation.system_fonts import file_for, normalize, table_of
 from .character_data import Text
-from ..css.cascade import _cascade, _number, _px, _root_font_size, computed_style, document_rules, rules_for
+from ..css.cascade import StyleRules, _cascade, _number, _px, _root_font_size, computed_style, document_rules, rules_for
 from .element import Element
 
 
@@ -460,7 +460,7 @@ class _Walk:
     """One layout pass: the rules to cascade, where boxes go, the viewport, and what is filled
     in as it runs -- ``baselines`` per element, ``overflows`` for ``scrollWidth``.
     """
-    rules: tuple
+    rules: StyleRules
     collected: dict | None
     viewport: tuple
     baselines: dict = field(default_factory=dict)

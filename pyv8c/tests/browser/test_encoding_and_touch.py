@@ -16,28 +16,23 @@ import json
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def _bounded_close(browser):
-    import threading
-    closer = threading.Thread(target=browser.close, daemon=True)
-    closer.start()
-    closer.join(10.0)
 
 
 @pytest.fixture
-def page():
-    browser = Browser(stub_logging="off")
+async def page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<!doctype html><body>probe", url="https://encoding.test/")
+        (await page.set_content("<!doctype html><body>probe", url="https://encoding.test/", wait_until="commit"))
         yield page
     finally:
-        _bounded_close(browser)
+        await browser.close()
 
 
-def test_the_standard_labels_report_their_canonical_name(page):
+async def test_the_standard_labels_report_their_canonical_name(page):
     assert json.loads(page.evaluate("""JSON.stringify(
         ['utf-8', 'iso-8859-1', 'latin1', 'us-ascii', 'windows-1252', 'utf-16le', 'shift_jis',
          'gbk', 'koi8-r', 'macintosh']
@@ -48,7 +43,7 @@ def test_the_standard_labels_report_their_canonical_name(page):
                          "utf-16le", "shift_jis", "gbk", "koi8-r", "macintosh"]
 
 
-def test_a_windows_1252_label_decodes_the_bytes_chrome_decodes(page):
+async def test_a_windows_1252_label_decodes_the_bytes_chrome_decodes(page):
     #: 0x80 is the euro sign under windows-1252 and a replacement character under utf-8.
     assert json.loads(page.evaluate("""JSON.stringify(
         ['utf-8', 'iso-8859-1'].map(function (label) {
@@ -56,7 +51,7 @@ def test_a_windows_1252_label_decodes_the_bytes_chrome_decodes(page):
         }))""")) == ["\ufffd\ufffdA", "\u20ac\u00e9A"]
 
 
-def test_decode_takes_the_bare_array_buffer_chrome_takes(page):
+async def test_decode_takes_the_bare_array_buffer_chrome_takes(page):
     """``BufferSource`` is an ``ArrayBuffer`` or a view over one, and ``decode`` takes either.
 
     A live run of the challenge handed ``decode`` the bare buffer and got a ``TypeError`` for it
@@ -67,11 +62,11 @@ def test_decode_takes_the_bare_array_buffer_chrome_takes(page):
         [new Uint8Array([65, 66, 67]),
          new Uint8Array([65, 66, 67]).buffer,
          new Uint8Array([65, 66, 67]).buffer.slice(0)]
-            .map(function (source) { return new TextDecoder().decode(source); }))""")) == \
+            .map(function (source) { return new TextDecoder().decode(source); }))""")) ==\
         ["ABC", "ABC", "ABC"]
 
 
-def test_decode_still_refuses_what_is_not_a_buffer_source(page):
+async def test_decode_still_refuses_what_is_not_a_buffer_source(page):
     """The widening has to stop at the standard's edge, or a wrong argument stops raising."""
     assert page.evaluate("""(() => {
         try { new TextDecoder().decode({}); return 'no error'; }
@@ -79,21 +74,21 @@ def test_decode_still_refuses_what_is_not_a_buffer_source(page):
     })()""") == "TypeError"
 
 
-def test_an_unknown_label_is_a_range_error(page):
+async def test_an_unknown_label_is_a_range_error(page):
     assert page.evaluate("""(() => {
         try { new TextDecoder('bogus-encoding'); return 'no error'; }
         catch (error) { return error.name; }
     })()""") == "RangeError"
 
 
-def test_create_event_still_refuses_touch_event_as_chrome_does(page):
+async def test_create_event_still_refuses_touch_event_as_chrome_does(page):
     assert page.evaluate("""(() => {
         try { document.createEvent('TouchEvent'); return 'no error'; }
         catch (error) { return error.name; }
     })()""") == "NotSupportedError"
 
 
-def test_the_touch_interfaces_exist_and_carry_empty_lists(page):
+async def test_the_touch_interfaces_exist_and_carry_empty_lists(page):
     assert json.loads(page.evaluate("""JSON.stringify((() => {
         const event = new TouchEvent('touchstart', {bubbles: true, cancelable: true});
         return [Object.prototype.toString.call(event), event.type, event.bubbles,
@@ -105,7 +100,7 @@ def test_the_touch_interfaces_exist_and_carry_empty_lists(page):
                    "[object TouchList]", "function", "function"]
 
 
-def test_a_touch_carries_what_it_was_given(page):
+async def test_a_touch_carries_what_it_was_given(page):
     assert json.loads(page.evaluate("""JSON.stringify((() => {
         const touch = new Touch({identifier: 7, target: document.body, clientX: 12, clientY: 34});
         return [touch.identifier, touch.clientX, touch.clientY, touch.pageX, touch.pageY,

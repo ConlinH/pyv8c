@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.fetch.response import Response
 
 ORIGIN = "http://site.test"
@@ -71,17 +71,18 @@ def _loader(url, request):
 
 
 @pytest.fixture
-def page():
-    browser = Browser(resource_loader=_loader, stub_logging="off")
-    instance = browser.new_profile().new_page(ORIGIN + "/start")
+async def page():
+    browser = (await Browser(resource_loader=_loader, stub_logging="off").__aenter__())
+    instance = browser.new_profile().new_page()
+    await instance.goto(ORIGIN + "/start")
     del WIRE[:]  # the document's own load is not part of what a test asks for
     try:
         yield instance
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def _ask(page, url, options=None):
+async def _ask(page, url, options=None):
     """Run one fetch and answer what it settled on, or the error it raised."""
     page.evaluate(
         "window.__r = null;"
@@ -92,7 +93,7 @@ def _ask(page, url, options=None):
     )
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        page.run_until_idle(timeout=1)
+        (await page.run_until_idle(timeout=1))
         answer = page.evaluate("window.__r")
         if answer is not None:
             return answer if str(answer).startswith("ERR") else json.loads(answer)
@@ -103,16 +104,16 @@ def _hops():
     return [(method, path) for method, path, _body in WIRE]
 
 
-def test_a_fetch_follows_every_hop_of_a_chain(page):
-    answer = _ask(page, "/a")
+async def test_a_fetch_follows_every_hop_of_a_chain(page):
+    answer = (await _ask(page, "/a"))
     assert answer == {"text": "landed", "status": 200, "url": ORIGIN + "/c",
                           "redirected": True, "type": "basic", "ok": True}
     assert _hops() == [("GET", "/a"), ("GET", "/b"), ("GET", "/c")]
 
 
 @pytest.mark.parametrize("path,status", [("/post", 302), ("/keep", 307)])
-def test_the_method_and_body_a_redirect_carries(page, path, status):
-    answer = _ask(page, path, {"method": "POST", "body": "payload"})
+async def test_the_method_and_body_a_redirect_carries(page, path, status):
+    answer = (await _ask(page, path, {"method": "POST", "body": "payload"}))
     assert answer["url"] == ORIGIN + "/after"
     first, second = WIRE[0], WIRE[1]
     assert first == ("POST", path, "payload")
@@ -122,87 +123,87 @@ def test_the_method_and_body_a_redirect_carries(page, path, status):
         assert second == ("POST", "/after", "payload")
 
 
-def test_a_missing_location_is_delivered_as_it_arrived(page):
-    answer = _ask(page, "/no-location")
+async def test_a_missing_location_is_delivered_as_it_arrived(page):
+    answer = (await _ask(page, "/no-location"))
     assert (answer["status"], answer["redirected"], answer["url"]) == (302, False, ORIGIN + "/no-location")
     assert _hops() == [("GET", "/no-location")]
 
 
-def test_a_location_that_cannot_be_resolved_fails_the_load(page):
-    answer = _ask(page, "/bad-location")
+async def test_a_location_that_cannot_be_resolved_fails_the_load(page):
+    answer = (await _ask(page, "/bad-location"))
     #: The page hears Chrome's wording; why the load failed stays on the host's side.
     assert answer == "ERR TypeError: Failed to fetch"
     assert _hops() == [("GET", "/bad-location")]
 
 
-def test_a_manual_redirect_reads_as_opaque(page):
-    answer = _ask(page, "/a", {"redirect": "manual"})
-    assert (answer["status"], answer["type"], answer["redirected"], answer["ok"]) == \
+async def test_a_manual_redirect_reads_as_opaque(page):
+    answer = (await _ask(page, "/a", {"redirect": "manual"}))
+    assert (answer["status"], answer["type"], answer["redirected"], answer["ok"]) ==\
         (0, "opaqueredirect", False, False)
     assert answer["url"] == ORIGIN + "/a" and answer["text"] == ""
     assert _hops() == [("GET", "/a")]
 
 
-def test_a_redirect_mode_of_error_refuses_the_first_redirect(page):
-    answer = _ask(page, "/a", {"redirect": "error"})
+async def test_a_redirect_mode_of_error_refuses_the_first_redirect(page):
+    answer = (await _ask(page, "/a", {"redirect": "error"}))
     assert answer == "ERR TypeError: Failed to fetch"
     assert _hops() == [("GET", "/a")]
 
 
-def test_the_twenty_first_redirect_fails_and_the_twentieth_lands(page):
-    assert _ask(page, "/chain/20/0")["text"] == "chain-end"
+async def test_the_twenty_first_redirect_fails_and_the_twentieth_lands(page):
+    assert (await _ask(page, "/chain/20/0"))["text"] == "chain-end"
     assert len(_hops()) == 21
     del WIRE[:]
-    answer = _ask(page, "/chain/21/0")
+    answer = (await _ask(page, "/chain/21/0"))
     assert answer == "ERR TypeError: Failed to fetch"
     assert len(_hops()) == 21
 
 
-def test_an_intermediate_cross_origin_hop_must_pass_its_own_cors_check(page):
-    answer = _ask(page, "/cross")
+async def test_an_intermediate_cross_origin_hop_must_pass_its_own_cors_check(page):
+    answer = (await _ask(page, "/cross"))
     assert answer == "ERR TypeError: Failed to fetch"
     assert _hops() == [("GET", "/cross"), ("GET", "/plain")]
 
 
-def test_a_cross_origin_hop_that_allows_the_origin_lands(page):
-    answer = _ask(page, "/cross-ok")
+async def test_a_cross_origin_hop_that_allows_the_origin_lands(page):
+    answer = (await _ask(page, "/cross-ok"))
     assert answer["url"] == OTHER + "/open" and answer["redirected"] is True
     assert _hops() == [("GET", "/cross-ok"), ("GET", "/open")]
 
 
-def test_an_xhr_reports_the_url_it_landed_on(page):
+async def test_an_xhr_reports_the_url_it_landed_on(page):
     page.evaluate(
         "window.__x = null; const x = new XMLHttpRequest(); x.open('GET', '/a');"
         " x.onload = () => { window.__x = JSON.stringify([x.status, x.responseURL, x.responseText]); };"
         " x.send();"
     )
     deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline and page.evaluate("window.__x") is None:
-        page.run_until_idle(timeout=1)
+    while time.monotonic() < deadline and page.evaluate("window.__x === null"):
+        (await page.run_until_idle(timeout=1))
     assert json.loads(page.evaluate("window.__x")) == [200, ORIGIN + "/c", "landed"]
 
 
-def test_a_navigation_counts_its_redirects(page):
-    page.goto(ORIGIN + "/nav/one")
+async def test_a_navigation_counts_its_redirects(page):
+    (await page.goto(ORIGIN + "/nav/one"))
     reported = page.evaluate("[location.href, performance.navigation.redirectCount,"
                              " performance.getEntriesByType('navigation')[0].redirectCount]")
     assert list(reported) == [ORIGIN + "/nav/three", 2, 2]
     assert page.evaluate("performance.timing.redirectStart >= performance.timing.navigationStart"
                          " && performance.timing.redirectEnd >= performance.timing.redirectStart")
-    page.goto(ORIGIN + "/nav/cross")
+    (await page.goto(ORIGIN + "/nav/cross"))
     # A hop that crosses origins reports no count at all, as Chrome does.
     assert page.evaluate("performance.navigation.redirectCount") == 0
     assert page.evaluate("[performance.timing.redirectStart, performance.timing.redirectEnd]") == [0, 0]
     assert page.evaluate("location.href") == OTHER + "/nav-page"
 
 
-def test_a_form_post_that_is_redirected_reaches_the_page_as_a_get(page):
-    page.set_content("<form method=post action='/form'><input name=q value=1>"
-                     "<button>go</button></form>", url=ORIGIN + "/start")
+async def test_a_form_post_that_is_redirected_reaches_the_page_as_a_get(page):
+    (await page.set_content("<form method=post action='/form'><input name=q value=1>"
+                     "<button>go</button></form>", url=ORIGIN + "/start", wait_until="commit"))
     page.evaluate("document.forms[0].submit()")
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline and page.evaluate("location.pathname") != "/after":
-        page.run_until_idle(timeout=1)
+        (await page.run_until_idle(timeout=1))
     assert page.evaluate("location.href") == ORIGIN + "/after"
     assert [hop for hop in _hops() if hop[1] == "/form"] == [("POST", "/form")]
     assert ("GET", "/after") in _hops()

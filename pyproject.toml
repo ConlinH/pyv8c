@@ -15,11 +15,12 @@ license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "third_party_licenses/*.tx
 dependencies = [
     "loguru>=0.7",
     "curl_cffi>=0.7",
-    "websockets>=16",
+    "websockets>=17",
     "uharfbuzz>=0.56",
     "uniseg>=0.9",
     "tldextract>=5.3,<6",
     "idna>=3.6,<4",
+    "pycryptodome>=3.23,<4",
 ]
 
 [project.urls]
@@ -29,14 +30,17 @@ Issues = "https://github.com/ConlinH/pyv8c/issues"
 Security = "https://github.com/ConlinH/pyv8c/security/advisories/new"
 
 [project.optional-dependencies]
-# The cycronet engine is optional and serves either role when it is chosen.
-cronet = ["cycronet>=144.4.7,<151"]
+# The optional cycronet engine serves the HTTP role only; sockets use websockets.
+# Keep the upper bound on the next major so a new Chrome TLS profile series is
+# opted into deliberately; 157 is needed to match current Chrome for TLS tests.
+cronet = ["cycronet>=144.4.7,<158"]
 # The drawing surface behind CanvasRenderingContext2D and OffscreenCanvas pixels.
 canvas = ["Pillow>=10"]
 # ANGLE libraries for the experimental opt-in WebGL backend.
 angle = ["comfy-angle==0.1.1"]
 dev = [
-    "pytest>=7.4",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.4,<2",
     "pytest-timeout>=2.2",
     "pytest-repeat>=0.9",
     "pytest-xdist>=3.6",

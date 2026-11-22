@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 PAGE = "<!doctype html><title>n</title><body></body>"
 SENT = []
@@ -27,18 +27,18 @@ def _loader(url, request):
 
 
 @pytest.fixture
-def page():
+async def page():
     del SENT[:]
-    browser = Browser(stub_logging="off", resource_loader=_loader)
+    browser = (await Browser(stub_logging="off", resource_loader=_loader).__aenter__())
     instance = browser.new_profile().new_page()
-    instance.set_content(PAGE, url="https://navigator.test/dir/page")
+    (await instance.set_content(PAGE, url="https://navigator.test/dir/page", wait_until="commit"))
     try:
         yield instance
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_serial_answers_the_interface_chrome_exposes(page):
+async def test_serial_answers_the_interface_chrome_exposes(page):
     assert page.evaluate("""(() => {
         const serial = navigator.serial;
         return [typeof serial, serial.constructor.name, serial instanceof Serial,
@@ -49,7 +49,7 @@ def test_serial_answers_the_interface_chrome_exposes(page):
                   True, "object"]
 
 
-def test_a_beacon_is_a_post_carrying_what_the_page_gave_it(page):
+async def test_a_beacon_is_a_post_carrying_what_the_page_gave_it(page):
     assert page.evaluate("""(() => {
         navigator.sendBeacon('/b1');
         navigator.sendBeacon('/b2', 'text');
@@ -57,7 +57,7 @@ def test_a_beacon_is_a_post_carrying_what_the_page_gave_it(page):
         navigator.sendBeacon('/b4', new URLSearchParams('a=1'));
         return 'asked';
     })()""") == "asked"
-    page.run_until_idle(timeout=5)
+    (await page.run_until_idle(timeout=5))
     assert SENT == [
         ["POST", "https://navigator.test/b1", None, None],
         ["POST", "https://navigator.test/b2", "text/plain;charset=UTF-8", "text"],

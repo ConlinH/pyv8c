@@ -4,30 +4,30 @@ import weakref
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.mark.parametrize('name', ['crypto', 'performance', 'customElements'])
-def test_window_singleton_expando_survives_gc_without_an_extra_js_reference(name):
-    browser = Browser(stub_logging='off')
+async def test_window_singleton_expando_survives_gc_without_an_extra_js_reference(name):
+    browser = (await Browser(stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<!doctype html><body></body>', url='https://singleton.test/')
+        (await page.set_content('<!doctype html><body></body>', url='https://singleton.test/', wait_until="commit"))
         page.evaluate(f'{name}.probe=()=>42;true')
         page.realm.executor.call(page.realm.v8_context.gc)
         assert page.evaluate(f'typeof {name}.probe') == 'function'
         assert page.evaluate(f'{name}.probe()') == 42
         # A document replacement gets its own singleton, even though the
         # browsing context retains its WindowProxy.
-        page.set_content('<!doctype html><body>new</body>', url='https://singleton.test/next')
+        (await page.set_content('<!doctype html><body>new</body>', url='https://singleton.test/next', wait_until="commit"))
         assert page.evaluate(f'typeof {name}.probe') == 'undefined'
         page.realm.executor.call(page.realm.v8_context.gc)
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_closed_pages_release_retained_singleton_wrappers():
-    browser = Browser(stub_logging='off')
+async def test_closed_pages_release_retained_singleton_wrappers():
+    browser = (await Browser(stub_logging='off').__aenter__())
     profile = browser.new_profile()
     refs = []
     try:
@@ -35,7 +35,7 @@ def test_closed_pages_release_retained_singleton_wrappers():
             page = profile.new_page()
             page.evaluate('crypto.probe=()=>42;performance.probe=crypto;true')
             refs.append(weakref.ref(page))
-            page.close()
+            (await page.close())
             assert page.realm._object_roots is None
             assert not page.realm._object_root_ids
             del page
@@ -43,4 +43,4 @@ def test_closed_pages_release_retained_singleton_wrappers():
         assert not profile.pages
         assert not any(reference() is not None for reference in refs)
     finally:
-        browser.close()
+        (await browser.close())

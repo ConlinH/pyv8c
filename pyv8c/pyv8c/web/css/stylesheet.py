@@ -8,7 +8,15 @@ from ..dom.mixins import LegacyNamedPropertyMixin, ReadOnlyIndexedPropertyMixin
 
 
 def stylesheet_source(node):
-    """The CSS text an owner element carries.
+    """The applied CSS text, including edits made through the owner's CSSOM."""
+    sheet = node.__dict__.get('_style_sheet')
+    if sheet is not None and sheet._modified:
+        return '\n'.join(rule.get_cssText() for rule in sheet.get_cssRules()._rules)
+    return _stylesheet_markup(node)
+
+
+def _stylesheet_markup(node):
+    """The original CSS text an owner element carries.
 
     A ``<style>`` holds its own text; a ``<link rel=stylesheet>`` holds what the
     fetch stored on it, which is nothing until the load settles.
@@ -74,9 +82,10 @@ class CSSStyleSheet(StyleSheet):
         #: An inline sheet is bound to the markup it was made from.  Rewriting the
         #: owner's text gives the owner a new sheet, and this one keeps answering the
         #: rules it already parsed (see ``_detach``).
-        self._source = (stylesheet_source(owner)
+        self._source = (_stylesheet_markup(owner)
                         if owner is not None and _inline_owner(owner) else None)
         self._detached = False
+        self._modified = False
 
     def _owner_sheet(self): return self
 
@@ -91,7 +100,7 @@ class CSSStyleSheet(StyleSheet):
             return
         if self._source is None:
             owner = getattr(self, "_owner", None)
-            text = "" if owner is None else stylesheet_source(owner)
+            text = "" if owner is None else _stylesheet_markup(owner)
             self._source = "" if text is None else text
         self.get_cssRules()
         self._owner, self._document = None, None
@@ -101,8 +110,14 @@ class CSSStyleSheet(StyleSheet):
         if self._source is not None:
             return self._source
         owner = getattr(self, "_owner", None)
-        text = "" if owner is None else stylesheet_source(owner)
+        text = "" if owner is None else _stylesheet_markup(owner)
         return "" if text is None else text
+
+    def rules_changed(self):
+        """Publish a CSSOM edit to this sheet's owning tree."""
+        self._modified = True
+        if self._document is not None:
+            self._document.style_version += 1
 
     def get_cssRules(self):
         """The sheet's rules, read from the text the sheet was built from.
@@ -133,6 +148,7 @@ class CSSStyleSheet(StyleSheet):
         if not 0 <= position < len(rules):
             raise IndexSizeError(RANGE_MESSAGE)
         del rules[position]
+        self.rules_changed()
         return None
 
 

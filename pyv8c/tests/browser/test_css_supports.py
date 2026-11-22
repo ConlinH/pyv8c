@@ -2,7 +2,7 @@
 
 import json
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 CASES = {
     # <supports-decl> and the wrapping parenthesis ParseSupportsCondition adds.
@@ -73,11 +73,11 @@ CASES = {
 }
 
 
-def test_supports_conditions_match_chrome():
-    browser = Browser(cache=False, real_network=False, stub_logging="off")
+async def test_supports_conditions_match_chrome():
+    browser = (await Browser(cache=False, real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         script = """(() => {
             const out = {};
             for (const text of %s) {
@@ -88,4 +88,4 @@ def test_supports_conditions_match_chrome():
         })()""" % json.dumps(list(CASES))
         assert page.evaluate(script) == CASES
     finally:
-        browser.close()
+        (await browser.close())

@@ -172,24 +172,24 @@ ANSWER = """
 """
 
 
-def compare(baseline):
+async def compare(baseline):
     """``(name, chrome, ours)`` for every probed name the two engines disagree on."""
     from loguru import logger
 
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser, run
 
     logger.remove()
-    browser = Browser(stub_logging="off", real_network=False)
+    browser = (await Browser(stub_logging="off", real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://fonts.test/")
+        (await page.set_content("<body></body>", url="https://fonts.test/"))
         # The evaluation does not wait for a promise, so the answer is left on the window.
         page.evaluate("window.__fonts = null; (" + ANSWER % json.dumps(list(PROBE_NAMES)) +
                       ").then(text => { window.__fonts = text; });")
-        page.wait_for("window.__fonts !== null", timeout=5)
+        (await page.wait_for("window.__fonts !== null", timeout=5))
         ours = json.loads(page.evaluate("window.__fonts"))
     finally:
-        browser.close()
+        (await browser.close())
     differences = []
     for name, answer in baseline.get("local", {}).items():
         mine = bool(ours.get(name))
@@ -215,7 +215,7 @@ def main(argv=None):
                   file=sys.stderr)
             return 1
         baseline = json.loads(output.read_text(encoding="utf-8"))
-        differences = compare(baseline)
+        differences = (run(compare(baseline)))
         if not differences:
             print(f"{len(baseline.get('local', {}))} names agree with {baseline['source']['browser']}")
             return 0
@@ -230,6 +230,8 @@ def main(argv=None):
     print(f"{len(baseline['local'])} names probed, {known} found, {output}")
     return 0
 
+
+from pyv8c.async_api import Browser, run
 
 if __name__ == "__main__":
     raise SystemExit(main())

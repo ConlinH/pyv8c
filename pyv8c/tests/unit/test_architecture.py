@@ -5,6 +5,8 @@ page could be the cause of one, which is ``web/``.  ``tests/unit/test_error_prov
 holds it, with the registered exceptions and the reason each cannot reach a realm.
 """
 
+import asyncio
+
 import ast
 import importlib
 import re
@@ -32,7 +34,7 @@ def _imports(path):
 #: module that owns it.
 PUBLIC_SURFACE = {
     "__version__",
-    "Browser", "Profile", "Page", "DevToolsHandle", "DevToolsOptions",
+    "DevToolsHandle", "DevToolsOptions",
     "BrowserEnvironment",
     "HttpTransport", "WebSocketTransport", "NetworkBackend",
     "register_transport", "register_ws_transport", "transport_names",
@@ -40,10 +42,11 @@ PUBLIC_SURFACE = {
     "PageError", "PageTypeError", "PageRangeError", "PageReferenceError", "PageSyntaxError",
     "PageURIError", "PageEvalError", "DOMException",
     "HostFailure",
+    "RequestTimeout",
 }
 
 
-def test_the_root_exports_only_the_public_surface():
+async def test_the_root_exports_only_the_public_surface():
     assert set(pyv8c.__all__) == PUBLIC_SURFACE
     # The root must remain importable for the standalone Chromium extractor;
     # resolving browser classes themselves requires the optional native pyv8.
@@ -53,13 +56,13 @@ def test_the_root_exports_only_the_public_surface():
             getattr(pyv8c, internal)
 
 
-def test_core_has_no_relative_dependency_on_higher_layers():
+async def test_core_has_no_relative_dependency_on_higher_layers():
     for path in (ROOT / "foundation").glob("*.py"):
         for level, module in _imports(path):
             assert not (level > 1 or module.startswith(("engine", "web", "platform"))), path
 
 
-def test_builtin_feature_composition_has_one_home():
+async def test_builtin_feature_composition_has_one_home():
     features = ROOT / "features"
     for name in ("__init__", "catalog", "core", "runtime"):
         assert (features / f"{name}.py").is_file()
@@ -82,18 +85,18 @@ def test_builtin_feature_composition_has_one_home():
 
 
 @pytest.mark.parametrize("module", ["pyv8c.features.runtime", "pyv8c.features.catalog"])
-def test_feature_catalog_import_does_not_load_web_implementations(module):
+async def test_feature_catalog_import_does_not_load_web_implementations(module):
     import subprocess
     import sys
 
     script = (f"import sys; import {module}; "
               "assert not any(n == 'pyv8c.web' or n.startswith('pyv8c.web.') "
               "for n in sys.modules)")
-    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=15)
+    result = (await asyncio.to_thread(subprocess.run, [sys.executable, "-c", script], capture_output=True, text=True, timeout=15))
     assert result.returncode == 0, result.stderr
 
 
-def test_domain_packages_do_not_depend_on_runtime_or_offline_tools():
+async def test_domain_packages_do_not_depend_on_runtime_or_offline_tools():
     for package in DOMAIN_PACKAGES:
         for path in (ROOT / package).glob("*.py"):
             for _level, module in _imports(path):
@@ -120,7 +123,7 @@ SHARED_WEB_PACKAGES = ("clone", "css", "dom", "html", "svg", "mathml", "fetch", 
                        "media", "graphics", "page_errors")
 
 
-def test_non_dom_web_apis_have_their_own_modules():
+async def test_non_dom_web_apis_have_their_own_modules():
     web = ROOT / "web"
     for name in ("ai", "encoding", "permissions_policy"):
         assert (web / f"{name}.py").is_file(), name
@@ -135,7 +138,7 @@ def test_non_dom_web_apis_have_their_own_modules():
     assert not (web / "dom" / "motion.py").exists()
 
 
-def test_canvas_interfaces_live_in_graphics_without_html_dependency():
+async def test_canvas_interfaces_live_in_graphics_without_html_dependency():
     from importlib.util import resolve_name
     web = ROOT / "web"
     tag = (web / "html" / "canvas.py").read_text(encoding="utf-8")
@@ -161,7 +164,7 @@ def test_canvas_interfaces_live_in_graphics_without_html_dependency():
                             (module == "pyv8c.web" and any(alias.name == "html" for alias in node.names))), path
 
 
-def test_css_has_one_home_and_no_layout_dependency():
+async def test_css_has_one_home_and_no_layout_dependency():
     css = ROOT / "web" / "css"
     for name in ("parser", "properties", "values", "cascade", "selectors", "cssom",
                  "stylesheet", "supports", "rules", "typed", "colors"):
@@ -176,7 +179,7 @@ def test_css_has_one_home_and_no_layout_dependency():
     assert not definitions.intersection({"_cascade", "_specificity", "document_rules", "computed_style"})
 
 
-def test_html_and_foreign_elements_have_separate_homes():
+async def test_html_and_foreign_elements_have_separate_homes():
     web = ROOT / "web"
     for name in ("elements", "registry", "parser", "attributes", "forms", "inputs",
                  "iframe", "media", "canvas", "tag_interfaces"):
@@ -199,20 +202,20 @@ def test_html_and_foreign_elements_have_separate_homes():
                                     "pyv8c.web.svg.elements", "pyv8c.web.mathml.elements",
                                     "pyv8c.web.graphics.canvas.context2d", "pyv8c.web.graphics.canvas.offscreen", "pyv8c.web.graphics.webgl.context",
                                     "pyv8c.web.media.source", "pyv8c.web.html.canvas"])
-def test_web_element_modules_import_independently(module):
+async def test_web_element_modules_import_independently(module):
     import subprocess
     import sys
 
     pytest.importorskip("pyv8c.pyv8", reason="the imported web modules require the native extension")
-    result = subprocess.run([sys.executable, "-c", f"import {module}"],
-                            capture_output=True, text=True, timeout=15)
+    result = (await asyncio.to_thread(subprocess.run, [sys.executable, "-c", f"import {module}"],
+                            capture_output=True, text=True, timeout=15))
     assert result.returncode == 0, result.stderr
 
 #: ``bom`` helper modules that hold no interface behind them.
 SHARED_BOM_MODULES = ("bom.scheduling", "bom.utils")
 
 
-def test_optional_features_build_only_on_shared_layers():
+async def test_optional_features_build_only_on_shared_layers():
     """Loading one optional feature must not drag in another one.
 
     A module-body import of a sibling feature would defeat the on-demand
@@ -234,7 +237,7 @@ def test_optional_features_build_only_on_shared_layers():
             assert shared or module.split(".")[0] == own_package, (relative, module)
 
 
-def test_bindings_do_not_depend_on_runtime():
+async def test_bindings_do_not_depend_on_runtime():
     """bindings must reach realm services through core, never through Page."""
     for path in (ROOT / "engine").glob("*.py"):
         for _level, module in _imports(path):
@@ -244,37 +247,31 @@ def test_bindings_do_not_depend_on_runtime():
         assert "_js_error_value" not in source, path
 
 
-def test_no_implicit_current_page_state_remains():
+async def test_no_implicit_current_page_state_remains():
     forbidden = ("current_page", "set_current_page", "_current_page")
     for path in ROOT.rglob("*.py"):
         assert not any(token in path.read_text(encoding="utf-8") for token in forbidden), path
 
 
-def test_offline_scripts_do_not_import_browser_runtime():
+async def test_offline_scripts_do_not_import_browser_runtime():
     for path in (ROOT / "tools").glob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert "platform.browser" not in source
         assert "from pyv8c import Browser" not in source
 
 
-def test_every_offline_script_has_a_repository_wrapper():
-    """Package tools have wrappers in tools/, except the startup benchmark."""
+async def test_every_offline_script_has_a_repository_wrapper():
+    """Every tool under tools/ forwards to its packaged implementation."""
     pytest.importorskip("pyv8c.pyv8", reason="imports every tool, and two of them reach the extension")
     for path in (ROOT / "tools").glob("*.py"):
         if path.name.startswith("__"):
             continue
         implementation = importlib.import_module(f"pyv8c.tools.{path.stem}")
-        if path.stem == "measure_startup":
-            wrapper = ROOT.parents[1] / "benchmarks" / "measure_startup.py"
-            spec = importlib.util.spec_from_file_location("startup_benchmark_wrapper", wrapper)
-            shell = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(shell)
-        else:
-            shell = importlib.import_module(f"tools.{path.stem}")
+        shell = importlib.import_module(f"tools.{path.stem}")
         assert shell.main is implementation.main, path
 
 
-def test_the_idl_and_the_binder_each_have_one_home():
+async def test_the_idl_and_the_binder_each_have_one_home():
     bindings_source = (ROOT / "engine" / "bindings.py").read_text(encoding="utf-8")
     extractor_source = (ROOT / "tools" / "extract_idl.py").read_text(encoding="utf-8")
     idl_source = (ROOT / "engine" / "idl.py").read_text(encoding="utf-8")
@@ -301,7 +298,7 @@ def test_the_idl_and_the_binder_each_have_one_home():
         extractor_source)
 
 
-def test_bindings_stay_a_composition_root():
+async def test_bindings_stay_a_composition_root():
     """Stub, callback and binder bodies must not creep back into bindings.py."""
     bindings_source = (ROOT / "engine" / "bindings.py").read_text(encoding="utf-8")
     for token in (
@@ -312,7 +309,7 @@ def test_bindings_stay_a_composition_root():
         assert token not in bindings_source, token
 
 
-def test_binder_collaborators_use_public_surface_only():
+async def test_binder_collaborators_use_public_surface_only():
     """The binder and a realm's session must not reach into bindings privates."""
     for path in (ROOT / "engine" / "binder.py", ROOT / "platform" / "sessions.py"):
         source = path.read_text(encoding="utf-8")
@@ -320,7 +317,7 @@ def test_binder_collaborators_use_public_surface_only():
         assert "bindings._binder" not in source, path
 
 
-def test_layering_has_no_upward_imports():
+async def test_layering_has_no_upward_imports():
     forbidden = {
         "foundation": ("engine", "network", "web", "platform"),
         "engine": ("web", "platform"),
@@ -352,13 +349,13 @@ def _absolute_imports(source, package):
     return modules
 
 
-def test_layer_import_analysis_resolves_nested_and_relative_imports():
+async def test_layer_import_analysis_resolves_nested_and_relative_imports():
     source = """\nfrom pyv8c import platform\ndef delayed():\n    from ... import platform\n    import pyv8c.web.dom\n"""
     assert {"pyv8c.platform", "pyv8c.web.dom"} <= _absolute_imports(source, "pyv8c.web.dom")
 
 
 @pytest.mark.native
-def test_runtime_interface_catalog_is_frozen_after_bootstrap():
+async def test_runtime_interface_catalog_is_frozen_after_bootstrap():
     pytest.importorskip("pyv8c.pyv8", reason="imports platform modules bound to the native extension")
     from pyv8c.platform.bootstrap import bootstrap_runtime
 
@@ -369,7 +366,7 @@ def test_runtime_interface_catalog_is_frozen_after_bootstrap():
 
 @pytest.mark.parametrize("attribute", ["_realm", "_services"])
 @pytest.mark.parametrize("bundled", [False, True])
-def test_realm_of_returns_the_realm_capability(attribute, bundled):
+async def test_realm_of_returns_the_realm_capability(attribute, bundled):
     from types import SimpleNamespace
 
     from pyv8c.foundation.realm import realm_of
@@ -380,7 +377,7 @@ def test_realm_of_returns_the_realm_capability(attribute, bundled):
     assert realm_of(subject) is capability
 
 
-def test_realm_of_prefers_injection_and_falls_back_to_services():
+async def test_realm_of_prefers_injection_and_falls_back_to_services():
     from types import SimpleNamespace
 
     from pyv8c.foundation.realm import realm_of
@@ -395,9 +392,9 @@ def test_realm_of_prefers_injection_and_falls_back_to_services():
 
 
 @pytest.mark.native
-def test_page_exposes_narrow_realm_services():
-    pytest.importorskip("pyv8c.pyv8", reason="constructs a live Browser")
-    from pyv8c import Browser
+async def test_page_exposes_narrow_realm_services():
+    pytest.importorskip("pyv8c.pyv8", reason="constructs a live Runtime")
+    from pyv8c.async_api import Browser
     from pyv8c.foundation.realm import (
         ContextServices,
         DocumentServices,
@@ -407,7 +404,7 @@ def test_page_exposes_narrow_realm_services():
         WorkerServices,
     )
 
-    browser = Browser(stub_logging="off", real_network=False)
+    browser = (await Browser(stub_logging="off", real_network=False).__aenter__())
     page = browser.new_profile().new_page()
     try:
         assert isinstance(page.services.context_services, ContextServices)
@@ -421,10 +418,10 @@ def test_page_exposes_narrow_realm_services():
             assert not isinstance(page.services, protocol)
         assert page.services.context_services.network_available is False
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_foundation_and_services_have_no_owner_backdoors():
+async def test_foundation_and_services_have_no_owner_backdoors():
     """TaskQueue must not reach the Page (or any host) through an owner field."""
     tasks_source = (ROOT / "foundation" / "tasks.py").read_text(encoding="utf-8")
     assert "self.owner" not in tasks_source
@@ -435,7 +432,7 @@ def test_foundation_and_services_have_no_owner_backdoors():
     assert "_host.owner" not in services_source
 
 
-def test_task_queue_exposes_event_loop_and_error_contract():
+async def test_task_queue_exposes_event_loop_and_error_contract():
     from pyv8c.foundation.tasks import TaskQueue, TaskSource
 
     for member in ("run_turn", "next_deadline", "drain_task_errors"):
@@ -443,7 +440,7 @@ def test_task_queue_exposes_event_loop_and_error_contract():
     assert TaskSource.PARSER.value == "parser"
 
 
-def test_domain_code_uses_page_resource_ownership_api():
+async def test_domain_code_uses_page_resource_ownership_api():
     #: The rule is about reaching the Page's fields, so it matches a member access or a
     #: quoted name: a bare word would also fire on the prose and the IDL vocabulary these
     #: modules legitimately carry.
@@ -465,27 +462,27 @@ def test_domain_code_uses_page_resource_ownership_api():
 
 
 @pytest.mark.native
-def test_page_services_surface_is_structurally_narrow():
+async def test_page_services_surface_is_structurally_narrow():
     """PageServices must not grow escape hatches into platform internals."""
-    pytest.importorskip("pyv8c.pyv8", reason="constructs a live Browser")
-    from pyv8c import Browser
+    pytest.importorskip("pyv8c.pyv8", reason="constructs a live Runtime")
+    from pyv8c.async_api import Browser
 
     source = (ROOT / "platform" / "services.py").read_text(encoding="utf-8")
     for token in ("self.profile", "self.network_backend", "self.binding_session", "self.page"):
         assert token not in source, token
 
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
     try:
         services = page.services
         for name in ("profile", "network_backend", "binding_session", "page", "realm", "v8_context", "browser"):
             assert not hasattr(services, name), name
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.native
-def test_page_keeps_only_user_facing_api():
+async def test_page_keeps_only_user_facing_api():
     """Web-serving forwards must not creep back onto the Page facade."""
     pytest.importorskip("pyv8c.pyv8", reason="imports platform modules bound to the native extension")
     from pyv8c.platform.browser import Page
@@ -505,24 +502,34 @@ def test_page_keeps_only_user_facing_api():
 
 
 @pytest.mark.native
-def test_page_net_exposes_both_http_flavours():
+async def test_page_net_exposes_both_http_flavours():
     """The host transport and the page's own JS APIs are one surface, under ``net``."""
     pytest.importorskip("pyv8c.pyv8", reason="imports platform modules bound to the native extension")
     from pyv8c.platform.net import PageNet
     from pyv8c.platform.page import Page
 
-    for name in ("get", "post", "fetch", "fetch_async", "xhr", "xhr_async"):
+    for name in ("get", "post", "fetch", "xhr"):
         assert hasattr(PageNet, name), name
-    for name in ("fetch", "fetch_async", "xhr", "xhr_async"):
+    import inspect
+    assert all(inspect.iscoroutinefunction(getattr(PageNet, name)) for name in ("request", "get", "post", "fetch", "xhr"))
+    assert not any(hasattr(PageNet, name) for name in ("request_async", "get_async", "post_async", "close"))
+    assert inspect.iscoroutinefunction(PageNet.fetch)
+    assert inspect.iscoroutinefunction(PageNet.xhr)
+    assert not hasattr(PageNet, "fetch_async")
+    assert not hasattr(PageNet, "xhr_async")
+    for name in ("fetch", "xhr"):
         assert not hasattr(Page, name), f"{name} belongs to page.net"
 
 
-def test_web_capability_split_has_no_legacy_mixed_modules():
+async def test_web_capability_split_has_no_legacy_mixed_modules():
     assert not (ROOT / "web" / "fetch" / "backend.py").exists()
     assert not (ROOT / "web" / "fetch" / "api.py").exists()
     assert (ROOT / "web" / "workers" / "worker.py").is_file()
     assert not (ROOT / "web" / "workers" / "api.py").exists()
     assert not (ROOT / "network" / "composite.py").exists()
+    # One cancellable delivery path only: no opt-in sibling or synchronous twin.
+    assert not (ROOT / "network" / "curl_cffi_async.py").exists()
+    assert "class AsyncTransport" in (ROOT / "network" / "async_delivery.py").read_text(encoding="utf-8")
     assert "class CookieJar" in (ROOT / "network" / "cookies.py").read_text(encoding="utf-8")
     assert "class CronetTransport" in (ROOT / "network" / "cronet.py").read_text(encoding="utf-8")
     assert "class NetworkBackend" in (ROOT / "network" / "backend.py").read_text(encoding="utf-8")
@@ -533,9 +540,27 @@ def test_web_capability_split_has_no_legacy_mixed_modules():
     assert "class HTMLMediaElement" not in (ROOT / "web" / "html" / "elements.py").read_text(encoding="utf-8")
 
 
-def test_the_two_network_roles_stay_separate_contracts():
+async def test_the_two_network_roles_stay_separate_contracts():
     """Each role is what an engine must implement to fill it, and no more."""
-    from pyv8c.network.registry import HttpTransport, WebSocketTransport
+    from pyv8c.network.registry import HttpTransport, WebSocketTransport, transport_names
 
     assert not hasattr(HttpTransport, "websocket")
     assert not hasattr(WebSocketTransport, "request_sync")
+    # cycronet's async session has no websocket(): naming it for the ws role
+    # would recreate a second socket mechanism.
+    assert "cronet" not in transport_names("ws")
+    assert "websockets" in transport_names("ws")
+
+
+def test_the_registry_registers_one_name_per_built_in_role():
+    """A host may add probes at runtime, so read the static registry itself."""
+    tree = ast.parse((ROOT / "network" / "registry.py").read_text(encoding="utf-8"))
+    built_in = {"http": set(), "ws": set()}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in ("register_transport", "register_ws_transport")
+                and node.args and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            role = "ws" if node.func.id == "register_ws_transport" else "http"
+            built_in[role].add(node.args[0].value)
+    assert built_in == {"http": {"curl_cffi", "cronet"}, "ws": {"websockets"}}

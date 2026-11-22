@@ -1,4 +1,4 @@
-"""The owner thread sleeps on its loop; only a deadline or a nudge wakes it."""
+"""The owner waits for a deadline or publication without polling."""
 import threading
 import time
 
@@ -11,16 +11,14 @@ def test_a_distant_timer_is_waited_for_in_one_sleep(monkeypatch):
     queue = TaskQueue()
     executor.attach_task_queue(queue)
     sleeps = []
-    loop = executor.call(lambda: executor._loop)
-    call_later = loop.call_later
+    condition = executor._wake_condition
+    wait = condition.wait
 
-    def recording_sleep(seconds, callback, *args, **kwargs):
+    def recording_sleep(seconds=None):
         sleeps.append(seconds)
-        return call_later(seconds, callback, *args, **kwargs)
+        return wait(seconds)
 
-    # Observe the actual timed wait, not the driver's pre-sleep hint: deadlines
-    # are now refreshed after clearing wakeups to avoid losing a new timer.
-    monkeypatch.setattr(loop, 'call_later', recording_sleep)
+    monkeypatch.setattr(condition, 'wait', recording_sleep)
     try:
         queue.schedule(lambda: None, 60)
         deadline = time.monotonic() + 1.0

@@ -2,7 +2,7 @@
 
 from importlib import import_module
 
-__all__ = ["Browser", "Profile", "Page", "PageRealm", "WorkerRealm",
+__all__ = ["Browser", "Profile", "Page",
            "DevToolsHandle", "DevToolsOptions"]
 
 # DevTools is re-exported, not imported: pyv8's DevTools service brings a
@@ -10,7 +10,6 @@ __all__ = ["Browser", "Profile", "Page", "PageRealm", "WorkerRealm",
 # not pay for at import.
 _LAZY_EXPORTS = {
     "Browser": ".browser", "Profile": ".browser", "Page": ".page",
-    "PageRealm": ".realms", "WorkerRealm": ".realms",
     "DevToolsHandle": ".devtools", "DevToolsOptions": ".devtools",
 }
 

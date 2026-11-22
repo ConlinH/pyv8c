@@ -19,6 +19,8 @@ A fourth is not about members but about the object holding them: a callback inte
 ``prototype``, which Blink states in ``SetupIDLCallbackInterfaceTemplate`` and this engine had
 to learn (see the ``NodeFilter`` case below).
 """
+
+import asyncio
 import json
 import threading
 import time
@@ -27,7 +29,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
 
-from pyv8c import Browser  # noqa: E402
+from pyv8c.async_api import Browser
 
 PAGE = "<!doctype html><title>members</title><body></body>"
 
@@ -46,17 +48,17 @@ SCRIPT = """(() => {
 })()"""
 
 
-def _pump(page, seconds=1.5):
+async def _pump(page, seconds=1.5):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            page.run_until_idle(timeout=0)
+            (await page.run_until_idle(timeout=0))
         except BaseException:  # noqa: BLE001
             pass
-        time.sleep(0.01)
+        (await asyncio.sleep(0.01))
 
 
-def test_a_collection_publishes_the_iterators_its_interface_has():
+async def test_a_collection_publishes_the_iterators_its_interface_has():
     """``HTMLCollection`` is a sibling of ``NodeList``, not a subclass of it.
 
     Sharing ``NodeList``'s implementation as a *base class* carried its iterator flags along, so
@@ -69,10 +71,10 @@ def test_a_collection_publishes_the_iterators_its_interface_has():
     The other direction matters as much: what really is a ``NodeList`` keeps the four names,
     inherited from it.
     """
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url="https://surface.test/")
+        (await page.set_content(PAGE, url="https://surface.test/", wait_until="commit"))
         answer = page.evaluate("""(() => {
           const four = ['entries', 'keys', 'values', 'forEach'];
           const named = (name) => four.filter((m) => m in window[name].prototype);
@@ -93,16 +95,7 @@ def test_a_collection_publishes_the_iterators_its_interface_has():
           };
         })()""")
     finally:
-        done = threading.Event()
-
-        def close():
-            try:
-                browser.close()
-            finally:
-                done.set()
-
-        threading.Thread(target=close, daemon=True).start()
-        done.wait(10)
+        await browser.close()
 
     assert answer["iterator"] == ["function", "function"], answer["iterator"]
     assert answer["named"] == {"HTMLCollection": [], "HTMLOptionsCollection": [],
@@ -117,7 +110,7 @@ def test_a_collection_publishes_the_iterators_its_interface_has():
     assert answer["chain"]["radio"] is True, answer["chain"]
 
 
-def test_a_maplike_interface_publishes_its_iterator_and_a_value_is_not_one():
+async def test_a_maplike_interface_publishes_its_iterator_and_a_value_is_not_one():
     """``Symbol.iterator`` for the interfaces that have no hand-written spec.
 
     ``AudioParamMap``, ``CustomStateSet`` and ``RTCStatsReport`` answer ``Symbol.iterator`` in
@@ -131,10 +124,10 @@ def test_a_maplike_interface_publishes_its_iterator_and_a_value_is_not_one():
     Async-only interfaces are the known residue: ``FileSystemDirectoryHandle`` is iterable
     asynchronously there and not synchronously, and the baseline does not say which.
     """
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url="https://surface.test/")
+        (await page.set_content(PAGE, url="https://surface.test/", wait_until="commit"))
         answer = page.evaluate("""(() => {
           const has = (name) => typeof window[name].prototype[Symbol.iterator];
           return {maps: [has('AudioParamMap'), has('CustomStateSet'), has('RTCStatsReport')],
@@ -142,16 +135,7 @@ def test_a_maplike_interface_publishes_its_iterator_and_a_value_is_not_one():
                   attribute: 'values' in CSSMathMax.prototype};
         })()""")
     finally:
-        done = threading.Event()
-
-        def close():
-            try:
-                browser.close()
-            finally:
-                done.set()
-
-        threading.Thread(target=close, daemon=True).start()
-        done.wait(10)
+        await browser.close()
 
     assert answer["maps"] == ["function"] * 3, answer["maps"]
     assert answer["values"] == "undefined", answer["values"]
@@ -160,7 +144,7 @@ def test_a_maplike_interface_publishes_its_iterator_and_a_value_is_not_one():
     assert answer["attribute"] is True, answer
 
 
-def test_implementation_state_is_not_an_idl_constant():
+async def test_implementation_state_is_not_an_idl_constant():
     """A plain ``int`` class attribute is implementation state, not surface.
 
     ``AudioNode.inputs``/``outputs`` are channel counts and ``ScriptProcessorNode``'s
@@ -173,10 +157,10 @@ def test_implementation_state_is_not_an_idl_constant():
     The other half is just as important: a real constant must still be there, and it now comes
     from the interface baseline rather than from a Python attribute.
     """
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url="https://surface.test/")
+        (await page.set_content(PAGE, url="https://surface.test/", wait_until="commit"))
         answer = page.evaluate("""(() => {
           const state = ['inputs', 'outputs', 'channel_count'];
           const own = (name) => Object.getOwnPropertyNames(window[name] || {});
@@ -191,41 +175,23 @@ def test_implementation_state_is_not_an_idl_constant():
           };
         })()""")
     finally:
-        done = threading.Event()
-
-        def close():
-            try:
-                browser.close()
-            finally:
-                done.set()
-
-        threading.Thread(target=close, daemon=True).start()
-        done.wait(10)
+        await browser.close()
 
     assert answer["leaked"] == [], answer["leaked"]
     assert answer["elementNode"] == ["number", 1, 3], answer["elementNode"]
     assert answer["own"] == ["ELEMENT_NODE"], answer["own"]
 
 
-def test_the_dom_bom_surface_matches_what_chrome_reports():
-    browser = Browser(stub_logging="off")
+async def test_the_dom_bom_surface_matches_what_chrome_reports():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url="https://surface.test/")
+        (await page.set_content(PAGE, url="https://surface.test/", wait_until="commit"))
         page.evaluate(SCRIPT)
-        _pump(page)
+        (await _pump(page))
         out = json.loads(page.evaluate("JSON.stringify(window.__out)"))
     finally:
-        done = threading.Event()
-
-        def close():
-            try:
-                browser.close()
-            finally:
-                done.set()
-
-        threading.Thread(target=close, daemon=True).start()
-        done.wait(10)
+        await browser.close()
 
     #: ``persisted`` belongs to ``PageTransitionEvent``: Chrome's ``Event.prototype`` has no such
     #: member, so ``new Event('x').persisted`` is ``undefined`` there, and the event that does
@@ -244,7 +210,7 @@ def test_the_dom_bom_surface_matches_what_chrome_reports():
     assert out["instanceBody"] == {"b": 2}, out
 
 
-def test_a_callback_interface_is_a_function_without_a_prototype():
+async def test_a_callback_interface_is_a_function_without_a_prototype():
     """``NodeFilter`` is a callback interface, and Chrome's shape says so.
 
     Blink gives the three shapes in ``SetupIDLCallbackInterfaceTemplate`` and its neighbours
@@ -257,10 +223,10 @@ def test_a_callback_interface_is_a_function_without_a_prototype():
     sixteen constants plus the function's non-enumerable ``name``/``length`` and ours had a
     twenty-eight member ``prototype`` too.
     """
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url="https://surface.test/")
+        (await page.set_content(PAGE, url="https://surface.test/", wait_until="commit"))
         answer = page.evaluate("""(() => {
           const flags = (name) => {
             const d = Object.getOwnPropertyDescriptor(NodeFilter, name);
@@ -279,7 +245,7 @@ def test_a_callback_interface_is_a_function_without_a_prototype():
           };
         })()""")
     finally:
-        browser.close()
+        (await browser.close())
 
     assert answer["kind"] == "function", answer
     assert answer["prototype"] == ["undefined", False], answer
@@ -292,7 +258,7 @@ def test_a_callback_interface_is_a_function_without_a_prototype():
     assert answer["constructed"] == "TypeError", answer
 
 
-def test_a_namespace_is_an_object_without_a_prototype():
+async def test_a_namespace_is_an_object_without_a_prototype():
     """``CSS`` is a namespace, so Chrome's shape for it is a plain tagged object.
 
     ``SetupIDLNamespaceTemplate`` tags the object itself and gives it no ``prototype``, ``name``
@@ -301,10 +267,10 @@ def test_a_namespace_is_an_object_without_a_prototype():
     rather than two flags is what keeps this shape apart from a callback interface, which has no
     prototype either (a namespace that read as both would install neither correctly).
     """
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url="https://surface.test/")
+        (await page.set_content(PAGE, url="https://surface.test/", wait_until="commit"))
         answer = page.evaluate("""(() => ({
           kind: typeof CSS,
           prototype: 'prototype' in CSS,
@@ -313,7 +279,7 @@ def test_a_namespace_is_an_object_without_a_prototype():
           member: typeof CSS.supports,
         }))()""")
     finally:
-        browser.close()
+        (await browser.close())
 
     assert answer["kind"] == "object", answer
     assert answer["prototype"] is False, answer

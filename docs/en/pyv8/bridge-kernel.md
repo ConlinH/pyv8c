@@ -2,6 +2,8 @@
 
 [简体中文](../../pyv8/bridge-kernel.md) | **English**
 
+> This article records historical bridge experiments and the measurement commands of that time. The current unified entry point is [benchmarks/README.md](../../../benchmarks/README.md); standalone scripts such as `benchmarks/bridge.py` have been folded into it.
+
 The bridge requires the CPython 3.12 Stable ABI. A wheel built on 3.12 is
 intended for regular GIL-enabled CPython 3.12 through 3.15 on the same OS
 and architecture. Free-threaded Python and subinterpreters are not supported.
@@ -65,6 +67,12 @@ This is an in-process embedding, not a hostile-code security sandbox.
 
 ## Performance and validation
 
+`exec_js` reuses the Context entry owned by `ExecutionScope`; attribute callbacks establish their scopes and active-context check once. A migratable Isolate's Locker lives inside its scope; waiting for the lock still releases the GIL. Short one-byte JS strings decode directly as Latin-1, letting CPython select its ASCII representation.
+
+One `to_python()` call shares one identity table, with the first 16 objects stored inline and hashed overflow for larger graphs. V8 Local handles track moving objects during GC; handle equality preserves cycles and aliases. The table lasts only for this materialization, without a persistent result cache. The private dense key array returned by enumeration is read as data; source getters, Proxy checks and value reads retain reentrant GIL-release paths.
+
+If V8 has caught a getter/Proxy exception, its Python wrapper is constructed after clearing the converter's fallback Python error. This prevents CPython from replacing the original failure with `SystemError`; the original thrown JS value keeps its identity.
+
 `benchmarks/bridge.py` runs five child processes, each with five warmup batches
 and twenty measured batches. JSON includes raw samples, binary SHA-256 and
 source revision. Run both checkouts with the same V8/compiler configuration.
@@ -113,6 +121,33 @@ isolate fallback. An explicit Isolate argument still queries that isolate.
 This prevents Worker callbacks from acquiring a parent's unrelated isolate merely
 to discover their own context during serialization or transferable processing.
 
+Context queries observe entries already owned by the calling thread. Outside
+execution they return `None`, without opening a top-level Locker merely to inspect
+an idle context or waiting for another thread to leave JavaScript. Same-thread
+cross-isolate nesting still permits querying an outer Context. A callback querying
+a contended foreign isolate retains the existing nested-execution error. Explicit
+argument type/closed-state validation remains. Initialization is unchanged: first
+use may still start V8.
+
+V8 15.4 initializes thread state at top-level Locker entry and resets interrupt
+flags. Previously an idle query could therefore clear notifications needed by
+background optimization, stalling TurboFan work between short scripts. Both query
+APIs now share a read-only implementation that checks existing entries first.
+Timeouts remain; no synchronous JIT or private V8 compiler API is forced.
+
+`Isolate(thread_bound=True)` binds VM access and close to its creating thread.
+Page execution groups and Workers always create and close these isolates on their
+executor owners. Entry checks affinity and retains host mutual exclusion, without
+constructing a V8 Locker that repeatedly initializes thread state and loses compiler
+interrupts between calls. Background compilation remains concurrent. Migratable
+`Isolate()` instances use the Locker for VM entry; both modes support same-thread nesting.
+
+Explicitly close a bound isolate on its owner before that thread exits. VM access and explicit close from another thread raise an error.
+If another thread drops the final Python reference to the Isolate and no thread is entering or executing it, the destructor uses a V8 Locker to complete teardown.
+Foreign GC cleanup of individual objects such as Contexts stays queued until the next owner entry or close. Thread-safe operation termination and foreground
+notification waits remain available to control threads. Regressions cover recovery,
+foreign GC, context observation and mixed-mode nesting.
+
 
 ## Build and ownership contracts (2026-10-14)
 
@@ -136,7 +171,7 @@ reads literal Extension include roots through AST and resolves quoted includes
 against the including file and those roots, rather than matching basenames.
 
 Handler storage and IdlSpec constructor metadata expand handler_table.def.
-Runtime contract tests require each handler to have a declared stub keyword,
+Browser contract tests require each handler to have a declared stub keyword,
 a None default, immutable replacement, and consistent callback validation.
 BufferRange owns its BackingStore and describes the current byte offset/length;
 copying and fixed-store exporting share that calculation. Resizable storage

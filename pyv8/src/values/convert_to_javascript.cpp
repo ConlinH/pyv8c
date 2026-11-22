@@ -14,6 +14,7 @@
 #include "context.h"
 
 #include <climits>
+#include <memory>
 #include <new>
 #include <unordered_map>
 
@@ -111,7 +112,43 @@ js_from_py_impl(PyObject *value,
         const char *str = PyUnicode_AsUTF8AndSize(value, &len);
         if (str == NULL)
         {
-            return Local<Value>();
+            if (!PyErr_ExceptionMatches(PyExc_UnicodeEncodeError))
+                return Local<Value>();
+            // UTF-8 rejects unpaired surrogates; JavaScript accepts the
+            // corresponding UTF-16 code units as part of a string.
+            PyErr_Clear();
+            PyOwnedRef encoded(PyUnicode_AsEncodedString(value, "utf-16-le", "surrogatepass"));
+            if (!encoded.get())
+                return Local<Value>();
+            char* data;
+            Py_ssize_t bytes;
+            if (PyBytes_AsStringAndSize(encoded.get(), &data, &bytes) < 0)
+                return Local<Value>();
+            if (bytes / 2 > INT_MAX)
+            {
+                PyErr_SetString(PyExc_OverflowError, "Python string is too large for a V8 string");
+                return Local<Value>();
+            }
+            const int length = static_cast<int>(bytes / 2);
+            std::unique_ptr<uint16_t[]> units(new (std::nothrow) uint16_t[length]);
+            if (!units)
+            {
+                PyErr_NoMemory();
+                return Local<Value>();
+            }
+            for (int index = 0; index < length; ++index)
+            {
+                const auto low = static_cast<unsigned char>(*data++);
+                const auto high = static_cast<unsigned char>(*data++);
+                units[index] = static_cast<uint16_t>(low | (high << 8));
+            }
+            Local<String> text;
+            if (!String::NewFromTwoByte(isolate, units.get(), NewStringType::kNormal, length).ToLocal(&text))
+            {
+                PyErr_SetString(PyExc_RuntimeError, "failed to create JavaScript string");
+                return Local<Value>();
+            }
+            return text;
         }
         if (len > INT_MAX)
         {

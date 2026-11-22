@@ -1,13 +1,13 @@
 """A shadow tree owns its stylesheet list independently of the document."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_shadow_root_style_sheets_are_live_and_scoped():
-    browser = Browser(real_network=False, stub_logging="off")
+async def test_shadow_root_style_sheets_are_live_and_scoped():
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         assert page.evaluate("""(() => {
             const host = document.createElement('div');
             document.body.append(host);
@@ -30,4 +30,4 @@ def test_shadow_root_style_sheets_are_live_and_scoped():
         })()""") == [0, True, 1, True, True, 1, 0,
                     "[object StyleSheetList]", "StyleSheetList", 0]
     finally:
-        browser.close()
+        (await browser.close())

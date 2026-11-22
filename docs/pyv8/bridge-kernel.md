@@ -2,6 +2,8 @@
 
 **简体中文** | [English](../en/pyv8/bridge-kernel.md)
 
+> 本文记录历史桥接实验与当时的测量命令。当前统一基准入口见 [benchmarks/README.md](../../benchmarks/README.md)，文中的 `benchmarks/bridge.py` 等独立脚本已并入该入口。
+
 桥接要求 CPython 3.12 Stable ABI。在 3.12 上构建的 wheel 面向
 同一操作系统和架构上启用了 GIL 的常规 CPython 3.12 至 3.15。
 不支持无 GIL（free-threaded）Python 和子解释器。
@@ -65,6 +67,12 @@ CallbackBoundary 在已安装的宿主回调边界处转换失败。
 
 ## 性能与验证
 
+`exec_js` 复用 `ExecutionScope` 的 Context 进入，属性回调在入口完成一次作用域与活跃检查；可迁移 Isolate 的 Locker 存放在作用域内，锁等待仍释放 GIL。短单字节 JS 字符串直接按 Latin-1 解码，CPython 自行选择 ASCII 表示。
+
+一次 `to_python()` 共用一份对象身份表，前 16 个对象放在栈内数组，较大的图使用哈希溢出表。表中保存 V8 Local 句柄，通过句柄比较对象身份，允许 GC 移动对象，保留环与共享引用。该表只存活于本次物化，没有持久结果缓存。枚举得到的私有稠密键数组按数据读取；源对象的 getter、Proxy 检查和属性值访问仍通过可重入且释放 GIL 的路径执行。
+
+当 V8 已捕获 getter/Proxy 异常时，构造 Python 异常前清除转换器的备用错误，避免原始错误被 CPython 包装成 `SystemError`。原始 JS 抛出值的身份仍保留。
+
 `benchmarks/bridge.py` 运行五个子进程，每个包含五个预热批次
 和二十个测量批次。JSON 包含原始样本、二进制 SHA-256 和
 源码版本。请用相同的 V8/编译器配置运行两份检出。
@@ -112,6 +120,27 @@ Watchdog 截止时间使用可增长的栈：每个嵌套作用域都有自己�
 Isolate 回退。显式的 Isolate 参数仍查询该 Isolate。这可防止
 Worker 回调仅仅为了在序列化或可转移对象处理期间发现自己的
 Context，就去获取父级无关的 Isolate。
+
+上下文查询只观察调用线程已有的进入。执行之外返回 `None`，不为读取空闲上下文创建
+顶层 Locker，也不等待另一个线程退出 JavaScript。同一线程跨 Isolate 嵌套时仍能查询外层
+Context；回调内查询另一个被占用的 Isolate 仍拒绝等待，抛出原有的嵌套执行错误。
+显式参数的类型和关闭状态校验保留。初始化协议没有改变，首次使用仍可启动 V8。
+
+V8 15.4 的顶层 Locker 会初始化线程状态并重置中断标记。之前的空闲查询因此可能清除
+后台优化所需的通知，使短脚本之间的 TurboFan 编译停滞。现在 `current_context()` 与
+`incumbent_context()` 共用只读查询实现，先检查已有进入，再读取 V8 上下文；
+没有取消超时、强制同步 JIT 或使用 V8 私有编译接口。
+
+`Isolate(thread_bound=True)` 在创建时固定 VM 访问和关闭所属的线程。Page 执行组与 Worker
+统一采用此模式，在各自执行器的 owner 线程构造和关闭 isolate。进入时校验线程并保留宿主互斥，
+不创建 V8 Locker，避免在调用间反复初始化 V8 线程状态、丢失后台编译中断。
+后台编译仍并发执行。`Isolate()` 的跨线程迁移模式使用 Locker 保护实际进入；两种模式可在同线程嵌套。
+
+应在 owner 线程退出前显式关闭线程绑定的 isolate。其他线程的 VM 访问及显式关闭会被拒绝。
+当整个 Isolate 的最后一个 Python 引用在异线程释放，且没有正在进入或执行的线程时，析构会使用 V8 Locker 完成回收。
+单个 Context 等对象的异线程 GC 清理仍由延迟队列交给 owner，等下次进入或关闭时处理。
+线程安全的操作终止和前台通知等待仍可由控制线程发起。终止恢复、跨线程 GC、上下文查询和
+混合模式嵌套都有回归覆盖。
 
 
 ## 构建与所有权契约（2026-10-14）

@@ -1,18 +1,18 @@
 """Regression coverage for animation, visibility and idle callbacks."""
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 import pytest
 
 
 @pytest.fixture
-def page():
-    browser = Browser(real_network=False, stub_logging='off')
+async def page():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         yield browser.new_profile().new_page()
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_keyframes_numeric_duration_and_zero_rate(page):
+async def test_keyframes_numeric_duration_and_zero_rate(page):
     assert page.evaluate("""(() => {
       const a = document.body.animate([{opacity: 0}, {opacity: 1}], 100);
       a.playbackRate = 0;
@@ -20,7 +20,7 @@ def test_keyframes_numeric_duration_and_zero_rate(page):
     })()""") == [2, 100, 0]
 
 
-def test_pause_delay_and_promise_identity(page):
+async def test_pause_delay_and_promise_identity(page):
     page.evaluate("""(() => {
       window.animationResult = [];
       const a = document.body.animate([{opacity: 0}, {opacity: 1}], {duration: 30, delay: 180});
@@ -29,11 +29,11 @@ def test_pause_delay_and_promise_identity(page):
       setTimeout(() => { a.pause(); animationResult.push(a.playState); }, 60);
       setTimeout(() => { animationResult.push(a.playState); a.play(); }, 120);
     })()""")
-    page.wait_for('animationResult.length === 4', timeout=3)
+    (await page.wait_for('animationResult.length === 4', timeout=3))
     assert page.evaluate('animationResult') == [True, 'paused', 'paused', True]
 
 
-def test_cancel_rejects_and_completed_style_is_applied(page):
+async def test_cancel_rejects_and_completed_style_is_applied(page):
     page.evaluate("""(() => {
       window.cancelResult = 'pending';
       const e = document.createElement('div'); document.body.appendChild(e); e.id = 'anim-test';
@@ -43,11 +43,11 @@ def test_cancel_rejects_and_completed_style_is_applied(page):
       b.finished.then(() => cancelResult = 'resolved', error => cancelResult = [error.name, error instanceof DOMException]);
       b.cancel();
     })()""")
-    page.wait_for("window.cancelResult !== 'pending' && window.styleResult !== undefined", timeout=3)
+    (await page.wait_for("window.cancelResult !== 'pending' && window.styleResult !== undefined", timeout=3))
     assert page.evaluate('[cancelResult, styleResult]') == [['AbortError', True], '0.2']
 
 
-def test_check_visibility_ancestor_and_optional_visibility(page):
+async def test_check_visibility_ancestor_and_optional_visibility(page):
     assert page.evaluate("""(() => {
       const p = document.createElement('div'), c = document.createElement('div');
       document.body.appendChild(p); p.appendChild(c); p.style.display = 'none';
@@ -57,17 +57,17 @@ def test_check_visibility_ancestor_and_optional_visibility(page):
     })()""") == [False, True, False]
 
 
-def test_idle_timeout_reflects_time_spent_waiting(page):
+async def test_idle_timeout_reflects_time_spent_waiting(page):
     page.evaluate("""(() => {
       window.idleResult = null;
       requestIdleCallback(d => idleResult = [d.didTimeout, d.timeRemaining()], {timeout: 1});
       const start = Date.now(); while (Date.now() - start < 40) {}
     })()""")
-    page.wait_for('idleResult !== null', timeout=3)
+    (await page.wait_for('idleResult !== null', timeout=3))
     assert page.evaluate('idleResult') == [True, 0]
 
 
-def test_timing_validation_is_atomic_and_effect_can_be_cleared(page):
+async def test_timing_validation_is_atomic_and_effect_can_be_cleared(page):
     assert page.evaluate("""(() => {
       const results = [];
       for (const duration of [-1, 'bad']) {
@@ -83,7 +83,7 @@ def test_timing_validation_is_atomic_and_effect_can_be_cleared(page):
     })()""") == ['TypeError', 'TypeError', 'TypeError', 0, 100, True, 'finished']
 
 
-def test_reverse_finished_animation_and_computed_timing(page):
+async def test_reverse_finished_animation_and_computed_timing(page):
     result = page.evaluate("""(() => {
       const a = document.body.animate(null, 1000); a.pause(); a.currentTime = 500;
       const timing = a.effect.getComputedTiming();
@@ -94,7 +94,7 @@ def test_reverse_finished_animation_and_computed_timing(page):
     assert result == [[500, 0.5, 0], -1, True, 'running']
 
 
-def test_offsets_direction_and_geometry_follow_animation(page):
+async def test_offsets_direction_and_geometry_follow_animation(page):
     assert page.evaluate("""(() => {
       const e = document.createElement('div'); e.style.width = '10px'; document.body.appendChild(e);
       const a = e.animate([{opacity: 0, width: '10px', offset: 0},
@@ -110,7 +110,7 @@ def test_offsets_direction_and_geometry_follow_animation(page):
     })()""") == [['1', '100px', 100], '0.75']
 
 
-def test_finished_and_cancelled_animations_are_released(page):
+async def test_finished_and_cancelled_animations_are_released(page):
     page.evaluate("""(() => {
       const e = document.createElement('div'); e.id = 'animation-cleanup'; document.body.appendChild(e);
       for (let i = 0; i < 10; i++) { const a = e.animate(null, 10); a.finished.catch(() => {}); a.cancel(); }
@@ -120,7 +120,7 @@ def test_finished_and_cancelled_animations_are_released(page):
     assert count == 0
 
 
-def test_hidden_can_be_overridden_by_author_css(page):
+async def test_hidden_can_be_overridden_by_author_css(page):
     assert page.evaluate("""(() => {
       const e = document.createElement('div'); e.hidden = true; document.body.appendChild(e);
       const before = e.checkVisibility(); e.style.display = 'block';
@@ -128,7 +128,7 @@ def test_hidden_can_be_overridden_by_author_css(page):
     })()""") == [False, True]
 
 
-def test_keyframe_validation_and_failed_update_do_not_break_layout(page):
+async def test_keyframe_validation_and_failed_update_do_not_break_layout(page):
     assert page.evaluate("""(() => {
       const e = document.createElement('div'); document.body.appendChild(e);
       let failures = [];
@@ -144,7 +144,7 @@ def test_keyframe_validation_and_failed_update_do_not_break_layout(page):
     })()""") == [['TypeError', 'TypeError', 'TypeError', 'TypeError'], 2, '0.5']
 
 
-def test_seek_after_finish_restores_effect_and_promise(page):
+async def test_seek_after_finish_restores_effect_and_promise(page):
     result = page.evaluate("""(() => {
       const e = document.createElement('div'); document.body.appendChild(e);
       const a = e.animate([{opacity: 0}, {opacity: 1}], 1000);
@@ -155,7 +155,7 @@ def test_seek_after_finish_restores_effect_and_promise(page):
     assert 0.49 <= result[2] < 0.7
 
 
-def test_effect_transfer_and_null_current_time(page):
+async def test_effect_transfer_and_null_current_time(page):
     assert page.evaluate("""(() => {
       const a = document.body.animate(null, 1000), b = document.body.animate(null, 1000);
       a.pause(); b.pause(); const effect = a.effect; b.effect = effect;
@@ -166,7 +166,7 @@ def test_effect_transfer_and_null_current_time(page):
     })()""") == [[True, True], True, 'TypeError']
 
 
-def test_finish_event_and_zero_iterations(page):
+async def test_finish_event_and_zero_iterations(page):
     page.evaluate("""(() => {
       window.finishResult = [];
       const a = document.body.animate(null, {duration: Infinity, iterations: 0});
@@ -175,11 +175,11 @@ def test_finish_event_and_zero_iterations(page):
       a.onfinish = () => finishResult.push('handler');
       a.finish(); finishResult.push('called');
     })()""")
-    page.wait_for('finishResult.length === 5', timeout=3)
+    (await page.wait_for('finishResult.length === 5', timeout=3))
     assert page.evaluate('finishResult') == [0, 0, 'called', 'event', 'handler']
 
 
-def test_finished_fill_animation_allows_layout_cache(page):
+async def test_finished_fill_animation_allows_layout_cache(page):
     page.evaluate("""(() => {
       const e = document.createElement('div'); e.id = 'filled'; document.body.appendChild(e);
       e.animate([{width: '10px'}, {width: '100px'}], {duration: 100, fill: 'forwards'}).finish();
@@ -194,7 +194,7 @@ def test_finished_fill_animation_allows_layout_cache(page):
     assert page.evaluate("document.getElementById('filled').getBoundingClientRect().width") == 100
 
 
-def test_overall_progress_tracks_effect_end_and_unresolved_time(page):
+async def test_overall_progress_tracks_effect_end_and_unresolved_time(page):
     result = page.evaluate('''(() => {
         const a = document.body.animate([], {duration: 500, iterations: 2, delay: 100});
         const result = [a.overallProgress];

@@ -2,10 +2,9 @@
 
 
 class Ownership:
-    __slots__ = ("websockets", "workers", "frames")
+    __slots__ = ("workers", "frames")
 
     def __init__(self):
-        self.websockets = set()
         self.workers = set()
         self.frames = set()
 

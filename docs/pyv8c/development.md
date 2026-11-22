@@ -6,6 +6,8 @@
 
 ## 环境与工作约定
 
+`dev` extra、源码检查和 tox 使用 `pytest>=8.4` 与 `pytest-asyncio>=1.4,<2`。共享测试夹具通过该插件注册 Runtime 的事件循环工厂。
+
 在仓库根目录使用 CPython 3.12 安装项目，并确认加载的是本仓库的代码：
 
 ```powershell
@@ -58,9 +60,12 @@ V8 和 Chromium 工具链并耗费较长时间及磁盘空间；可通过 `PYV8_
 在 **Actions → Build wheels → Run workflow** 勾选需要的平台并手动运行。对应产物为
 `windows-wheels`、`linux-wheels` 和 `macos-arm64-wheels`。
 
-Linux runner 每次使用新的虚拟机，并尝试恢复匹配镜像和构建配置的 V8 缓存；缓存未命中时
-需要下载并构建 V8，耗时较长且需要足够磁盘空间。可用资源及缓存效果需在 Actions 中确认。
-各平台任务检查安装后冒烟与原生崩溃冒烟；Linux 和 macOS 另检查原生参数桥接，Windows wheel 测试矩阵另跑架构层门禁。这些都不代表浏览器完整测试全部通过。
+三个平台的 V8 缓存 key 由 SDK/GN 参数/V8 源码哈希加 runner 镜像版本组成：镜像版本放在
+末尾，因此镜像更新后仍会按前缀回退到同一 SDK、GN 参数和源码的上一次缓存，避免重编 V8；
+只有这些构建输入本身变化时才需要下载并重新构建 V8，耗时较长且需要足够磁盘空间。
+回退还会按旧 key 布局做一次精确匹配，以兼容调整前已保存的缓存（迁移期只需重编一次）。
+恢复的缓存会先校验 GN stamp。可用资源及缓存效果需在 Actions 中确认。
+各平台任务安装 wheel 后运行冒烟测试、音频与 DOM 原生组件回归，以及原生崩溃冒烟；Linux 和 macOS 另检查原生参数桥接，Windows wheel 测试矩阵另跑架构层门禁。这些都不代表浏览器完整测试全部通过。
 
 ## 实现接口
 
@@ -126,10 +131,10 @@ python pyv8/tools/check_layout.py
 三条硬约束：
 
 - `tox.ini` 的 py312~py315 wheel 矩阵只跑 `pyv8/tests` + `tests/unit` + `tests/browser` + `tests/integration`，刻意排除 `native` 和 `repros`：矩阵验证的是同一份 abi3 wheel 在四个 CPython 版本上的行为，不能依赖本机 Chrome，也不必把子进程冒烟重复四次。
-- `tools/check_policy.py` 的 `offline` 门设置 `PYV8C_OFFLINE=1`，由 `tests/conftest.py` 屏蔽 `pyv8c.pyv8` 后只跑 `tests/unit`。因此 **unit 中任何顶层导入会连带加载原生扩展的测试文件，都必须在所有 `pyv8c` 导入之前写一行 `pytest.importorskip("pyv8c.pyv8")`**。该门先做静态预检：按包内 import 图的传递闭包算出「原生绑定模块」（含独立的 `pyv8c._audio_native`），报出违规的文件与行号。`@pytest.mark.native` 只表示「此用例需要已编译扩展」，不能替代这行守卫，因为收集阶段就已经失败了。干净的 CI checkout 同样要设 `PYV8C_OFFLINE=1`，否则 `pytest.importorskip` 会把 `cannot import name '_pyv8'` 重新抛出，而不是跳过。
+- `tools/check_policy.py` 的 `offline` 门设置 `PYV8C_OFFLINE=1`，由 `tests/conftest.py` 屏蔽 `pyv8c.pyv8` 后只跑 `tests/unit`。因此 **unit 中任何顶层导入会连带加载原生扩展的测试文件，都必须在所有 `pyv8c` 导入之前写一行 `pytest.importorskip("pyv8c.pyv8")`**。该门先做静态预检：按包内 import 图的传递闭包算出「原生绑定模块」（含 `pyv8c._native` 及其兼容入口），报出违规的文件与行号。`@pytest.mark.native` 只表示「此用例需要已编译扩展」，不能替代这行守卫，因为收集阶段就已经失败了。干净的 CI checkout 同样要设 `PYV8C_OFFLINE=1`，否则 `pytest.importorskip` 会把 `cannot import name '_pyv8'` 重新抛出，而不是跳过。
 - `pytest.ini` 注册 `native` / `race` / `slow` 三个 marker 并默认 `-m "not slow"`。**`@pytest.mark.native` 与 `native/` 目录不是一回事**：前者是「需要扩展」的标记，`unit` 里也有；后者表示必须在独立子进程里验证不崩溃。
 
-`repros` 是双引擎行为语料，不是普通回归测试：本机 Chrome 版本、IDL 基线（`154.0.8030.0`）与 `chrome-environment.json` 的环境档案（`156.0.8078.80`）互不相同，版本一漂移就会整批报错。默认 `pytest -q` 也会收集它，上面「不运行 Chrome 对照的常规主套件」是日常改动更合适的判据；不要用改 `expected` 的方式把漂移修绿。
+`repros` 同时验证 pyv8c 的固定预期和双引擎行为。默认 `pytest -q` 也会收集它。常规对照使用已验证的系统 Chrome **158.0.8127.36**；权限策略清单、性能条目、跨文档动画帧和请求头对照使用 Chrome for Testing **154.0.8030.0**，与 IDL 基线一致。独立采集的 `chrome-environment.json` 仍使用 **156.0.8078.80**。排查版本差异时，用同一用例分别运行基线和新版，保留原有 `expected`。
 
 `native/` 已接进 `Build wheels` 工作流：Windows wheel 测试矩阵、Linux 与 macOS 构建任务在安装 wheel 后各跑一次原生崩溃冒烟，Windows 矩阵另在 Python 3.12 上跑 `layers` 架构门；源码树里没有编译扩展时，冒烟测试自动从已安装的 wheel 加载，本地有扩展时仍按原来的源码路径运行。`layers` 门会启动子进程真实导入 Web 模块，`startup` 门要构造 Browser，二者都需要编译扩展，因此留在 wheel 任务与本地 pre-commit；`.github/workflows/source-checks.yml` 的 PR 门禁只跑 `check_license.py`、三个纯源码策略门和离线 `tests/unit`。
 
@@ -137,10 +142,11 @@ python pyv8/tools/check_layout.py
 
 ```powershell
 $env:PYV8C_CHROME = "C:\Program Files\Google\Chrome\Application\chrome.exe"
-python -m pytest -c pytest.ini pyv8c/tests/repros/test_execution_model_vs_chrome.py -q
+$env:PYV8C_CHROME_BASELINE = "C:\path\to\chrome-154.0.8030.0\chrome-win64\chrome.exe"
+python -m pytest -o addopts=--strict-markers -q -ra
 ```
 
-对照工具使用本机可执行文件；缺失 Chrome 或 Playwright 的用例可能跳过，跳过不能算通过。记录实际版本和启动参数，不静默替换另一 Chromium 或修改自动化状态。
+未设置 `PYV8C_CHROME_BASELINE` 时，相关用例也使用 `PYV8C_CHROME`；两者都未设置时查找系统 Chrome。缺失 Chrome 或 Playwright 的用例可能跳过，跳过不能算通过。上述命令包含 `slow` 用例。语料对照使用软件渲染读取清屏像素，WebGL 扩展对照验证清单唯一、可获取及 WebGL 版本语义；本地固定预期仍检查扩展数量。设备枚举、音频采样率及客户端提示使用双方可复现的输入。
 
 两侧使用同一 HTML、origin、响应头、脚本和操作序列。真实访问用于发现问题，本地服务器或 fixture 用于稳定验收；fixture 只服务明确资源，未知请求失败。先比较导航、资源、脚本、事件和就绪条件，定位最早因果分歧，再检查接口表面或环境分支。
 
@@ -156,10 +162,67 @@ Window 顺序来自环境档案的 `bindings.own_order`；更新顺序应重新�
 
 ```powershell
 python benchmarks/benchmark.py --runs 5 --output .\benchmark-result.json
-python benchmarks/measure_startup.py
+python benchmarks/benchmark.py --cases startup_offline,cold_compile,page_cycle --runs 5 --output .\benchmark-startup.json
+python benchmarks/benchmark.py --list
 ```
 
 这些命令会运行测量。`benchmark.py --record` 和策略工具的 `--record-startup` 会改写性能基线，不能用它们消除回退。环境变化和工作负载变更需要单独说明，不能直接比较不等价数字。
+
+## 实现现状
+
+本节描述 Python Web API 层当前的组织方式与边界，便于把改动放到拥有该状态或行为的层。原生桥接与线程归属见[桥接内核](../pyv8/bridge-kernel.md)，任务与唤醒协议见[任务调度](task-scheduling.md)。
+
+### Web API 与选择器
+
+普通 IDL 方法直接绑定回调，不额外引入参数包装层。`DOMString` 对原生 Python 字符串直接返回，JS 对象仍执行实际转换；可选属性钩子与观察者状态显式初始化为 `None`，未观察属性的写入不会反复产生 `AttributeError`。
+
+查询与样式层共用 `matches_group`，选择器匹配不为每个候选创建自引用递归闭包。完整查询按最右标签缩小候选集，分组查询保持树顺序与去重，首项查询惰性遍历并立即返回。实现复用已有 AST 和树版本索引，每次读取当前属性和父子关系，不存放跨查询的 DOM 结果缓存。
+
+### HTML 解析与 DOM 构造
+
+扫描器在原始输入的偏移处做正则匹配，复用标准库属性分词器，每个开始标签只生成一份解码记录；消费后的记录立即退休，完成后清空 token 缓冲。脚本阻塞时保留未消费记录，`document.write` 继续在插入点处理。普通节点的插入、移除、shadow root 和 parser-created 内部状态采用明确默认值，子类与实例钩子仍动态查找；采用、资源发现、事件和失效通知不被跳过。
+
+DOM C++ 代码位于 `pyv8c/native/dom`，与 `pyv8c/native/src/audio` 的 Rust 音频代码一起链接到 `pyv8c._native`。扩展使用 CPython 3.12 stable ABI，无 V8 链接依赖。项目内部使用 `from pyv8c._native import audio, dom`。DOM 组件初始化 EventTarget/Node 基础字段及 live child view，并在活动文档的普通 body 构造中按批分派与插入普通 HTML token（每批至多 1024 个）。节点构造器仍是原有 Python 类，每次插入仍执行树缓存失效；自定义 setter、描述符及初始化期间更换 setter 的行为保留，每次插入还核对父节点当前绑定的插入与采用方法。只有全新、同文档、无插入钩子且无 shadow tree 的普通节点走直接插入，其余进入正常树操作。脚本、事件属性、资源元素、模板、raw text 和外来命名空间继续由语义树构造步骤处理；构造器执行前退休当前 token 并更新 parser 位置，每批检查操作控制，保留超时、停止和信号处理。
+
+Python tokenizer 仍然保留，当前树构造算法不是完整 HTML5 解析器；DOMParser 与片段解析沿用同一套语义步骤。
+
+### 启动与 IDL 装配
+
+IDL 成员查找为每个文档视图按需建立子接口成员索引，不对每个缺失名称重复遍历子接口。祖先优先、子接口文档顺序、main-world 优先及按位置应用的档案省略规则保持不变；基类声明按所属接口复用，无接口声明的 mixin 仍按目标接口区分。声明缓存按文档视图隔离并采用弱键，随视图释放，避免同一文档的不同环境档案相互混用。导入时机保持不变。
+
+### 样式计算与布局
+
+文档与 ShadowRoot 的规则缓存保存 `StyleRules`：按每个选择器最右复合项中必要的 ID、类或标签筛选候选，再按原始规则顺序执行完整匹配。分组选择器保持整条规则及最高匹配 specificity，通用项仍参与匹配；全部规则均无可索引项时按已有顺序遍历。索引不保存元素或匹配结果，读取时使用当前属性与祖先关系，沿用各树的 `style_version` 失效机制。
+
+实际应用的样式源已统一：插入/删除规则及规则声明变更均通知所属文档，DOM 文本保持其独立语义。`CSSFontFaceRule` 保留字体声明，编辑脱离文档的旧样式表不会影响替换后的样式表。现有选择器、条件规则与布局算法的支持范围不变，不等同于完整 Chromium 渲染实现。
+
+### 同线程 Browser 与双入口
+
+公开入口分为 `pyv8c.sync_api` 和 `pyv8c.async_api`，共用同一套同线程 Browser/Profile/Page
+实现；顶层根包不再导出 Browser，两套入口的对象不可互换。Page 与 iframe 固定在应用 owner，
+Worker 使用独立线程。导航、宿主 HTTP 和等待在异步入口通过 await 协作推进，在同步入口
+直接返回结果；页面操作与活句柄仍不允许跨线程调用。Browser 关闭停止任务接收并汇合 Worker、
+网络和加载器线程；关闭等待者取消不会取消资源清理。两套入口共用执行内核，不做旧线程模型的
+自动切换或回退。
+
+Windows / CPython 3.12.9 / V8 15.4.68 五轮串行交替测量，原生扩展摘要一致。
+每项预热 200 次、测量 12000 次；以下是每轮总墙钟时间除以操作数的五轮中位数，单位 μs/次。
+
+| 负载 | 重构前线程模型 | Browser | 耗时变化 |
+| --- | ---: | ---: | ---: |
+| evaluate | 64.421 | 8.489 | -86.8% |
+| result | 87.086 | 21.949 | -74.8% |
+| ua | 74.599 | 13.688 | -81.7% |
+| dom | 84.916 | 21.822 | -74.3% |
+| cooperative | 69.331 | 12.134 | -82.5% |
+| concurrent | 68.003 | 10.866 | -84.0% |
+| timer_load | 77.551 | 12.843 | -83.4% |
+| native | 1.637 | 1.585 | -3.2% |
+| script | 4.298 | 3.737 | -13.0% |
+
+原始记录位于 `build/runtime-cutover-measurements-final-20261117`。这些结果只代表本机，
+不能代表 Linux、macOS 或与其他 V8 版本的比较。Linux/macOS 按本阶段要求未验证。
+正确性和发布前检查使用完整测试集，并单独列出重构前已存在的失败。
 
 ## 交付要求
 

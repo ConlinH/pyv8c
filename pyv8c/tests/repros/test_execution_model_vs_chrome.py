@@ -2,7 +2,7 @@ import pytest
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from harness import chrome_reference, ReferenceUnavailable
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 SCRIPT_HTML = '''<script>globalThis.log=['first'];
   Promise.resolve().then(()=>log.push(document.currentScript && document.currentScript.tagName));
@@ -34,60 +34,60 @@ def script_page():
 
 
 @pytest.fixture(scope='module')
-def reference():
+async def reference():
     try:
-        with chrome_reference() as browser:
+        async with chrome_reference() as browser:
             yield browser
     except ReferenceUnavailable as error:
         pytest.skip(str(error))
 
 
-def test_initial_blank_document_structure(reference):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_initial_blank_document_structure(reference):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     try:
         page = browser.new_profile().new_page()
         expression = '[document.readyState, Array.from(document.all, node => node.tagName)]'
-        assert page.evaluate(expression) == chrome.evaluate(expression)
+        assert page.evaluate(expression) == (await chrome.evaluate(expression))
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
-def test_classic_script_cleanup_and_current_script(reference, script_page):
-    browser = Browser(real_network=True, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_classic_script_cleanup_and_current_script(reference, script_page):
+    browser = (await Browser(real_network=True, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     try:
         page = browser.new_profile().new_page()
-        page.goto(script_page)
-        chrome.goto(script_page)
-        page.wait_for('log.length === 3', timeout=3)
-        chrome.wait_for_function('log.length === 3')
-        assert page.evaluate('log') == chrome.evaluate('log')
+        (await page.goto(script_page))
+        (await chrome.goto(script_page))
+        (await page.wait_for('log.length === 3', timeout=3))
+        (await chrome.wait_for_function('log.length === 3'))
+        assert page.evaluate('log') == (await chrome.evaluate('log'))
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
-def test_same_origin_frame_microtasks_share_enqueue_order(reference):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_same_origin_frame_microtasks_share_enqueue_order(reference):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     script = '''globalThis.log=['sync'];
       frames[0].eval("Promise.resolve().then(()=>parent.log.push('child'))");
       Promise.resolve().then(()=>log.push('parent'));'scheduled' '''
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><iframe></iframe></body>')
-        page.wait_for_load_state(timeout=3)
-        chrome.set_content('<body><iframe></iframe></body>')
+        (await page.set_content('<body><iframe></iframe></body>', wait_until="commit"))
+        (await page.wait_for_load_state(timeout=3))
+        (await chrome.set_content('<body><iframe></iframe></body>'))
         page.evaluate(script)
-        chrome.evaluate(script)
-        page.wait_for('log.length === 3', timeout=3)
-        chrome.wait_for_function('log.length === 3')
-        assert page.evaluate('log') == chrome.evaluate('log')
+        (await chrome.evaluate(script))
+        (await page.wait_for('log.length === 3', timeout=3))
+        (await chrome.wait_for_function('log.length === 3'))
+        assert page.evaluate('log') == (await chrome.evaluate('log'))
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
 TIMER_PROBE = """globalThis.__timerDone=false;globalThis.__timerTimes=[];
@@ -108,10 +108,10 @@ __START__;
 
 
 @pytest.mark.parametrize('mode', ['timeout', 'microtask', 'frame', 'interval', 'worker'])
-def test_nested_timer_clamp_matches_chrome(reference, mode):
+async def test_nested_timer_clamp_matches_chrome(reference, mode):
     import json
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     next_step = {
         'timeout': 'setTimeout(callback,0)',
         'microtask': 'queueMicrotask(()=>setTimeout(callback,0))',
@@ -131,14 +131,14 @@ def test_nested_timer_clamp_matches_chrome(reference, mode):
                   + "])));worker.onmessage=e=>{__timerTimes=e.data;__timerDone=true};'scheduled'")
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><iframe></iframe></body>')
-        page.wait_for_load_state(timeout=3)
-        chrome.set_content('<body><iframe></iframe></body>')
-        chrome.evaluate(script)
-        chrome.wait_for_function('__timerDone === true')
+        (await page.set_content('<body><iframe></iframe></body>', wait_until="commit"))
+        (await page.wait_for_load_state(timeout=3))
+        (await chrome.set_content('<body><iframe></iframe></body>'))
+        (await chrome.evaluate(script))
+        (await chrome.wait_for_function('__timerDone === true'))
         page.evaluate(script)
-        page.wait_for('__timerDone === true', timeout=3)
-        for readings in [chrome.evaluate('__timerTimes'), page.evaluate('__timerTimes')]:
+        (await page.wait_for('__timerDone === true', timeout=3))
+        for readings in [(await chrome.evaluate('__timerTimes')), page.evaluate('__timerTimes')]:
             assert len(readings) == 10
             deltas = [right-left for left, right in zip(readings, readings[1:])]
             # Scheduling delays may increase elapsed time; assert the clamp's
@@ -150,13 +150,13 @@ def test_nested_timer_clamp_matches_chrome(reference, mode):
             else:
                 assert min(deltas[5:]) >= 3, deltas
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
-def test_interval_rearms_before_a_long_handler_and_cancels_once(reference):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_interval_rearms_before_a_long_handler_and_cancels_once(reference):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     script = """globalThis.log=[];let count=0;
       const ident=setInterval(()=>{
         log.push('interval');
@@ -167,11 +167,11 @@ def test_interval_rearms_before_a_long_handler_and_cancels_once(reference):
       },0);'scheduled' """
     try:
         page = browser.new_profile().new_page()
-        chrome.evaluate(script)
-        chrome.wait_for_function('log.length === 3')
+        (await chrome.evaluate(script))
+        (await chrome.wait_for_function('log.length === 3'))
         page.evaluate(script)
-        page.wait_for('log.length === 3', timeout=3)
-        assert page.evaluate('log') == chrome.evaluate('log') == ['interval', 'interval', 'timeout']
+        (await page.wait_for('log.length === 3', timeout=3))
+        assert page.evaluate('log') == (await chrome.evaluate('log')) == ['interval', 'interval', 'timeout']
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())

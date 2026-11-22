@@ -1,5 +1,7 @@
 # Usage Guide
 
+Browser uses the application owner thread and cooperative waits; see the [execution contract](cooperative-runtime.md).
+
 [简体中文](../../pyv8c/usage.md) | **English**
 
 [Documentation Index](../README.md)
@@ -8,48 +10,79 @@
 
 `Browser` manages shared configuration, `Profile` manages session state, and `Page` manages pages. Cookies and in-memory state are independent across Profiles; a single Profile can create multiple pages.
 
-```python
-from pyv8c import Browser
 
-browser = Browser(real_network=False)
-try:
-    profile = browser.new_profile()
-    page = profile.new_page()
-    page.set_content("<p id='text'>内容</p>", url="https://example.test/")
-    assert page.evaluate("document.querySelector('#text').textContent") == "内容"
-finally:
-    browser.close()
+Synchronous applications use a separate entry point. Loading, input, network,
+waiting and cleanup return directly:
+
+```python
+from pyv8c.sync_api import Browser
+
+with Browser(real_network=False) as browser:
+    with browser.new_profile() as profile:
+        with profile.new_page() as page:
+            page.set_content("<title>Local page</title>")
+            page.evaluate("globalThis.ready=false;setTimeout(()=>ready=true,2)")
+            page.wait_for("ready", timeout=1)
+            assert page.evaluate("document.title") == "Local page"
+```
+
+A synchronous Browser owns one persistent event loop on the calling thread.
+Waits drive that loop; evaluate stays direct. time.sleep() does not drive page
+work. Use async_api inside an existing asyncio loop; nested synchronous waits
+are rejected before entering a loop, including waits inside active JS callbacks.
+Root Browser/Profile/Page/run aliases have been removed. Both APIs share one
+kernel, and objects cannot be mixed. Failed cleanup retains the loop for retry.
+Each synchronous Browser drives its own loop; use async_api for concurrent Browsers.
+
+The following examples use async_api. With sync_api, use the same method names
+without await, and with instead of async with. Evaluation returns synchronously
+in both entry points.
+
+```python
+import asyncio
+from pyv8c.async_api import Browser
+
+async def main():
+    async with Browser(real_network=False) as browser:
+        profile = browser.new_profile()
+        page = profile.new_page()
+        await page.set_content("<p id='text'>内容</p>", url='https://example.test/')
+        assert page.evaluate("document.querySelector('#text').textContent") == '内容'
+asyncio.run(main())
 ```
 
 `new_page()` defaults to `about:blank`. Use `goto()` to load the main document; do not conflate creating a Page with completing network navigation.
 
-`page.close()`, `profile.close()`, and `browser.close()` release owner resources level by level; a normal shutdown can be called repeatedly. If cleanup of an independent resource fails, an exception is reported while other resources are still released on a best-effort basis; an exception must not be treated as a successful shutdown. Closing a child page does not stop an execution group still used by other pages.
+`await page.close()`, `await profile.close()`, and `await browser.close()` release owner resources level by level; a normal shutdown can be called repeatedly. If cleanup of an independent resource fails, an exception is reported while other resources are still released on a best-effort basis; an exception must not be treated as a successful shutdown. Closing a child page does not stop an execution group still used by other pages.
 
-Closing from another thread can interrupt active JS. A background task terminated by a matching shutdown ticket does not report a host failure; a host waiting on a synchronous operation still receives `pyv8.JavaScriptTerminated`. This exception inherits from `BaseException` and is not an ordinary JS exception. Catch it explicitly when classification is needed; real timeouts and unknown terminations must not be uniformly ignored.
+Public close APIs belong to the owner thread; independent stop signals use the internal control channel. A background task terminated by a matching shutdown ticket does not report a host failure; a host waiting on a synchronous operation still receives `pyv8.JavaScriptTerminated`. This exception inherits from `BaseException` and is not an ordinary JS exception. Catch it explicitly when classification is needed; real timeouts and unknown terminations must not be uniformly ignored.
 
 ## Page APIs
 
 | Call | Contract |
 | --- | --- |
-| `set_content(html, url="about:blank")` | Provides HTML and starts document processing; completion of external resources requires a separate wait |
+| `set_content(html, url="about:blank")` | Injects HTML and awaits wait_until (load by default); commit exposes an in-progress document |
 | `goto(url, timeout=30, wait_until="load")` | Navigates and waits for `commit`, `domcontentloaded`, or `load`; `None` is treated as the commit phase |
 | `evaluate(script, filename=None, timeout=30)` | Executes source code and materializes returnable data; does not automatically await Promises |
 | `evaluate_handle(script, filename=None)` | Returns a primitive value or a live JS handle; does not perform data snapshot conversion |
 | `wait_for(expression, timeout=30)` | Waits for a JS condition to become true; the condition should have no side effects |
 | `wait_for_load_state(state="load", timeout=30)` | Waits for the load state of the current document generation; fails if the document is replaced or closed |
 | `run_until_idle(timeout=1.0)` | Waits for the target Agent's runnable work and checkpoints to drain; returns True on success and False on timeout |
+| `sleep(seconds)` | Waits a fixed interval while the page's event loop keeps running; runs no JS and waits on no condition |
 | `dispatch_event(event_type, ...)` | Dispatches a host-constructed event to the specified window, document, or element |
 | `set_visibility(hidden)` | Updates visibility and drives related lifecycle behavior |
 
 `goto(..., wait_until="domcontentloaded")` may return while `load` listeners are still running. Network request completion, DOM readiness, and application readiness are different conditions and should be awaited separately. When the loading flow is terminated, waiting for `load` fails; an already-started dispatch is not treated as a successful load.
 
 ```python
-page.set_content("<script>globalThis.ready = false; setTimeout(() => ready = true, 0)</script>")
-page.wait_for_load_state("load", timeout=2)
-page.wait_for("ready === true", timeout=2)
+await page.set_content('<script>globalThis.ready = false; setTimeout(() => ready = true, 0)</script>')
+await page.wait_for_load_state('load', timeout=2)
+await page.wait_for('ready === true', timeout=2)
 ```
 
 `run_until_idle(timeout=0)` only queries state. Far-future timers, in-flight network activity, long-lived connections, and live Workers do not directly block idleness; do not use idle waiting as a substitute for waiting on business conditions. The owner thread must not synchronously wait on unfinished navigation or network operations.
+
+`page.sleep(seconds)` differs from the host's `time.sleep()`: it lets the page's event loop keep running, so timers, network callbacks, and CDP-driven work can make progress during the wait. It executes no JS, so it makes no condition check and cannot raise `JavaScriptTerminated`. Use `sleep` to give the page time to advance; use `wait_for` / `wait_for_selector` to wait for a business condition, and do not treat `sleep` as a condition wait. In the async API it is equivalent to `await asyncio.sleep(seconds)` and exists to keep the sync/async interfaces aligned.
 
 ## Return Values and Handles
 
@@ -57,7 +90,7 @@ page.wait_for("ready === true", timeout=2)
 
 ```python
 handle = page.evaluate_handle("({answer: 42})")
-snapshot = page.executor.call(handle.to_python)
+snapshot = handle.to_python()
 assert snapshot == {"answer": 42}
 ```
 
@@ -96,7 +129,7 @@ The current time control estimates internal field dimensions using a 24-hour clo
 | Option | Default value and meaning |
 | --- | --- |
 | `real_network` | True; whether to install the real network engine |
-| `http_engine` / `ws_engine` | `curl_cffi` / `websockets`; engine name, instance, factory, or None |
+| `http_engine` / `ws_engine` | `curl_cffi` / `websockets`; engine name, instance, factory, or None. `cronet` is the other HTTP name; `websockets` is the only built-in WebSocket name |
 | `http_options` / `ws_options` | Per-engine configuration, validated when a Profile is created |
 | `proxy` | None; direct connection when unset, overridable by Profile |
 | `default_headers` | Default headers for host `page.net` requests |
@@ -108,28 +141,50 @@ The current time control estimates internal field dimensions using a 24-hour clo
 | `expose_unimplemented` | True; whether to expose unimplemented interfaces in the baseline |
 | `stub_logging` | `off`; can also be `on` or `verbose`, controls logging of unimplemented members |
 | `interface_overrides` | None; experimental replacement callbacks for interface members |
+| `webgl_backend` | `simulated`; WebGL backend, `angle` is experimental (see [ANGLE prototype](angle-prototype.md)) |
+| `angle_library_dir` | None; EGL/GLES library directory for ANGLE, resolved by `comfy-angle` when unset |
 | `idl_path` | None; by default reads the in-package `pyv8c/pyv8c/idl/idl.zip` |
 | `baseline_mismatch` | `warn`; warns when the implementation or Window order does not match the selected baseline, `error` enables strict validation |
 
-`new_profile(proxy=..., trace=..., traceable=..., trace_callback=..., trace_scripts=...)` can set the corresponding session options; `new_page(trace_scripts=...)` can also override script filtering, see [Runtime Tracing](tracing.md). For thread restrictions on network and resource callbacks, see [Resource Loading](resource-loading.md).
+`new_profile(proxy=..., trace=..., traceable=..., trace_callback=..., trace_scripts=...)` can set the corresponding session options; `new_page(trace_scripts=...)` can also override script filtering, see [Browser Tracing](tracing.md). For thread restrictions on network and resource callbacks, see [Resource Loading](resource-loading.md).
 
 The format of `interface_overrides` is `{"接口名": {"成员名": 回调}}`; a property can use `{"get": 回调, "set": 回调}`. Instance methods receive `(receiver, *args)`, static methods receive `(*args)`, property reads receive `(receiver)`, and writes receive `(receiver, value)`. Overrides for unknown members, illegal slots, and writes to read-only properties are rejected; constructors, constants, and named/indexed handlers are not overridden. Official fixes should go into the owning implementation layer.
 
 ## Network Calls
 
-`page.net.get()`, `request()`, and their corresponding async entry points are host transport requests that use the Profile network backend and cookies; they do not execute the page's `fetch`, nor do they go through the full page resource policy. The async entry points return a Future.
+`await page.net.get()` and `await page.net.request()` are asyncio host requests using the Profile backend and cookies. They do not execute page fetch or the full resource policy. Cancellation first tries to interrupt the in-flight request coroutine, then stops observing the result; the transport receives interruption through `RequestHandle.cancel()` and owns settlement after cleanup. Page closure still waits on the in-flight count, and an exhausted budget raises `HostStateError` and allows a retry.
 
-`page.net.fetch()`, `xhr()`, and their async entry points call the page's current Fetch/XMLHttpRequest, whose implementations may have been replaced by the page; the result is a host response snapshot subject to the page resource pipeline and the corresponding same-origin rules. Do not treat the two groups of calls as interchangeable entry points.
+`await page.net.fetch()` and `await page.net.xhr()` call the page's current Fetch/XMLHttpRequest, whose implementations may have been replaced by the page; the result is a host response snapshot subject to the page resource pipeline and the corresponding same-origin rules. Do not treat the two groups of calls as interchangeable entry points.
 
 ## Events and Input
 
 ```python
-page.set_content("<button id='go'>继续</button>")
+await page.set_content("<button id='go'>继续</button>")
 page.evaluate("document.querySelector('#go').addEventListener('click', () => globalThis.clicked = true)")
-page.click("#go")
-page.wait_for("globalThis.clicked === true", timeout=1)
+await page.click('#go')
+await page.wait_for('globalThis.clicked === true', timeout=1)
 ```
 
 The host supports `click()`, `dblclick()`, `hover()`, and `page.mouse`. Input behavior is based on current layout and hit testing; geometry and real Chrome rendering may still differ. `dispatch_event()` provides explicit event dispatch and is not equivalent to a full input action sequence.
 
-Application-side exceptions, host failures, network failures, and execution termination are different outcomes. When troubleshooting, first inspect the failing stage, then choose [Runtime Tracing](tracing.md), the [Debugger](devtools.md), or local Chrome comparison; do not mask problems by extending fixed sleeps.
+## Reaching into Shadow DOM and iframes
+
+`query_selector()`, `click()`, `dblclick()`, `hover()`, and `wait_for_selector()` all take a `deep` keyword argument. The default `deep=False` searches only the current document's light DOM, matching page `document.querySelector()`. With `deep=True` the host searches in this order and returns the first match:
+
+1. the current document's light DOM;
+2. each host's shadow tree in tree order, including `mode='closed'` (whose root page script cannot retrieve again);
+3. each descendant frame recursively, in the order its iframe appears in the DOM.
+
+When more than one frame matches, the first match in tree order wins. This is a host capability: `deep=True` reaches closed shadow trees and cross-origin frames that page JavaScript cannot see, and corresponds to no page API.
+
+```python
+node = page.query_selector('#widget', deep=True)      # maybe inside a shadow tree or frame
+await page.click('#widget', deep=True)                # driven by the owning Page's mouse
+node = await page.wait_for_selector('#late', deep=True, timeout=3)
+```
+
+`click()` / `dblclick()` / `hover()` dispatch input through the mouse of the Page that owns the node, so no manual switching is needed across frames. The returned handle belongs to its own realm; all later operations on it must still run on that Page's thread/executor.
+
+Combinators match within a single query root and do not cross a shadow boundary: `#host #inner` will not find an `#inner` inside the host's shadow tree, while `div.wrap > #inner` works within the same tree. Shadow-scoped pseudo-classes such as `:host` and `::slotted` are not implemented by the selector engine. `wait_for_selector()` polls with the same query until a match or timeout, following the same timeout rules as `wait_for()`.
+
+Application-side exceptions, host failures, network failures, and execution termination are different outcomes. When troubleshooting, first inspect the failing stage, then choose [Browser Tracing](tracing.md), the [Debugger](devtools.md), or local Chrome comparison; do not mask problems by extending fixed sleeps.

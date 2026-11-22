@@ -26,8 +26,9 @@
 
 using namespace v8;
 
-IsolateState::IsolateState()
-    : external_memory_bytes_(0),
+IsolateState::IsolateState(bool thread_bound)
+    : owner_thread_(thread_bound ? std::this_thread::get_id() : std::thread::id{}),
+      external_memory_bytes_(0),
       isolate_(nullptr),
       live_v8_handles_(0),
       error_hooks_installed_(false),
@@ -248,10 +249,19 @@ IsolateState::shutdown(bool report_error)
 {
     if (!is_active())
         return false;
-
     if (entry_users != 0 || entry_depth != 0) {
         if (report_error) PyErr_SetString(PyExc_RuntimeError, "cannot close V8 isolate during active execution");
         return false;
+    }
+    if (!on_owner_thread()) {
+        if (python_owner != nullptr || report_error) {
+            if (report_error) PyErr_SetString(PyExc_RuntimeError,
+                "thread-bound V8 isolate requires its owner thread");
+            return false;
+        }
+        // The last Python owner is being destroyed and no thread is entered
+        // or entering. Use the normal Locker path for this final teardown.
+        owner_thread_ = std::thread::id{};
     }
     // A failure no boundary collected would otherwise outlive the isolate holding it.
     clear_aborted_failure();

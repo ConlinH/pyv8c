@@ -2,6 +2,7 @@
 import time
 
 from pyv8c import pyv8
+from ..._native import dom
 from ...idl import interface
 from ...foundation.arguments import (
     MISSING,
@@ -814,10 +815,7 @@ class EventTarget:
     def __init__(self, *_extra, services=None, **_):
         if services is pyv8.Undefined:
             services = None
-        self._services = services
-        self._listeners = {}
-        self._listener_order = 0
-        self._handlers = {}
+        dom.initialize_target(self, services, EVENT_TARGET_SETATTR)
 
     def _handler_target(self, name):
         return self
@@ -1026,10 +1024,6 @@ class EventTarget:
                     if event._stop: break
                 if last_bubble is not None:
                     event.target = _retarget_event(original_target, last_bubble)
-            logger.debug("dispatch {} on {} (trusted={}, listeners={})", kind,
-                         type(self).__name__, event._trusted,
-                         len(self._listeners.get(kind, ())))
-            event.eventPhase, event.currentTarget = 0, None
             return not event.defaultPrevented
         finally:
             event.eventPhase, event.currentTarget = 0, None
@@ -1037,6 +1031,9 @@ class EventTarget:
             event._legacy_target_override = None
             event._stop = event._immediate = event._passive = False
             event._path = []
+            logger.debug("dispatch {} on {} (trusted={}, listeners={})", event.type,
+                         type(self).__name__, event._trusted,
+                         len(self._listeners.get(event.type, ())))
 
     def _invoke(self, event, capture):
         listeners = self._listeners.get(event.type)
@@ -1111,6 +1108,11 @@ class EventTarget:
             self._set_handler(name, value)
             return
         object.__setattr__(self, name, value)
+
+
+# Native initialization can bypass only this exact setter for non-handler fields.
+# An overriding setter or a data descriptor still receives every assignment.
+EVENT_TARGET_SETATTR = EventTarget.__setattr__
 
 
 #: Types Chrome delivers on its own for a listening page, from the device sensors.

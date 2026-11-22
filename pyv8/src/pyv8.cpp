@@ -195,8 +195,8 @@ construct_new_object(PyObject *self, PyObject *args)
     return py_from_js(js_result, context);
 }
 
-PyObject *
-context_get_current(PyObject *self, PyObject *args)
+static PyObject*
+query_context(PyObject* args, bool incumbent)
 {
     if (!runtime_manager.ensure_initialized())
         return NULL;
@@ -209,8 +209,16 @@ context_get_current(PyObject *self, PyObject *args)
         py_isolate == Py_None ? IsolateSelection::ActiveOrDefault : IsolateSelection::Explicit, py_isolate);
     if (isolate_state == nullptr)
         return NULL;
+    // An idle query must not create a top-level Locker. V8 initializes its
+    // thread state at that entry, which clears pending interrupt flags such as
+    // a background compiler's global-safepoint or code-install request.
+    if (!IsolateLockScope::has_thread_entry(isolate_state)) {
+        if (PyErr_Occurred()) return nullptr;
+        PYV8_RETURN_NONE;
+    }
     IN_ISOLATE(isolate_state);
-    Local<Context> current_context = isolate->GetCurrentContext();
+    Local<Context> current_context = incumbent ? isolate->GetIncumbentContext()
+                                             : isolate->GetCurrentContext();
     if (current_context.IsEmpty())
     {
         PYV8_RETURN_NONE;
@@ -229,34 +237,15 @@ context_get_current(PyObject *self, PyObject *args)
 }
 
 PyObject*
+context_get_current(PyObject* self, PyObject* args)
+{
+    return query_context(args, false);
+}
+
+PyObject*
 context_get_incumbent(PyObject* self, PyObject* args)
 {
-    if (!runtime_manager.ensure_initialized())
-        return NULL;
-    PyObject* py_isolate = Py_None;
-    if (!PyArg_ParseTuple(args, "|O", &py_isolate))
-        return NULL;
-    // A worker/explicit isolate callback queries its own execution, not the
-    // unrelated default isolate. Outside execution retain the default fallback.
-    IsolateState* isolate_state = select_isolate(
-        py_isolate == Py_None ? IsolateSelection::ActiveOrDefault : IsolateSelection::Explicit, py_isolate);
-    if (isolate_state == nullptr)
-        return NULL;
-    IN_ISOLATE(isolate_state);
-    Local<Context> current_context = isolate->GetIncumbentContext();
-    if (current_context.IsEmpty())
-    {
-        PYV8_RETURN_NONE;
-    }
-    // See context_get_current: a realm this binding does not own is answered as
-    // "no context", never as a reference to nothing.
-    PyObject* context = (PyObject*)context_from_v8(current_context);
-    if (context == nullptr)
-    {
-        PYV8_RETURN_NONE;
-    }
-    Py_INCREF((PyObject*)context);
-    return context;
+    return query_context(args, true);
 }
 
 PyObject *

@@ -1,0 +1,17 @@
+[package]
+name = "pyv8c-native"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "=0.27.2", features = ["extension-module", "abi3-py312"] }
+rustfft = "=6.4.1"
+
+[build-dependencies]
+cc = "1"
+sha2 = "0.10"

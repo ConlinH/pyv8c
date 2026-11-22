@@ -21,7 +21,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8", reason="the comparison runs in the native environment")
 
-from harness import ReferenceUnavailable, chrome_reference
+from harness import ReferenceUnavailable, chrome_reference, client_hint_environment
 
 FORM = ('<!doctype html><html><body><form method=post action="/echo">'
         '<p><input name=a value=1></p><p><button name=b value=bv>Go</button></p>'
@@ -113,83 +113,85 @@ def _taken(records):
 
 
 @pytest.fixture(scope="module")
-def compared():
+async def compared():
     """Every case, submitted by both browsers against the same server."""
     try:
-        with chrome_reference() as reference:
-            yield _compare(reference)
+        async with chrome_reference(baseline=True) as reference:
+            yield (await _compare(reference))
     except ReferenceUnavailable as unavailable:
         pytest.skip(str(unavailable))
 
 
-def _compare(reference):
+async def _compare(reference):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{server.server_port}"
     try:
-        chrome = _chrome_submissions(reference, origin)
+        chrome, environment = await _chrome_submissions(reference, origin)
 
-        from pyv8c import Browser
+        from pyv8c.async_api import Browser
 
-        browser = Browser(real_network=True, stub_logging="off")
+        browser = (await Browser(real_network=True, stub_logging="off",
+                                 environment=environment).__aenter__())
         try:
-            mine = _pyv8c_submissions(browser, origin)
+            mine = (await _pyv8c_submissions(browser, origin))
         finally:
-            browser.close()
+            (await browser.close())
         return {"chrome": chrome, "pyv8c": mine}
     finally:
         server.shutdown()
         server.server_close()
 
 
-def _chrome_submissions(reference, origin):
+async def _chrome_submissions(reference, origin):
     collected = {}
     for name, path, driver in CASES:
         with LOCK:
             RECORDS.clear()
-        page = reference.browser.new_page()
+        page = (await reference.browser.new_page())
         try:
-            page.goto(f"{origin}{path}", wait_until="commit" if driver == "page" else "load")
+            (await page.goto(f"{origin}{path}", wait_until="commit" if driver == "page" else "load"))
             if driver == "host":
-                page.click("form button")
-            page.wait_for_function("location.pathname === '/echo' && document.readyState === 'complete'")
+                await page.click("form button")
+            (await page.wait_for_function("location.pathname === '/echo' && document.readyState === 'complete'"))
+            environment = await client_hint_environment(page)
         finally:
-            page.close()
+            (await page.close())
         with LOCK:
             collected[name] = _taken(list(RECORDS))
-    return collected
+    return collected, environment
 
 
-def _pyv8c_submissions(browser, origin):
+async def _pyv8c_submissions(browser, origin):
     collected = {}
     page = browser.new_profile().new_page()
     try:
         for name, path, driver in CASES:
             with LOCK:
                 RECORDS.clear()
-            page.goto(f"{origin}{path}", wait_until="commit" if driver == "page" else "load")
+            (await page.goto(f"{origin}{path}", wait_until="commit" if driver == "page" else "load"))
             if driver == "host":
-                page.click("form button")
-            page.wait_for("location.pathname === '/echo' && document.readyState === 'complete'", timeout=5)
+                (await page.click("form button"))
+            (await page.wait_for("location.pathname === '/echo' && document.readyState === 'complete'", timeout=5))
             with LOCK:
                 collected[name] = _taken(list(RECORDS))
     finally:
-        page.close()
+        (await page.close())
     return collected
 
 
-def test_both_browsers_make_the_same_request_line(compared):
+async def test_both_browsers_make_the_same_request_line(compared):
     for name in compared["chrome"]:
         theirs, ours = compared["chrome"][name], compared["pyv8c"][name]
         assert (ours["method"], ours["path"]) == (theirs["method"], theirs["path"]), name
 
 
-def test_each_submission_carries_the_same_body(compared):
+async def test_each_submission_carries_the_same_body(compared):
     for name in compared["chrome"]:
         assert compared["pyv8c"][name]["body"] == compared["chrome"][name]["body"], name
 
 
-def test_each_submission_carries_the_same_headers_with_the_same_values(compared):
+async def test_each_submission_carries_the_same_headers_with_the_same_values(compared):
     for name in compared["chrome"]:
         theirs = dict(compared["chrome"][name]["headers"])
         ours = dict(compared["pyv8c"][name]["headers"])
@@ -198,7 +200,7 @@ def test_each_submission_carries_the_same_headers_with_the_same_values(compared)
             assert ours[header] == value, f"{name}: {header}"
 
 
-def test_the_order_agrees_once_the_transports_own_are_removed(compared):
+async def test_the_order_agrees_once_the_transports_own_are_removed(compared):
     for name in compared["chrome"]:
         theirs = [header for header, _ in compared["chrome"][name]["headers"]
                   if header not in TRANSPORT_PLACED]

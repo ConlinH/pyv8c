@@ -1,16 +1,18 @@
 """``window.chrome`` mirrors the object Chromium installs on every Window."""
 
+import asyncio
+
 import time
 
 from pyv8c import pyv8
 from pyv8c.pyv8.trace import format_trace
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def _page(browser, url="https://example.test/"):
+async def _page(browser, url="https://example.test/"):
     page = browser.new_profile().new_page()
-    page.set_content("<body></body>", url=url)
+    (await page.set_content("<body></body>", url=url, wait_until="commit"))
     return page
 
 
@@ -18,10 +20,10 @@ def _messages(events):
     return [message for message in (format_trace(*event) for event in events) if message is not None]
 
 
-def test_chrome_object_is_a_plain_global_object():
-    browser = Browser(stub_logging="off")
+async def test_chrome_object_is_a_plain_global_object():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const chrome = window.chrome;
             return [typeof chrome, 'chrome' in window, chrome === window.chrome,
@@ -38,13 +40,13 @@ def test_chrome_object_is_a_plain_global_object():
             "function", "function", "object", True, True,
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_chrome_global_property_keeps_chromium_attributes():
-    browser = Browser(stub_logging="off")
+async def test_chrome_global_property_keeps_chromium_attributes():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const descriptor = Object.getOwnPropertyDescriptor(window, 'chrome');
             return [descriptor.writable, descriptor.enumerable, descriptor.configurable,
@@ -56,13 +58,13 @@ def test_chrome_global_property_keeps_chromium_attributes():
             return [typeof window.chrome, delete window.chrome, typeof window.chrome];
         })()""") == ["number", True, "undefined"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_chrome_members_are_native_functions():
-    browser = Browser(stub_logging="off")
+async def test_chrome_members_are_native_functions():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""[
             String(chrome.csi), String(chrome.loadTimes), String(chrome.app.getDetails),
             chrome.csi.name, chrome.loadTimes.name,
@@ -74,13 +76,13 @@ def test_chrome_members_are_native_functions():
             "", "", True,
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_chrome_timing_functions_report_chromium_shapes():
-    browser = Browser(stub_logging="off")
+async def test_chrome_timing_functions_report_chromium_shapes():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const csi = chrome.csi();
             return [Object.keys(csi), csi.tran, typeof csi.startE,
@@ -104,18 +106,18 @@ def test_chrome_timing_functions_report_chromium_shapes():
         first = page.evaluate("chrome.csi().startE")
         # A navigation restarts the clock: with a stale anchor the elapsed time
         # would still contain the sleep below, which the windowed value forbids.
-        time.sleep(0.2)
-        page.set_content("<body>second</body>", url="https://example.test/next")
+        (await asyncio.sleep(0.2))
+        (await page.set_content("<body>second</body>", url="https://example.test/next", wait_until="commit"))
         assert page.evaluate(f"chrome.csi().startE >= {first!r}") is True
         assert page.evaluate("chrome.csi().pageT") < 60000
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_chrome_app_surface_and_missing_runtime():
-    browser = Browser(stub_logging="off")
+async def test_chrome_app_surface_and_missing_runtime():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""[
             chrome.app.isInstalled, chrome.app.getIsInstalled(), chrome.app.installState(),
             chrome.app.runningState(), chrome.app.getDetails() === null,
@@ -131,18 +133,18 @@ def test_chrome_app_surface_and_missing_runtime():
         ]
         assert page.evaluate("typeof chrome.runtime") == "undefined"
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_app_members_refuse_arguments_their_schema_does_not_declare():
+async def test_app_members_refuse_arguments_their_schema_does_not_declare():
     """The extensions layer validates an invocation before the implementation runs, so an
     argument the schema does not declare is a ``TypeError`` the page catches rather than a
     host failure; the message is the one those bindings build out of the schema.  Chrome 155
     answers the same text for the same calls.
     """
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const refused = (call) => {
                 try { call(); return 'accepted'; }
@@ -171,16 +173,16 @@ def test_app_members_refuse_arguments_their_schema_does_not_declare():
             [0, 0],
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_the_arity_check_does_not_narrow_what_the_schema_accepts():
+async def test_the_arity_check_does_not_narrow_what_the_schema_accepts():
     """Only the argument count is validated: ``installState``'s optional callback may be
     anything (Chrome accepts ``null`` and a number there) and the other members take none.
     """
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const accepted = (call) => {
                 try { return ['ok', String(call())]; }
@@ -201,15 +203,15 @@ def test_the_arity_check_does_not_narrow_what_the_schema_accepts():
             ["ok", "not_installed"],
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_timing_functions_ignore_the_arguments_they_are_handed():
+async def test_timing_functions_ignore_the_arguments_they_are_handed():
     """``csi`` and ``loadTimes`` never went through the extensions layer, so there is no
     schema for a call to be measured against and Chrome reads past what it is given."""
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const load = chrome.loadTimes(1, 2);
             const csi = chrome.csi(1);
@@ -217,49 +219,49 @@ def test_timing_functions_ignore_the_arguments_they_are_handed():
                     typeof csi.startE, csi.pageT >= 0];
         })()""") == [13, "Other", 15, "number", True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_chrome_is_ready_for_inline_head_scripts():
-    browser = Browser(stub_logging="off")
+async def test_chrome_is_ready_for_inline_head_scripts():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(
+        (await page.set_content(
             "<head><script>window.__chromeType = typeof window.chrome;</script></head>",
             url="https://example.test/",
-        )
+         wait_until="commit"))
         assert page.evaluate("__chromeType") == "object"
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_installing_chrome_is_invisible_to_trace():
+async def test_installing_chrome_is_invisible_to_trace():
     """Host installation is not page behaviour, so it reports no event."""
     events = []
-    browser = Browser(trace=True, traceable=True,
-                      trace_callback=lambda *event: events.append(event), stub_logging="off")
+    browser = (await Browser(trace=True, traceable=True,
+                      trace_callback=lambda *event: events.append(event), stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
         # Building the realm probes interfaces, none of it about chrome.
         assert [event for event in events if event[2:3] == ("chrome",)] == []
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         assert [event for event in events if event[2:3] == ("chrome",)] == []
         # Tracing is still attached once the page runs its own script.
         page.evaluate("chrome.csi().tran")
         # Native function calls carry their JS name; csi is anonymous in Chromium.
         assert [event[2] for event in events if event[2] in ("chrome", "")] == ["chrome", ""]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_chrome_method_calls_are_reported_with_their_results():
+async def test_chrome_method_calls_are_reported_with_their_results():
     """The members are Python-backed, so a call is traced like any host method.  An object
     result is reported as a bounded preview of its contents."""
     events = []
-    browser = Browser(trace=True, traceable=True,
-                      trace_callback=lambda *event: events.append(event), stub_logging="off")
+    browser = (await Browser(trace=True, traceable=True,
+                      trace_callback=lambda *event: events.append(event), stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         events.clear()
         assert page.evaluate("chrome.app.getDetails()") is pyv8.Null
         messages = _messages(events)
@@ -270,29 +272,29 @@ def test_chrome_method_calls_are_reported_with_their_results():
         assert _messages(events)[-1].startswith(
             "[TOP] method: ChromeBindings.() -> ")
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_worker_globals_have_no_chrome_object():
-    browser = Browser(stub_logging="off")
+async def test_worker_globals_have_no_chrome_object():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         page.evaluate("""(() => {
             const source = new Blob(["postMessage(typeof chrome)"], {type: 'text/javascript'});
             const worker = new Worker(URL.createObjectURL(source));
             worker.onmessage = event => window.__workerChrome = event.data;
         })()""")
-        page.wait_for("typeof window.__workerChrome !== 'undefined'", timeout=10)
+        (await page.wait_for("typeof window.__workerChrome !== 'undefined'", timeout=10))
         assert page.evaluate("__workerChrome") == "undefined"
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_timing_fields_are_accessors_with_an_empty_setter():
+async def test_timing_fields_are_accessors_with_an_empty_setter():
     """A write is accepted and ignored, as ``SetNativeDataProperty(..., EmptySetter, value)``."""
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const fields = chrome.loadTimes();
             const field = Object.getOwnPropertyDescriptor(fields, 'requestTime');
@@ -305,15 +307,15 @@ def test_timing_fields_are_accessors_with_an_empty_setter():
                     typeof csi.get, typeof csi.set];
         })()""") == ["function", "function", True, True, "accepted", True, "function", "function"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_the_timings_are_the_ones_performance_reports():
+async def test_the_timings_are_the_ones_performance_reports():
     """Chromium reads all three from the browser's performance metrics, not by measuring again."""
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
-        page.run_until_idle(timeout=2)
+        page = (((await _page(browser))))
+        (await page.run_until_idle(timeout=2))
         assert page.evaluate("""(() => {
             const timing = performance.timing;
             const load = chrome.loadTimes();
@@ -326,14 +328,14 @@ def test_the_timings_are_the_ones_performance_reports():
                     timing.domContentLoadedEventEnd > 0, timing.loadEventEnd > 0];
         })()""") == [True, True, True, True, True, True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_chrome_app_is_installed_lazily():
+async def test_chrome_app_is_installed_lazily():
     """A lazy accessor, as ``SetLazyDataProperty`` leaves it: the first read replaces it."""
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         assert page.evaluate("""(() => {
             const before = Object.getOwnPropertyDescriptor(chrome, 'app');
             const app = chrome.app;
@@ -342,17 +344,17 @@ def test_chrome_app_is_installed_lazily():
                     after.value === app, typeof app.getDetails];
         })()""") == ["function", False, True, True, "function"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_an_existing_chrome_object_is_reused():
+async def test_an_existing_chrome_object_is_reused():
     """The object is created once, so what a realm already carries survives a second install
     (run on the page's owner thread, where such a layer sits)."""
     from pyv8c.web.bom.chrome import install_window_chrome
 
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (((await _page(browser))))
         page.evaluate("window.chrome.__marker = 7")
         page.realm.executor.call(
             lambda: install_window_chrome(page.v8_context, page.services))
@@ -360,4 +362,4 @@ def test_an_existing_chrome_object_is_reused():
             "[window.chrome.__marker, typeof chrome.csi, chrome.app.isInstalled]"
         ) == [7, "function", False]
     finally:
-        browser.close()
+        (await browser.close())

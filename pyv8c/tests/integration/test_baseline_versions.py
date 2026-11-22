@@ -4,7 +4,7 @@ import json
 import pytest
 from pyv8c import pyv8
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.engine.idl import IDL_VERSION, Idl
 
 
@@ -35,8 +35,8 @@ def _custom_baseline(path):
     return document
 
 
-def test_default_baseline_is_bundled_and_describes_snapshot():
-    browser = Browser(stub_logging="off")
+async def test_default_baseline_is_bundled_and_describes_snapshot():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         assert browser.idl_path == "pyv8c:idl/idl.zip"
         info = browser.idl_info
@@ -44,14 +44,14 @@ def test_default_baseline_is_bundled_and_describes_snapshot():
         assert len(info["sha256"]) == 64
         assert info["idl"]["version"] == IDL_VERSION
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_custom_baseline_path_is_absolute_and_snapshot_is_frozen(tmp_path, monkeypatch):
+async def test_custom_baseline_path_is_absolute_and_snapshot_is_frozen(tmp_path, monkeypatch):
     baseline = tmp_path / "custom.json"
     document = _custom_baseline(baseline)
     monkeypatch.chdir(tmp_path)
-    browser = Browser(idl_path="custom.json", stub_logging="off")
+    browser = (await Browser(idl_path="custom.json", stub_logging="off").__aenter__())
     original_hash = browser.idl_info["sha256"]
     try:
         assert browser.idl_path == str(baseline.resolve())
@@ -62,13 +62,13 @@ def test_custom_baseline_path_is_absolute_and_snapshot_is_frozen(tmp_path, monke
             member["name"]
             for member in browser.bindings.idl.interfaces["DOMQuad"]["members"]["prototype"]
         }
-        newer = Browser(idl_path=baseline, stub_logging="off")
+        newer = (await Browser(idl_path=baseline, stub_logging="off").__aenter__())
         try:
             assert newer.idl_info["sha256"] != original_hash
         finally:
-            newer.close()
+            (await newer.close())
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize(
@@ -80,28 +80,28 @@ def test_custom_baseline_path_is_absolute_and_snapshot_is_frozen(tmp_path, monke
          "must contain interfaces"),
     ],
 )
-def test_invalid_baseline_is_rejected_when_browser_is_created(tmp_path, content, error):
+async def test_invalid_baseline_is_rejected_when_browser_is_created(tmp_path, content, error):
     path = tmp_path / "invalid.json"
     path.write_text(content, encoding="utf-8")
     with pytest.raises(ValueError, match=error):
-        Browser(idl_path=path)
+        (await Browser(idl_path=path).__aenter__())
 
 
-def test_missing_baseline_is_rejected_when_browser_is_created(tmp_path):
+async def test_missing_baseline_is_rejected_when_browser_is_created(tmp_path):
     with pytest.raises(FileNotFoundError, match="does not exist"):
-        Browser(idl_path=tmp_path / "missing.json")
+        (await Browser(idl_path=tmp_path / "missing.json").__aenter__())
 
 
-def test_a_document_of_another_version_is_refused(tmp_path):
+async def test_a_document_of_another_version_is_refused(tmp_path):
     document = _document()
     document["idl"]["version"] = 2
     path = tmp_path / "version-2.json"
     path.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ValueError, match="unsupported IDL version"):
-        Browser(idl_path=path)
+        (await Browser(idl_path=path).__aenter__())
 
 
-def test_baseline_parent_cycle_is_rejected_when_browser_is_created(tmp_path):
+async def test_baseline_parent_cycle_is_rejected_when_browser_is_created(tmp_path):
     entry = lambda parent, tag: {
         "parent": parent, "members": {}, "constructor": {}, "tag": tag,
         "template": {}, "constants": [],
@@ -112,14 +112,14 @@ def test_baseline_parent_cycle_is_rejected_when_browser_is_created(tmp_path):
         "interfaces": {"First": entry("Second", "First"), "Second": entry("First", "Second")},
     }), encoding="utf-8")
     with pytest.raises(ValueError, match="parent cycle"):
-        Browser(idl_path=path)
+        (await Browser(idl_path=path).__aenter__())
 
 
-def test_two_browsers_keep_generated_classes_and_templates_isolated(tmp_path):
+async def test_two_browsers_keep_generated_classes_and_templates_isolated(tmp_path):
     custom = tmp_path / "custom.json"
     _custom_baseline(custom)
-    default_browser = Browser(stub_logging="off")
-    custom_browser = Browser(idl_path=custom, stub_logging="off")
+    default_browser = (await Browser(stub_logging="off").__aenter__())
+    custom_browser = (await Browser(idl_path=custom, stub_logging="off").__aenter__())
     try:
         assert default_browser.bindings.class_for("DOMQuad") is not custom_browser.bindings.class_for("DOMQuad")
         # A hand-written implementation remains shared; this test isolates the
@@ -135,18 +135,18 @@ def test_two_browsers_keep_generated_classes_and_templates_isolated(tmp_path):
         assert default_page.evaluate("[DOMQuad.length, Object.prototype.toString.call(new DOMQuad())]") == [0, "[object DOMQuad]"]
         assert custom_page.evaluate("[DOMQuad.length, Object.prototype.toString.call(new DOMQuad())]") == [2, "[object VersionedDOMQuad]"]
 
-        custom_page.set_content("<main><div id='value'></div></main>")
+        (await custom_page.set_content("<main><div id='value'></div></main>", wait_until="commit"))
         assert custom_page.evaluate("(() => { const node=document.querySelector('#value'); return [node instanceof Node, node instanceof Element, document instanceof Document, document.querySelector('#value') === node]; })()") == [True, True, True, True]
 
-        default_browser.close()
+        (await default_browser.close())
         assert custom_page.evaluate("new DOMQuad().alternateGetBounds()") is pyv8.Undefined
         assert custom_page.evaluate("typeof URL === 'function'") is True
     finally:
-        default_browser.close()
-        custom_browser.close()
+        (await default_browser.close())
+        (await custom_browser.close())
 
 
-def test_baseline_signatures_do_not_control_implementation_arguments(tmp_path):
+async def test_baseline_signatures_do_not_control_implementation_arguments(tmp_path):
     document = _document()
     contains = next(
         member for member in document["interfaces"]["DOMTokenList"]["members"]["prototype"]
@@ -156,22 +156,22 @@ def test_baseline_signatures_do_not_control_implementation_arguments(tmp_path):
     path = tmp_path / "strict-contains.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    default_browser = Browser(stub_logging="off")
-    strict_browser = Browser(idl_path=path, stub_logging="off")
+    default_browser = (await Browser(stub_logging="off").__aenter__())
+    strict_browser = (await Browser(idl_path=path, stub_logging="off").__aenter__())
     try:
         default_page = default_browser.new_profile().new_page()
         strict_page = strict_browser.new_profile().new_page()
-        default_page.set_content("<body></body>")
-        strict_page.set_content("<body></body>")
+        (await default_page.set_content("<body></body>", wait_until="commit"))
+        (await strict_page.set_content("<body></body>", wait_until="commit"))
         assert default_page.evaluate("document.body.classList.contains('x')") is False
         assert strict_page.evaluate("document.body.classList.contains('x')") is False
         assert strict_page.evaluate("document.body.classList.contains('x', 'ignored')") is False
     finally:
-        default_browser.close()
-        strict_browser.close()
+        (await default_browser.close())
+        (await strict_browser.close())
 
 
-def test_unresolved_signatures_do_not_prevent_structurally_valid_bindings(tmp_path):
+async def test_unresolved_signatures_do_not_prevent_structurally_valid_bindings(tmp_path):
     document = _document()
     contains = next(
         member for member in document["interfaces"]["DOMTokenList"]["members"]["prototype"]
@@ -180,12 +180,12 @@ def test_unresolved_signatures_do_not_prevent_structurally_valid_bindings(tmp_pa
     contains.setdefault("signature", {})["status"] = "unresolved"
     path = tmp_path / "unresolved-real.json"
     path.write_text(json.dumps(document), encoding="utf-8")
-    browser = Browser(idl_path=path, stub_logging="off")
+    browser = (await Browser(idl_path=path, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate("document.createElement('div').classList.contains('x')") is False
     finally:
-        browser.close()
+        (await browser.close())
 
     document = _document()
     bounds = next(
@@ -195,28 +195,28 @@ def test_unresolved_signatures_do_not_prevent_structurally_valid_bindings(tmp_pa
     bounds.setdefault("signature", {})["status"] = "unresolved"
     path = tmp_path / "unresolved-stub.json"
     path.write_text(json.dumps(document), encoding="utf-8")
-    browser = Browser(idl_path=path, stub_logging="off")
+    browser = (await Browser(idl_path=path, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate("new DOMQuad().getBounds(1, 2, 3)") is pyv8.Undefined
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_worker_and_iframe_reuse_their_browser_bindings(tmp_path):
+async def test_worker_and_iframe_reuse_their_browser_bindings(tmp_path):
     custom = tmp_path / "custom.json"
     _custom_baseline(custom)
-    browser = Browser(
+    browser = (await Browser(
         idl_path=custom,
         resource_loader=lambda _url, _request: {
             "body": "", "headers": {"access-control-allow-origin": "*"},
         },
         stub_logging="off",
-    )
+    ).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<iframe src='about:blank'></iframe>", url="http://example.test/")
-        page.run_until_idle(timeout=1)
+        (await page.set_content("<iframe src='about:blank'></iframe>", url="http://example.test/", wait_until="commit"))
+        (await page.run_until_idle(timeout=1))
         frame_page = next(iter(page._owned.frames))
         assert frame_page.profile.browser.bindings is browser.bindings
         assert frame_page.evaluate("[typeof DOMQuad.prototype.getBounds, typeof DOMQuad.prototype.alternateGetBounds]") == ["undefined", "function"]
@@ -228,7 +228,7 @@ def test_worker_and_iframe_reuse_their_browser_bindings(tmp_path):
           const worker = new Worker(URL.createObjectURL(source));
           worker.onmessage = event => window.__baselineFromWorker = event.data;
         })()""")
-        page.wait_for("typeof window.__baselineFromWorker !== 'undefined'", timeout=10)
+        (await page.wait_for("typeof window.__baselineFromWorker !== 'undefined'", timeout=10))
         assert page.evaluate("__baselineFromWorker") == ["undefined", "function"]
     finally:
-        browser.close()
+        (await browser.close())

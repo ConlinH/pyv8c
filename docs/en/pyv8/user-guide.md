@@ -2,7 +2,7 @@
 
 [简体中文](../../pyv8/user-guide.md) | **English**
 
-This document corresponds to the built-in V8 engine in pyv8c 0.1.0. The ABI3 target is GIL-enabled CPython 3.12 through 3.15 and V8 15.4.68; 3.15 has been partially validated on Windows.
+This document corresponds to the built-in V8 engine in pyv8c 0.2.0. The ABI3 target is GIL-enabled CPython 3.12 through 3.15 and V8 15.4.68; 3.15 has been partially validated on Windows.
 
 After the bridge kernel refactor, JS objects return handles by default; when you need a list/dict, explicitly call
 `result.to_python()`. For interfaces, ownership, and validation details, see the [bridge kernel documentation](bridge-kernel.md).
@@ -44,7 +44,7 @@ the compiler, V8 artifacts, and wheel.
 ### Installing a Prebuilt wheel
 
 ```bash
-python -m pip install path/to/pyv8c-0.1.0-cp312-abi3-win_amd64.whl
+python -m pip install path/to/pyv8c-0.2.0-cp312-abi3-win_amd64.whl
 ```
 
 `cp312-abi3` means the same extension can be loaded by GIL-enabled CPython 3.12 through 3.15. ABI3 does not make the binary portable across
@@ -1201,7 +1201,7 @@ If there are still active Contexts, Scripts, or JS wrappers, `close()` raises a 
 Context.close revokes its associated persistent handles, so there is no need to delete already-invalid Python wrapper objects first.
 An Isolate cannot be destroyed while a native call is executing; a `RuntimeError` is raised.
 
-`pyv8.shutdown_v8()` is used to shut down the default Isolate and the process-level V8 Runtime:
+`pyv8.shutdown_v8()` is used to shut down the default Isolate and the process-level V8 Browser:
 
 ```python
 del context
@@ -1308,7 +1308,7 @@ For the detailed lifecycle, discovery interfaces, and migration notes, see [DEVT
 | `pyv8.v8_version()` | Return the actually linked V8 version; does not start V8 |
 | `pyv8.configure(params=None, icudtl_path=None)` | Specify V8 parameters and ICU data for the next startup; effective only before first use |
 | `pyv8.is_initialized()` | Whether V8 has been started |
-| `pyv8.shutdown_v8()` | Permanently shut down the process-level V8 Runtime; does not start V8 |
+| `pyv8.shutdown_v8()` | Permanently shut down the process-level V8 Browser; does not start V8 |
 | `pyv8.start_devtools(...)` | Start the Chrome DevTools bridge |
 | `pyv8.Null` | JavaScript `null` singleton |
 | `pyv8.Undefined` | JavaScript `undefined` singleton |

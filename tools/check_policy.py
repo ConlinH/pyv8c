@@ -61,12 +61,17 @@ import time
 import pyv8c
 
 started = time.perf_counter()
-browser = pyv8c.Browser()
-profile = browser.new_profile()
-page = profile.new_page()
-page.set_content("<body></body>", url="http://example.test/")
-elapsed = (time.perf_counter() - started) * 1000.0
-print(round(elapsed, 1), len(sys.modules))
+import pyv8c.async_api
+
+async def measure():
+    async with pyv8c.async_api.Browser() as runtime:
+        profile = runtime.new_profile()
+        page = profile.new_page()
+        await page.set_content("<body></body>", url="http://example.test/")
+        elapsed = (time.perf_counter() - started) * 1000.0
+        print(round(elapsed, 1), len(sys.modules))
+
+pyv8c.async_api.run(measure())
 """
 
 GATES = ("layers", "native-layout", "companions", "startup", "offline", "duplicates")
@@ -305,7 +310,8 @@ def native_bound_modules():
     """Modules whose import reaches the embedded engine, directly or transitively."""
     graph = _package_import_graph()
     native_prefix = NATIVE_ROOT + "."
-    bound = {m for m in graph if m == NATIVE_ROOT or m.startswith(native_prefix)}
+    bound = {"pyv8c._native", "pyv8c._native._native", "pyv8c._native.audio", "pyv8c._native.dom"}
+    bound.update(m for m in graph if m == NATIVE_ROOT or m.startswith(native_prefix))
     while True:
         added = {
             module for module, imported in graph.items()
@@ -338,10 +344,7 @@ def _guard_lines(tree):
 
 def offline_guard_findings():
     """``(path, line, module)`` for unit tests that reach the engine unguarded."""
-    # ``_audio_native`` is a separate compiled extension shipped in the same
-    # wheel.  It does not import ``pyv8c.pyv8``, so the import graph alone will
-    # not flag a unit test that needs it.
-    bound = native_bound_modules() | {"pyv8c._audio_native"}
+    bound = native_bound_modules()
     findings = []
     unit = REPO / "pyv8c" / "tests" / "unit"
     for path in sorted(unit.glob("test_*.py")):

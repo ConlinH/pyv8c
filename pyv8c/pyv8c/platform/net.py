@@ -1,30 +1,18 @@
-"""Host-side HTTP for one page: ``page.net.get(...)``, ``page.net.post(...)``.
-
-Driving a page from Python usually means talking to the same site it is on.  That
-means sending the cookies it collected, the headers a browser would send, and
-doing it over whichever transport the page itself uses -- cycronet, curl_cffi or
-a host-supplied engine (see ``network/registry.py``).  This facade is that
-shortcut.
-
-It lives in the platform layer because it holds the context's transport and its
-cookie jar, neither of which ``web/**`` may reach by name.  It never touches V8,
-and nothing of it is visible to page code: a page sends its own requests through
-``fetch``/XHR, which take the resource path instead.
-"""
+"""Host-side HTTP for one page: ``page.net.get(...)`` and friends."""
 from __future__ import annotations
 
+import asyncio
 import json as json_module
-from concurrent.futures import Future, ThreadPoolExecutor
-import threading
 from urllib.parse import urlencode, urljoin, urlsplit
 
+from ..foundation.futures import bridge_future
 from ..foundation.host_errors import HostStateError, LoadFailure
 from ..foundation.urls import header_set as _header_set
-from ..network.models import NetworkRequest, NetworkResponse
+from ..network.models import NetworkResponse
 from .js_http import JsHttpController, JsHttpResponse
+from ..network.request_builder import finalize_request, request_clock
 from .resources.request_headers import browser_headers
 
-#: Methods the convenience helpers exist for.
 _METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 
 
@@ -40,31 +28,24 @@ def _merge_headers(*layers):
 
 
 class PageNet:
-    """The page's network API, in two flavours.
-
-    ``get``/``post``/... are host requests on the context's transport; ``fetch`` and
-    ``xhr`` run the page's own JavaScript APIs instead, so a page that replaced either
-    one is the implementation reached.  Both carry the page's cookies and headers.
-    """
+    """Host HTTP calls and the page's own fetch/XHR helpers."""
 
     def __init__(self, page):
         self._page = page
         self._js_http = JsHttpController(page)
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pyv8c-net")
         self._closed = False
-        self._submit_lock = threading.Lock()
-        #: Read once: the browser's headers cannot change after construction.
+        self._closing = False
+        self._close_complete = False
         self._browser_headers = dict(getattr(page.profile.browser, "default_headers", None) or {})
-        #: Above the browser's and below a request's own; mutable on purpose.
         self.headers: dict[str, str] = {}
 
     @property
     def available(self):
-        backend = self._page.network_backend
+        backend = self._page.profile.network_backend
         return backend is not None and backend.http_available
 
     def _backend(self):
-        backend = self._page.network_backend
+        backend = self._page.profile.network_backend
         if backend is None or not backend.http_available:
             raise LoadFailure("page.net requires an HTTP engine; set http_engine= or real_network=True")
         if self._closed:
@@ -79,13 +60,14 @@ class PageNet:
             mode="cors",
             method=method,
             url=target,
-            current_url=self._page.url,
+            current_url=self._page.window.location.href,
             referrer_policy=self._page.navigation.referrer_policy,
             http_version=2 if urlsplit(str(target)).scheme == "https" else 1,
         )
 
     def _resolved_url(self, url, params):
-        target = urljoin(self._page.url, str(url))
+        # Loader callbacks may issue host requests off the owner.
+        target = urljoin(self._page.window.location.href, str(url))
         if params:
             separator = "&" if "?" in target else "?"
             target = f"{target}{separator}{urlencode(params, doseq=True)}"
@@ -113,66 +95,33 @@ class PageNet:
         if referer is not None:
             _header_set(merged, "Referer", referer)
         body = self._body(data, json, merged)
-        transport_options = dict(options or {})
-        request = NetworkRequest(
+        return finalize_request(
             url=target,
-            method=str(method).upper(),
+            method=method,
             headers=merged,
             body=body,
             timeout=timeout,
-            # A host request has no origin to protect and no CORS to satisfy, so
-            # it starts from the jar; ``omit`` tells the transport not to add the
-            # cookie header the caller asked to suppress.
             credentials="omit" if cookies is False else "include",
             mode="no-cors",
             redirect="follow",
             origin=None,
-            options=transport_options,
+            options=options,
+            jar=getattr(self._page.profile.network_backend, "cookies", None),
+            cookie_override=cookies if isinstance(cookies, dict) else None,
         )
-        cookie = self._cookie_header(request, cookies)
-        if cookie:
-            request.headers["Cookie"] = cookie
-        return request
 
-    def _cookie_header(self, request, cookies):
-        """The ``Cookie`` header for *request*, honouring the *cookies* argument."""
-        if cookies is False: return ""
-        jar = getattr(self._page.network_backend, "cookies", None)
-        from_jar = jar.header_for(request.url) if jar is not None else ""
-        if not isinstance(cookies, dict):
-            return from_jar
-        overridden = {str(name) for name in cookies}
-        kept = [
-            part for part in from_jar.split("; ")
-            if part and part.split("=", 1)[0] not in overridden
-        ]
-        # The caller's own cookies lead, an explicit value being the most
-        # specific one there is, the way the jar leads with its most specific path.
-        explicit = [f"{name}={value}" for name, value in cookies.items()]
-        return "; ".join(explicit + kept)
-
-    def request(self, method, url, **kwargs) -> NetworkResponse:
-        """Send one request and return its :class:`NetworkResponse`."""
+    async def request(self, method, url, *, timeout=None, **kwargs) -> NetworkResponse:
+        """Send a host request without blocking the Page owner thread."""
+        self._page._check_wait()
+        remaining = request_clock(timeout)
+        remaining()
         backend = self._backend()
-        return backend.request_sync(self.build(method, url, **kwargs))
+        request = self.build(method, url, timeout=timeout, **kwargs)
 
-    def request_async(self, method, url, **kwargs) -> Future:
-        """Send a host request on this page's pool and return its task Future.
+        return await backend.request(self._page.services.task_services, id(self._page.top_page),
+                                     request, remaining)
 
-        Queued work can be cancelled; running requests cannot. Closing the pool
-        cancels queued Futures, whose result() raises CancelledError.
-        """
-        backend = self._backend()
-        request = self.build(method, url, **kwargs)
-        # Return the pool's own Future: cancellation and shutdown then refer to
-        # the same queued work.  A separate Future could stay pending forever
-        # when shutdown cancelled its runner, or accept cancellation mid-request.
-        with self._submit_lock:
-            if self._closed:
-                raise HostStateError("page.net is closed")
-            return self._executor.submit(backend.request_sync, request)
-
-    def fetch(self,
+    async def fetch(self,
               url: str,
               *,
               method: str = "GET",
@@ -180,49 +129,12 @@ class PageNet:
               body: str | None = None,
               credentials: str | None = None,
               timeout: float = 30) -> JsHttpResponse:
-        """Run the page's own ``fetch`` and return what it answered.
+        """Run the page's own ``fetch``; a page that replaced it is reached."""
+        return await self._wait_http("fetch", url, timeout, method=method,
+                                     headers=headers, body=body, credentials=credentials)
 
-        The realm performs the request, so a page that replaced ``fetch`` is the
-        implementation reached and the page's rules apply: CORS, the interceptor,
-        the cache.  ``page.net.get`` is the other choice: a host request on the
-        context's transport, outside those rules.
 
-        :param url: URL to request; a relative one resolves against the page.
-        :param method: HTTP method, upper-cased.
-        :param headers: request headers, as a plain dict.
-        :param body: request body as text; ``None`` sends none.
-        :param credentials: ``"omit"``, ``"same-origin"`` or ``"include"``, as the
-            JS ``RequestInit`` names them.
-        :param timeout: seconds to wait for the request to settle.
-        :returns: the :class:`~pyv8c.platform.js_http.JsHttpResponse` snapshot.
-        :raises LoadFailure: the page's ``fetch`` rejected.
-        :raises TimeoutError: the request had not settled within *timeout*.
-        :raises RuntimeError: the page is closed.
-        """
-        return self._js_http.fetch(url, method=method, headers=headers, body=body,
-                                   credentials=credentials, timeout=timeout)
-
-    def fetch_async(self,
-                    url: str,
-                    *,
-                    method: str = "GET",
-                    headers: dict | None = None,
-                    body: str | None = None,
-                    credentials: str | None = None) -> Future:
-        """Start the page's own ``fetch``; the ``Future`` settles on its answer.
-
-        :param url: URL to request; a relative one resolves against the page.
-        :param method: HTTP method, upper-cased.
-        :param headers: request headers, as a plain dict.
-        :param body: request body as text; ``None`` sends none.
-        :param credentials: as the JS ``RequestInit`` names them.
-        :returns: a :class:`concurrent.futures.Future` holding the
-            :class:`~pyv8c.platform.js_http.JsHttpResponse` snapshot, or the error.
-        """
-        return self._js_http.fetch_async(url, method=method, headers=headers, body=body,
-                                         credentials=credentials)
-
-    def xhr(self,
+    async def xhr(self,
             url: str,
             *,
             method: str = "GET",
@@ -230,70 +142,56 @@ class PageNet:
             body: str | None = None,
             credentials: str | None = None,
             timeout: float = 30) -> JsHttpResponse:
-        """Run the page's own ``XMLHttpRequest`` and return what it answered.
+        """Run the page's own XHR; the snapshot's headers are empty."""
+        return await self._wait_http("xhr", url, timeout, method=method,
+                                     headers=headers, body=body, credentials=credentials)
 
-        Like :meth:`fetch`, the page's constructor answers.  This implementation
-        exposes no ``getAllResponseHeaders``, so the snapshot's ``headers`` is empty.
 
-        :param url: URL to request; a relative one resolves against the page.
-        :param method: HTTP method, upper-cased.
-        :param headers: request headers, sent with ``setRequestHeader``.
-        :param body: request body as text; ``None`` sends none.
-        :param credentials: ``"include"`` turns on ``withCredentials``.
-        :param timeout: seconds to wait for the request to settle.
-        :returns: the :class:`~pyv8c.platform.js_http.JsHttpResponse` snapshot.
-        :raises LoadFailure: the request failed.
-        :raises TimeoutError: the request had not settled within *timeout*.
-        :raises RuntimeError: the page is closed.
-        """
-        return self._js_http.xhr(url, method=method, headers=headers, body=body,
-                                 credentials=credentials, timeout=timeout)
+    async def _wait_http(self, kind, url, timeout, **options):
+        self._page._check_wait()
+        scope = asyncio.timeout(None if timeout is None else max(0.0, float(timeout)))
+        future = None
+        try:
+            async with scope:
+                deadline = scope.when()
+                remaining = None if deadline is None else max(0.0, deadline - asyncio.get_running_loop().time())
+                future = getattr(self._js_http, "start_" + kind)(url, timeout=remaining, **options)
+                return await bridge_future(future)
+        except TimeoutError:
+            if scope.expired():
+                raise TimeoutError(
+                    f"the page's {kind}({url}) did not settle in {timeout} seconds"
+                ) from None
+            raise
+        finally:
+            if future is not None and not future.done():
+                future.cancel()
 
-    def xhr_async(self,
-                  url: str,
-                  *,
-                  method: str = "GET",
-                  headers: dict | None = None,
-                  body: str | None = None,
-                  credentials: str | None = None) -> Future:
-        """Start the page's own ``XMLHttpRequest``; the ``Future`` gets its answer.
+    def cancel_document_requests(self):
+        self._js_http.cancel_pending()
 
-        :param url: URL to request; a relative one resolves against the page.
-        :param method: HTTP method, upper-cased.
-        :param headers: request headers, sent with ``setRequestHeader``.
-        :param body: request body as text; ``None`` sends none.
-        :param credentials: ``"include"`` turns on ``withCredentials``.
-        :returns: a :class:`concurrent.futures.Future` holding the
-            :class:`~pyv8c.platform.js_http.JsHttpResponse` snapshot, or the error.
-        """
-        return self._js_http.xhr_async(url, method=method, headers=headers, body=body,
-                                       credentials=credentials)
-
-    def close(self):
-        with self._submit_lock:
-            if self._closed:
-                return
-            self._closed = True
-        self._executor.shutdown(wait=True, cancel_futures=True)
+    def _retire(self):
+        if self._close_complete or self._closing:
+            return
+        self._closed = self._closing = True
+        try:
+            self._js_http.close()
+            self._close_complete = True
+        finally:
+            self._closing = False
 
 
 def _install_methods():
-    """Give ``PageNet`` its ``get``/``post``/... and ``*_async`` helpers."""
+    """All host HTTP convenience methods share the asyncio contract."""
     for name in _METHODS:
         method = name.upper()
 
-        def sync(self, url, _method=method, **kwargs):
-            return self.request(_method, url, **kwargs)
+        async def request(self, url, _method=method, **kwargs):
+            return await self.request(_method, url, **kwargs)
 
-        def asynchronous(self, url, _method=method, **kwargs):
-            return self.request_async(_method, url, **kwargs)
-
-        sync.__name__ = name
-        sync.__doc__ = f"Send a {method} request."
-        asynchronous.__name__ = f"{name}_async"
-        asynchronous.__doc__ = f"Send a {method} request on the page's pool; returns a ``Future``."
-        setattr(PageNet, name, sync)
-        setattr(PageNet, f"{name}_async", asynchronous)
+        request.__name__ = name
+        request.__doc__ = f"Await a {method} request."
+        setattr(PageNet, name, request)
 
 
 _install_methods()

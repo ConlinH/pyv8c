@@ -54,6 +54,11 @@ The CSS property table, declaration parsing, value computation, selectors, casca
 
 ## Object and State Ownership
 
+The public model is Browser → Profile → Page. Browser owns an internal Runtime
+through composition. The kernel manages execution and background ownership,
+without browser configuration or Profile factories. Evaluation stays synchronous;
+loading, input, networking and closure are awaited.
+
 Browser holds configuration, FeatureRuntime, binding facilities, and the host callback thread pool. Profile always owns a CookieJar and holds the network backend, Blob URL registry, storage, and resource cache configuration. Mutable session state should be isolated across Profiles, though persistent content may still be shared when the same disk cache directory is explicitly specified.
 
 Page composes navigation, lifecycle, scripts, documents, and resource components, exposing narrow capabilities to Web APIs through PageServices. PageRealm manages V8Context, binding sessions, and rejection tracking. A Realm's referencable lifetime is not the same concept as a document's active state; navigation cannot revoke an old document by clearing shared Agent microtasks.

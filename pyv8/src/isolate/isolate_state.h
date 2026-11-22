@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -38,6 +39,7 @@ class IsolateState
 {
 private:
     friend class IsolateLockScope;
+    std::thread::id owner_thread_;
     std::recursive_mutex entry_mutex;
     unsigned entry_depth = 0;
     unsigned entry_users = 0; // GIL protected; includes threads waiting for entry.
@@ -57,7 +59,7 @@ public:
     bool defer_context_close(context_c* context);
     void drain_deferred();
     void defer_release(DeferredPythonRelease* record, PyObject* object);
-    IsolateState();
+    explicit IsolateState(bool thread_bound = false);
     ~IsolateState();
 
     bool initialize();
@@ -66,6 +68,10 @@ public:
 
     bool is_active() const { return isolate_ != nullptr; }
     bool is_disposed() const { return disposed_; }
+    bool thread_bound() const { return owner_thread_ != std::thread::id{}; }
+    bool on_owner_thread() const {
+        return !thread_bound() || owner_thread_ == std::this_thread::get_id();
+    }
     v8::Isolate* isolate() const { return isolate_; }
     bool set_wasm_response_handler(PyObject* handler);
     PyObject* wasm_response_handler() const { return wasm_response_handler_; }

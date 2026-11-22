@@ -48,7 +48,7 @@ flowchart LR
 
 ## 安装
 
-发行包将框架与 V8 引擎打包为单个 ABI3 wheel，CI 分别构建 Windows x64（`win_amd64`）、Linux x64（`linux_x86_64`）和 macOS arm64（`macosx_arm64`）版本。下载对应平台的构建产物后可执行 `py -m pip install 路径\pyv8c-版本-cp312-abi3-平台.whl`；它不依赖顶层 `pyv8` 发行包。发行包中的原生引擎也可单独使用：
+发行包将框架与 V8 引擎打包为单个 ABI3 wheel，提供 Windows x64（`win_amd64`）、Linux x64（`linux_x86_64`）和 macOS arm64（`macosx_arm64`）版本。选择匹配平台的 wheel 文件后可执行 `py -m pip install 路径\pyv8c-版本-cp312-abi3-平台.whl`；它不依赖顶层 `pyv8` 发行包。发行包中的原生引擎也可单独使用：
 
 ```python
 from pyv8c import pyv8
@@ -65,7 +65,7 @@ finally:
 
 目前暂不发布到 PyPI。源码开发和发行包均使用 `pyv8c.pyv8` 入口。源码构建说明见[开发指南](docs/pyv8c/development.md#源码构建)。
 
-要求启用 GIL 的 CPython 3.12 及以上，并能导入与当前解释器匹配的 `pyv8` 原生扩展。三个平台均由 CI 构建 wheel 并执行安装后冒烟与原生测试；CPython 3.12–3.15 的完整浏览器测试矩阵目前只在 Windows 上运行，其他平台仍需按各自环境验证。free-threaded CPython 暂不支持。
+要求启用 GIL 的 CPython 3.12 及以上，并能导入与当前解释器匹配的 `pyv8` 原生扩展。free-threaded CPython 暂不支持。
 
 仓库包含 `pyv8/`（V8 绑定源码）和 `pyv8c/`（浏览器框架源码）。以下命令在仓库根目录使用 CPython 3.12 执行：
 
@@ -80,24 +80,47 @@ python312 -c "from pyv8c import pyv8; print(pyv8.__file__)"
 
 ## 快速开始
 
-```python
-from pyv8c import Browser
 
-browser = Browser(real_network=False)
-try:
-    page = browser.new_profile().new_page()
-    page.set_content("<main id='app'>就绪</main>", url="https://example.test/")
-    assert page.evaluate("document.querySelector('#app').textContent") == "就绪"
-    page.evaluate("globalThis.answer = 0; setTimeout(() => answer = 42, 0)")
-    page.wait_for("answer === 42", timeout=1)
-    assert page.evaluate("answer") == 42
-finally:
-    browser.close()
+同步脚本使用独立入口，导航、等待、输入、网络和关闭均直接返回：
+
+```python
+from pyv8c.sync_api import Browser
+
+with Browser(real_network=False) as browser:
+    with browser.new_profile() as profile:
+        with profile.new_page() as page:
+            page.set_content("<title>Local page</title>")
+            page.evaluate("globalThis.ready=false;setTimeout(()=>ready=true,2)")
+            page.wait_for("ready", timeout=1)
+            assert page.evaluate("document.title") == "Local page"
+```
+
+同步 Browser 在调用线程持有一个事件循环，等待时协作推进，evaluate 直接执行。
+`time.sleep()` 不推动页面任务。已有 asyncio 循环使用下面的 async_api，禁止
+嵌套同步等待；根包不再提供 Browser/Profile/Page/run 别名。两套入口共用内核，
+不互传对象。同步关闭失败时保留循环与所有权，允许 close 重试。
+
+下面的示例使用异步入口；同步入口使用相同方法名并去掉 await，
+上下文管理使用 with。两套入口中的 evaluate 都同步返回。
+
+```python
+import asyncio
+from pyv8c.async_api import Browser
+
+async def main():
+    async with Browser(real_network=False) as browser:
+        page = browser.new_profile().new_page()
+        await page.set_content("<main id='app'>就绪</main>", url='https://example.test/')
+        assert page.evaluate("document.querySelector('#app').textContent") == '就绪'
+        page.evaluate('globalThis.answer = 0; setTimeout(() => answer = 42, 0)')
+        await page.wait_for('answer === 42', timeout=1)
+        assert page.evaluate('answer') == 42
+asyncio.run(main())
 ```
 
 默认 `Browser()` 开启真实网络，HTTP 使用 `curl_cffi`，WebSocket 使用 `websockets`。离线运行应显式设置 `real_network=False`，使用 `set_content()` 或资源加载器提供页面。
 
-访问网站时，使用 `page.goto(url, wait_until="load", timeout=30)` 等待指定加载阶段。`run_until_idle()` 只等待当前可运行工作排空，不等待未来网络、定时器或 Worker 结果。`evaluate()` 不自动等待 Promise。
+访问网站时，使用 `await page.goto(url, wait_until="load", timeout=30)` 等待指定加载阶段。`run_until_idle()` 只等待当前可运行工作排空，不等待未来网络、定时器或 Worker 结果。`evaluate()` 不自动等待 Promise。
 
 ## 对象与执行模型
 
@@ -111,7 +134,7 @@ Browser                         框架配置、接口装配和回调线程池
       └─ Worker                 独立线程、Isolate、Agent 和 Realm
 ```
 
-独立 `new_page()` 创建独立执行组。同步跨 iframe 访问在同一 owner 线程切换 Context。活 JS 句柄只能在所属 owner 线程使用，原 Context 关闭后失效。关闭 Browser 会释放其 Profile、页面及相关资源；调用方应始终显式关闭。
+独立 `new_page()` 创建独立执行组。同步跨 iframe 访问在同一 owner 线程切换 Context。活 JS 句柄只能在所属 owner 线程使用，原 Context 关闭后失效。关闭 Browser 会释放其 Profile、页面及相关资源；调用方根据入口使用 `with Browser(...)` 或 `async with Browser(...)` 管理生命周期；求值、输入和查询只允许 owner 线程调用，等待由所属入口协作推进。
 
 ## 文档
 

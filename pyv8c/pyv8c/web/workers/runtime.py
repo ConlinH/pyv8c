@@ -12,7 +12,6 @@ from ...foundation.arguments import is_nullish
 from ...foundation.logging import logger
 from ...foundation.agent_tasks import AgentTaskQueue, TaskContext
 from ...foundation.error_policy import control_exceptions, is_host_failure
-from ...foundation.executor import RealmExecutor
 from ...foundation.lifecycle import ResourceScope
 from ...foundation.host_errors import RealmBusyError
 from ...foundation.rejections import RejectionTracker
@@ -36,7 +35,7 @@ class WorkerRuntime:
         self._operation = None
         self._stopped_operations = set()
         self._lifecycle_scope = ResourceScope()
-        self.executor = RealmExecutor(name="pyv8c-worker", auto_pump=True)
+        self.executor = self.services.worker_services.create_executor("pyv8c-worker")
         # V8 reports a rejection before the turn that caused it ends, so the
         # candidates wait for this realm's own executor boundary to be
         # published; see foundation.rejections.
@@ -62,6 +61,7 @@ class WorkerRuntime:
             handle.add_done_callback(self._source_finished)
         except BaseException as exc:
             self._source_ready(None, exc)
+        self.services.worker_services.register_runtime(self)
 
     def _source_finished(self, handle):
         # Owner invalidation suppresses delivery. It must still wake teardown
@@ -112,6 +112,8 @@ class WorkerRuntime:
             self._realm = self.services.worker_services.create_worker_realm(config)
             self._realm.script_url = self.script_url
             self._realm.stop_event = self._stop
+            self._realm.services.task_services.bind_websocket_lifetime(self._lifecycle_scope)
+            self._lifecycle_scope.add(self._realm.resource_ownership.close)
             # The worker drives its own task queue from this thread, so timers
             # and microtasks progress while the parent page is idle.
             self._realm.tasks.set_error_sink(self._report_error)
@@ -442,11 +444,10 @@ class WorkerRuntime:
         Closing the executor from inside it is what keeps that join off the caller: the
         driver leaves its loop when this command returns and the thread ends by itself.
         """
-        try:
-            self._cleanup_owner()
-        finally:
-            self.executor.close()
-            self._lifecycle_scope.close()
+        self._cleanup_owner()
+        self.executor.close()
+        self._lifecycle_scope.close()
+        self.services.worker_services.discard_runtime(self)
 
 
 class SharedWorkerRuntime(WorkerRuntime):

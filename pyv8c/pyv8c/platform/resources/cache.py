@@ -1,26 +1,38 @@
-"""Profile-owned disk cache of plain payloads; HTTP freshness is not implemented."""
+"""Profile-owned resource cache with a bounded in-memory tier over disk."""
 import base64
 import hashlib
 import json
 import os
 import re
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlsplit
 
 from ...foundation.logging import logger
 from ...foundation.urls import DEFAULT_PORTS
 
+_MEMORY_BYTES = 16 * 1024 * 1024
+_MEMORY_ENTRIES = 256
+
 
 class ResourceCache:
     def __init__(self, profile):
         self.profile = profile
+        self._entries = OrderedDict()
+        self._size = 0
+        self._memory_lock = Lock()
+        self._disk_lock = Lock()
 
     def key(self, target, request, *, enabled, origin):
         if not enabled or self.profile.resource_cache_dir is None or origin == "null":
             return None
+        if urlsplit(target).scheme not in ("http", "https"):
+            return None
         method = str(request.get("method", "GET")).upper()
-        if method not in ("GET", "HEAD") or str(request.get("cache", "default")) in ("no-store", "reload", "no-cache"):
+        if (method not in ("GET", "HEAD") or request.get("redirect", "follow") != "follow"
+                or str(request.get("cache", "default")) in ("no-store", "reload", "no-cache")):
             return None
         headers = {str(name).lower(): str(value) for name, value in request["headers"].items()}
         # This persistent cache is shared across profile restarts.  It must not
@@ -37,15 +49,43 @@ class ResourceCache:
             tuple(sorted(headers.items())),
         )
 
+    def get_memory(self, key):
+        with self._memory_lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                self._entries.move_to_end(key)
+                return entry[0]
+
+    def clear_memory(self):
+        with self._memory_lock:
+            self._entries.clear()
+            self._size = 0
+
+    def _remember(self, key, payload):
+        body = payload["body"]
+        size = len(body) * (4 if isinstance(body, str) else 1) if body is not None else 0
+        size += 4 * (len(repr(key)) + len(repr(payload["headers"])) + len(payload["url"]))
+        if size > _MEMORY_BYTES:
+            return
+        with self._memory_lock:
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._size -= previous[1]
+            self._entries[key] = payload, size
+            self._size += size
+            while self._size > _MEMORY_BYTES or len(self._entries) > _MEMORY_ENTRIES:
+                _, (_, evicted) = self._entries.popitem(last=False)
+                self._size -= evicted
+
     def get(self, key):
-        if key is None:
-            return None
-        profile = self.profile
-        with profile.resource_cache_lock:
-            cached = self._read_disk_cache(profile, key)
-        if cached is None:
-            return None
-        logger.debug("resource cache hit: {}", key[1])
+        with self._disk_lock:
+            cached = self.get_memory(key)
+            if cached is None:
+                cached = self._read_disk_cache(self.profile, key)
+                if cached is not None:
+                    self._remember(key, cached)
+        if cached is not None:
+            logger.debug("resource cache hit: {}", key[1])
         return cached
 
     @staticmethod
@@ -95,7 +135,7 @@ class ResourceCache:
             return None
         return payload
 
-    def put(self, key, payload):
+    def put(self, key, payload, claim_publication):
         # An opaque-redirect response stands for a redirect the page may not read, so
         # what it "contains" is no answer at all.
         if key is None or payload["type"] in ("opaque", "opaqueredirect"):
@@ -110,28 +150,45 @@ class ResourceCache:
         profile = self.profile
         if profile.cookies.header_for(key[1]):
             return
-        with profile.resource_cache_lock:
+        with self._disk_lock:
             path = self._disk_cache_path(profile, key)
-            if path is not None:
+            temporary = None
+            ready = False
+            try:
                 try:
-                    temporary = None
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    body = payload["body"]
-                    body_encoding = "bytes" if isinstance(body, (bytes, bytearray, memoryview)) else "text"
-                    body_bytes = bytes(body) if body_encoding == "bytes" else str(body).encode("utf-8")
-                    record = {name: value for name, value in payload.items() if name != "body"}
-                    record.update({
-                        "body": base64.b64encode(body_bytes).decode("ascii"),
-                        "body_encoding": body_encoding,
-                    })
-                    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as stream:
-                        temporary = stream.name
-                        json.dump(record, stream, ensure_ascii=True, separators=(",", ":"))
-                    os.replace(temporary, path)
+                    if path is not None:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        body = payload["body"]
+                        body_encoding = "bytes" if isinstance(body, (bytes, bytearray, memoryview)) else "text"
+                        body_bytes = bytes(body) if body_encoding == "bytes" else str(body).encode("utf-8")
+                        record = {name: value for name, value in payload.items() if name != "body"}
+                        record.update({
+                            "body": base64.b64encode(body_bytes).decode("ascii"),
+                            "body_encoding": body_encoding,
+                        })
+                        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+                            temporary = stream.name
+                            json.dump(record, stream, ensure_ascii=True, separators=(",", ":"))
+                        ready = True
                 except (OSError, TypeError, ValueError):
+                    pass
+
+                # The request lock is released before any disk operation. The
+                # tracked cache job owns publication and cleanup once claimed.
+                if not claim_publication():
+                    return
+                if ready:
                     try:
-                        if temporary is not None:
-                            os.unlink(temporary)
+                        os.replace(temporary, path)
+                    except OSError:
+                        pass
+                    else:
+                        temporary = None
+                self._remember(key, payload)
+            finally:
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
                     except OSError:
                         pass
 

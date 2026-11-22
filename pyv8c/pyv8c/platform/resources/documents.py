@@ -3,7 +3,7 @@ import time
 
 from pyv8c import pyv8
 from ...foundation.logging import logger
-from .handles import LoadHandle
+from ...foundation.load_handle import LoadHandle
 from .tracker import DocumentResource, DocumentResourceTracker
 from .discovery import NodeSnapshot, discover
 from .completion import ResourceCompletion

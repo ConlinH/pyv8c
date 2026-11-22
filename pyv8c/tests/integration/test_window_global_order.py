@@ -12,14 +12,14 @@ def _names(page):
     return page.evaluate("Object.getOwnPropertyNames(window)")
 
 
-def test_legacy_factories_and_members_follow_observation(page, browser):
+async def test_legacy_factories_and_members_follow_observation(page, browser):
     names = _names(page)
     observed = browser.bindings.idl.observed_window_order
     selected = [name for name in observed if name in {"Option", "Image", "window", "alert"}]
     assert [name for name in names if name in set(selected)] == selected
 
 
-def test_the_context_dependent_members_follow_the_operations(page):
+async def test_the_context_dependent_members_follow_the_operations(page):
     names = _names(page)
     assert names.index("onclick") < names.index("alert")
     assert names.index("caches") > names.index("fetch")
@@ -27,7 +27,7 @@ def test_the_context_dependent_members_follow_the_operations(page):
     assert names.index("documentPictureInPicture") > names.index("structuredClone")
 
 
-def test_the_host_globals_precede_the_context_dependent_members(page):
+async def test_the_host_globals_precede_the_context_dependent_members(page):
     names = _names(page)
     assert names.index("chrome") > names.index("WebAssembly")
     assert names.index("chrome") < names.index("crashReport")
@@ -35,14 +35,14 @@ def test_the_host_globals_precede_the_context_dependent_members(page):
     assert names.index("caches") < names.index("AbsoluteOrientationSensor")
 
 
-def test_the_legacy_aliases_share_the_target_constructor(page):
+async def test_the_legacy_aliases_share_the_target_constructor(page):
     assert page.evaluate("window.webkitURL === window.URL")
     assert page.evaluate("window.FeaturePolicy === window.PermissionsPolicy")
     assert page.evaluate("window.WebKitCSSMatrix === window.DOMMatrix")
     assert page.evaluate("window.WebKitMutationObserver === window.MutationObserver")
 
 
-def test_the_realm_answers_the_environment_order(page, browser):
+async def test_the_realm_answers_the_environment_order(page, browser):
     actual = _names(page)
     expected = browser.bindings.idl.observed_window_order
     # V8 installs its own built-ins before this binding can define host names.
@@ -50,7 +50,7 @@ def test_the_realm_answers_the_environment_order(page, browser):
     assert [name for name in actual if name in common] == [name for name in expected if name in common]
 
 
-def test_iframe_window_order_and_descriptor_match_parent(page):
+async def test_iframe_window_order_and_descriptor_match_parent(page):
     result = page.evaluate("""(() => {
         const frame = document.createElement('iframe');
         document.body.appendChild(frame);
@@ -65,10 +65,10 @@ def test_iframe_window_order_and_descriptor_match_parent(page):
     assert result[4] is True
 
 
-def test_navigation_preserves_window_install_order(browser):
+async def test_navigation_preserves_window_install_order(browser):
     page = browser.new_profile().new_page()
     names = ["Option", "Image", "window", "fetch", "caches"]
     before = [name for name in _names(page) if name in names]
-    page.goto("data:text/html,<body>next</body>")
+    (await page.goto("data:text/html,<body>next</body>"))
     after = [name for name in _names(page) if name in names]
     assert after == before

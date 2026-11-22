@@ -10,6 +10,7 @@ excluded with what reason, and which diverged.
 from __future__ import annotations
 
 import importlib
+from dataclasses import replace
 
 import pytest
 
@@ -42,10 +43,14 @@ def missing_requirement(case):
 
 
 @pytest.fixture(scope="module")
-def reference():
+async def reference(request):
     """One local Chrome for the module, or a skip saying what is missing."""
+    baseline, software = getattr(request, "param", (False, False))
     try:
-        with chrome_reference() as session:
+        # Match clear-color quantization against the software renderer.
+        async with chrome_reference(
+            launch_args=("--disable-gpu",) if software else (), baseline=baseline
+        ) as session:
             yield session
     except ReferenceUnavailable as unavailable:
         pytest.skip(str(unavailable))
@@ -65,10 +70,10 @@ def test_the_corpus_keeps_its_own_shape():
 
 
 @pytest.mark.parametrize("case", CASES, ids=NAMES)
-def test_pyv8c_observes_what_the_case_declares(case):
+async def test_pyv8c_observes_what_the_case_declares(case):
     if reason := missing_requirement(case):
         pytest.skip(reason)
-    observed = observe_here(case)
+    observed = (await observe_here(case))
     if case.expect_error:
         assert observed.error == case.expect_error
     else:
@@ -76,7 +81,7 @@ def test_pyv8c_observes_what_the_case_declares(case):
         assert observed.value == case.expected
 
 
-def test_the_reference_is_the_chrome_installed_here(reference):
+async def test_the_reference_is_the_chrome_installed_here(reference):
     """The comparison is against this machine's browser, never a downloaded one."""
     installed, reason = chrome_executable()
     assert installed is not None, reason
@@ -84,12 +89,25 @@ def test_the_reference_is_the_chrome_installed_here(reference):
     assert reference.version
 
 
-@pytest.mark.parametrize("case", CASES, ids=NAMES)
-def test_chrome_agrees(case, reference):
+@pytest.mark.parametrize(
+    "case,reference",
+    [(case, (case.baseline_reference, case.software_rendering)) for case in CASES],
+    ids=NAMES, indirect=["reference"],
+)
+async def test_chrome_agrees(case, reference):
     if reason := missing_requirement(case):
         pytest.skip(reason)
-    here = observe_here(case)
-    there = reference.observe(case)
+    if case.comparison_script:
+        # GPU extension counts depend on the backend. Both engines run the same
+        # capability checks, and the local pass still asserts the exact counts.
+        case = replace(case, script=case.comparison_script)
+    environment = {} if case.match_client_hints else None
+    there = await reference.observe(case, environment=environment)
+    here = await observe_here(case, environment=environment)
+    if case.comparison_script:
+        assert not here.error and here.value == [True, *case.expected[1:]], (
+            f"{case.name}: pyv8c extension inventory is invalid: {here}"
+        )
     difference = divergence(here, there, reference.version)
     if case.known_divergence:
         assert difference, (

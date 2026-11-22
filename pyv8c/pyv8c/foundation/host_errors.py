@@ -46,4 +46,8 @@ class LoadFailure(HostFailure):
     """
 
 
-__all__ = ["HostFailure", "HostStateError", "RealmBusyError", "LoadFailure"]
+class RequestTimeout(TimeoutError):
+    """The framework's HTTP request deadline expired."""
+
+
+__all__ = ["HostFailure", "HostStateError", "RealmBusyError", "LoadFailure", "RequestTimeout"]

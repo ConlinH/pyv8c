@@ -1,12 +1,14 @@
 # Task Scheduling
 
+Browser uses the application owner thread and cooperative waits; see the [execution contract](cooperative-runtime.md).
+
 [简体中文](../../pyv8c/task-scheduling.md) | **English**
 
 [Documentation Index](../README.md)
 
 ## Execution Ownership
 
-A standalone `new_page()` creates a WindowExecutionGroup with its own dedicated owner thread and Isolate. An iframe uses the same execution group; Realms with the same effective origin share an Agent, while other Agents queue independently but still run on that owner thread. Opaque origins are distinguished by identity token, and the origins of initial about:blank, srcdoc, and Blob inherit according to their creation relationship.
+A standalone `new_page()` creates an independent WindowExecutionGroup with its own Isolate, Agents and frame clock; its owner thread is the application thread that started the Browser and is shared with other pages, and only Workers use dedicated threads. An iframe uses the same execution group; Realms with the same effective origin share an Agent, while other Agents queue independently but still run on that owner thread. Opaque origins are distinguished by identity token, and the origins of initial about:blank, srcdoc, and Blob inherit according to their creation relationship.
 
 Each Agent holds task source queues and an explicit V8 microtask queue; a Dedicated Worker uses its own thread, Isolate, Agent, and event loop. Synchronous iframe access requires no cross-thread waiting; passing live JS objects directly between unrelated execution groups is not allowed.
 
@@ -20,6 +22,42 @@ Ordinary host commands enter the embedder source and are not drained with unboun
 
 There is no single Chrome total order across sources that should be pinned down; tests constrain necessary causal ordering and non-starvation. Full loading prioritization, background budgets, and dynamic input priorities are not currently implemented.
 
+The owner captures a wake sequence before scanning work. Producers publish work or a deadline before
+incrementing the sequence and notifying the condition. Waiting atomically releases that condition only
+if the sequence still matches. Idle and timed waits share this protocol, without polling or an asyncio loop.
+
+Page commands themselves serve as managed-task callbacks. The Agent notifies the owner after enqueueing;
+the executor does not add another wake for that publication. The separate control queue still signals.
+After an idle work scan, the owner reads deadlines and checks the captured sequence under the condition,
+without scanning every task, foreground and rendering source again. Publications during the scan remain
+visible through the sequence; expired timers resume the pump through their deadlines.
+Command registration and runner assignment share the submission lock. Cancellation, completion and
+shutdown retire the runner. Ticket validation reuses an already-held Agent lock when identical to the
+cancellation lock; migrated tickets still acquire their original lock. Source fairness, operation budgets
+and microtask checkpoints are unchanged.
+
+Synchronous commands have a single completion record. Queued expiry prevents execution; running expiry
+preserves native termination and late-result logging. Results are published after budget cleanup.
+Scripts own their checkpoint before result conversion. Copying a result object may run JS getters and
+therefore needs another checkpoint; primitive results do not.
+
+Late-result formatting or logging failures do not close the executor; execution control exceptions
+still propagate. Script entry completes its checkpoint even if a closed-state check or DevTools
+before-script hook fails, so the Agent does not remain busy. A failed before-script hook does not
+invoke the after-script hook and retains its original error. Execution termination still prevents
+further page JS from running.
+
+With `threaded_loaders`, synchronous resource waits observe the request deadline, active window
+operation budget, and stop requests. A running loader cannot be forcibly interrupted, but its late
+completion does not hold the owner after the wait exits. Host HTTP Futures fail with `HostStateError`
+when the page closes or its document is replaced; explicit cancellation and late answers cannot
+complete the same Future twice. Following successful Realm replacement, new promises use the new
+context while existing resolvers retain their original context.
+
+Task cancellation marks state and detaches references under lock, then reclaims callbacks and contexts
+after both scheduler and document routing locks have been released. Document invalidation, queue
+shutdown, and invalid-task pruning follow the same rule, allowing finalizers to reenter the executor.
+
 ## Microtasks and Rejection Notifications
 
 Promise, queueMicrotask, and MutationObserver use the owning Agent's explicit microtask queue. Ordinary property reads, object conversions, and nested cross-Realm calls should not unexpectedly start a checkpoint; script and callback cleanup check when JS stack conditions allow, with a fallback at task end, and reentrancy is prevented.
@@ -32,7 +70,7 @@ Navigation generation invalidation cancels only the operations of the correspond
 
 External network completion is delivered to the owning networking task; after returning to the owner, response conversion, redirects, and internal continuations may proceed within that task. Asynchronous final results from the cache, local URLs, and inline loaders are likewise delivered through the queue, and the final user callback is not invoked synchronously just because execution is currently on the owner.
 
-Navigation does not block on the owner waiting for the main-document network. The synchronous host `goto()` waits on the operation Future while the owner continues processing runnable work; inside the owner, code must not synchronously wait on unfinished operations, nor nest a drive of the event loop to complete a wait.
+Navigation does not block on the owner waiting for the main-document network. `await page.goto()` waits cooperatively while the owner can process runnable work; inside the owner, code must not synchronously wait on unfinished operations, nor nest a drive of the event loop to complete a wait.
 
 | Wait entry point | Condition |
 | --- | --- |

@@ -3,13 +3,13 @@ import pytest
 
 pytest.importorskip('pyv8c.pyv8')
 from harness import chrome_reference, ReferenceUnavailable
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture(scope='module')
-def reference():
+async def reference():
     try:
-        with chrome_reference() as session:
+        async with chrome_reference() as session:
             yield session
     except ReferenceUnavailable as exc:
         pytest.skip(str(exc))
@@ -58,15 +58,15 @@ CASES = (
 
 
 @pytest.mark.parametrize('script', CASES, ids=['attribute-lifetime','ids','roots','collections'])
-def test_local_lookup_rules(reference, script):
-    chrome=reference.browser.new_page()
-    browser=Browser(real_network=False,stub_logging='off')
+async def test_local_lookup_rules(reference, script):
+    chrome=(await reference.browser.new_page())
+    browser=(await Browser(real_network=False,stub_logging='off').__aenter__())
     try:
-        chrome.set_content('<body></body>')
-        expected=chrome.evaluate(script)
-        page=browser.new_profile().new_page();page.set_content('<body></body>')
+        (await chrome.set_content('<body></body>'))
+        expected=(await chrome.evaluate(script))
+        page=browser.new_profile().new_page();(await page.set_content('<body></body>', wait_until="commit"))
         actual=page.evaluate('('+script+')()')
         assert actual == expected
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())

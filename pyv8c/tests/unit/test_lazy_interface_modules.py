@@ -1,5 +1,7 @@
 """Optional interface modules load only at their first observable use."""
 
+import asyncio
+
 import json
 import os
 import subprocess
@@ -12,51 +14,16 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_optional_interface_modules_stay_unimported_until_first_use():
+async def test_optional_interface_modules_stay_unimported_until_first_use():
     """Use a child process because module imports are process-global caches."""
-    pytest.importorskip("pyv8c.pyv8", reason="Browser requires the native extension")
-    code = textwrap.dedent("""
-        import json
-        import os
-        import sys
-        from pyv8c import Browser
-
-        modules = {
-            "idb": "pyv8c.web.bom.indexeddb",
-            "navigator": "pyv8c.web.bom.navigator",
-            "websocket": "pyv8c.web.websocket",
-            "worker": "pyv8c.web.workers.worker",
-            "filesystem": "pyv8c.web.bom.filesystem",
-        }
-        browser = Browser(stub_logging="off", idl_path=os.environ.get("PYV8C_TEST_IDL_PATH"))
-        try:
-            page = browser.new_profile().new_page()
-            output = {"startup": {key: module in sys.modules for key, module in modules.items()}}
-            output["indexeddb_identity"] = page.evaluate("indexedDB === indexedDB")
-            output["after_idb"] = {key: module in sys.modules for key, module in modules.items()}
-            output["idb_type"] = page.evaluate("typeof IDBKeyRange")
-            output["navigator_identity"] = page.evaluate("navigator === navigator")
-            output["after_navigator"] = {key: module in sys.modules for key, module in modules.items()}
-            output["websocket_type"] = page.evaluate("typeof WebSocket")
-            output["after_websocket"] = {key: module in sys.modules for key, module in modules.items()}
-            output["worker_type"] = page.evaluate("typeof Worker")
-            output["after_worker"] = {key: module in sys.modules for key, module in modules.items()}
-            output["file_type"] = page.evaluate("typeof File")
-            output["after_file"] = {key: module in sys.modules for key, module in modules.items()}
-            output["idb_group"] = [
-                name for name in page.binding_session.materialized_interfaces
-                if name.startswith("IDB")
-            ]
-            print(json.dumps(output))
-        finally:
-            browser.close()
-    """)
+    pytest.importorskip("pyv8c.pyv8", reason="Runtime requires the native extension")
+    code = textwrap.dedent('\nfrom pyv8c.async_api import Browser, run\nasync def _program():\n\n    import json\n    import os\n    import sys\n    from pyv8c.async_api import Browser, run\n\n    modules = {\n        "idb": "pyv8c.web.bom.indexeddb",\n        "navigator": "pyv8c.web.bom.navigator",\n        "websocket": "pyv8c.web.websocket",\n        "worker": "pyv8c.web.workers.worker",\n        "filesystem": "pyv8c.web.bom.filesystem",\n    }\n    browser = (await Browser(stub_logging="off", idl_path=os.environ.get("PYV8C_TEST_IDL_PATH")).__aenter__())\n    try:\n        page = browser.new_profile().new_page()\n        output = {"startup": {key: module in sys.modules for key, module in modules.items()}}\n        output["indexeddb_identity"] = page.evaluate("indexedDB === indexedDB")\n        output["after_idb"] = {key: module in sys.modules for key, module in modules.items()}\n        output["idb_type"] = page.evaluate("typeof IDBKeyRange")\n        output["navigator_identity"] = page.evaluate("navigator === navigator")\n        output["after_navigator"] = {key: module in sys.modules for key, module in modules.items()}\n        output["websocket_type"] = page.evaluate("typeof WebSocket")\n        output["after_websocket"] = {key: module in sys.modules for key, module in modules.items()}\n        output["worker_type"] = page.evaluate("typeof Worker")\n        output["after_worker"] = {key: module in sys.modules for key, module in modules.items()}\n        output["file_type"] = page.evaluate("typeof File")\n        output["after_file"] = {key: module in sys.modules for key, module in modules.items()}\n        output["idb_group"] = [\n            name for name in page.binding_session.materialized_interfaces\n            if name.startswith("IDB")\n        ]\n        print(json.dumps(output))\n    finally:\n        (await browser.close())\nrun(_program())\n')
     environment = dict(os.environ)
-    environment["PYTHONPATH"] = os.pathsep.join((str(ROOT.parent / "pyv8"), str(ROOT)))
-    result = subprocess.run(
+    environment["PYTHONPATH"] = (await asyncio.to_thread(os.pathsep.join, (str(ROOT.parent / "pyv8"), str(ROOT))))
+    result = (await asyncio.to_thread(subprocess.run,
         [sys.executable, "-c", code], cwd=ROOT, env=environment,
         text=True, capture_output=True, timeout=30,
-    )
+    ))
     assert result.returncode == 0, result.stderr
     output = json.loads(result.stdout)
     def loaded(idb=False, navigator=False, websocket=False, worker=False, filesystem=False):
@@ -78,7 +45,7 @@ def test_optional_interface_modules_stay_unimported_until_first_use():
     assert {"IDBFactory", "IDBKeyRange", "IDBDatabase", "IDBTransaction"}.issubset(output["idb_group"])
 
 
-def test_feature_runtime_loads_an_explicit_feature_once():
+async def test_feature_runtime_loads_an_explicit_feature_once():
     pytest.importorskip("pyv8c.pyv8", reason="the interface decorator reaches the native extension")
     from types import SimpleNamespace
 
@@ -105,7 +72,7 @@ def test_feature_runtime_loads_an_explicit_feature_once():
     assert runtime.implementations["LazyUnitInterface"] is LazyUnitInterface
 
 
-def test_feature_runtime_rejects_partial_exports_without_caching_them():
+async def test_feature_runtime_rejects_partial_exports_without_caching_them():
     from types import SimpleNamespace
 
     from pyv8c.features.runtime import FeatureCatalog, FeatureImplementation, FeatureRuntime, FeatureSpec
@@ -121,7 +88,7 @@ def test_feature_runtime_rejects_partial_exports_without_caching_them():
     assert not runtime.implementations
 
 
-def test_feature_runtime_reports_cycles_before_importing_a_module():
+async def test_feature_runtime_reports_cycles_before_importing_a_module():
     from pyv8c.features.runtime import FeatureCatalog, FeatureRuntime, FeatureSpec
 
     runtime = FeatureRuntime(
@@ -136,7 +103,7 @@ def test_feature_runtime_reports_cycles_before_importing_a_module():
         runtime.load("first")
 
 
-def test_lazy_value_store_caches_none_and_retries_failed_creation():
+async def test_lazy_value_store_caches_none_and_retries_failed_creation():
     from pyv8c.features.runtime import LazyValueStore
 
     class Values(LazyValueStore):

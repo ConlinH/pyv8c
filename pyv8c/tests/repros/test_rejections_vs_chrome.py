@@ -2,13 +2,13 @@ import json
 import pytest
 pytest.importorskip('pyv8c.pyv8')
 from harness import chrome_reference, ReferenceUnavailable
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture(scope='module')
-def reference():
+async def reference():
     try:
-        with chrome_reference() as reference:
+        async with chrome_reference() as reference:
             yield reference
     except ReferenceUnavailable as exc:
         pytest.skip(str(exc))
@@ -28,9 +28,9 @@ const p=Promise.reject(reason);'scheduled'
 
 
 @pytest.mark.parametrize('realm', ['window','frame','worker'])
-def test_rejection_event_tasks_shape_reason_and_order(reference, realm):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_rejection_event_tasks_shape_reason_and_order(reference, realm):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     script = CORE.replace('__PUBLISH__','__done=true')
     if realm == 'frame':
         source = CORE.replace('globalThis.__log=[]','globalThis.__log=parent.__log').replace('__PUBLISH__','parent.__done=true')
@@ -42,60 +42,60 @@ def test_rejection_event_tasks_shape_reason_and_order(reference, realm):
                   "worker.onmessage=e=>{__log=e.data;__done=true};'scheduled'")
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<iframe></iframe>')
-        page.wait_for_load_state()
-        chrome.set_content('<iframe></iframe>')
-        chrome.evaluate(script)
-        chrome.wait_for_function('__done === true')
+        (await page.set_content('<iframe></iframe>', wait_until="commit"))
+        (await page.wait_for_load_state())
+        (await chrome.set_content('<iframe></iframe>'))
+        (await chrome.evaluate(script))
+        (await chrome.wait_for_function('__done === true'))
         page.evaluate(script)
-        page.wait_for('__done === true',timeout=3)
-        assert page.evaluate('__log') == chrome.evaluate('__log')
+        (await page.wait_for('__done === true',timeout=3))
+        assert page.evaluate('__log') == (await chrome.evaluate('__log'))
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
-def test_handler_in_same_checkpoint_suppresses_notification(reference):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_handler_in_same_checkpoint_suppresses_notification(reference):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     script = """globalThis.log=[];globalThis.done=false;
       onunhandledrejection=e=>log.push(e.type);onrejectionhandled=e=>log.push(e.type);
       const p=Promise.reject('caught');queueMicrotask(()=>p.catch(()=>{}));
       setTimeout(()=>done=true,30);'scheduled' """
     try:
         page = browser.new_profile().new_page()
-        chrome.evaluate(script)
-        chrome.wait_for_function('done')
+        (await chrome.evaluate(script))
+        (await chrome.wait_for_function('done'))
         page.evaluate(script)
-        page.wait_for('done')
-        assert page.evaluate('log') == chrome.evaluate('log') == []
+        (await page.wait_for('done'))
+        assert page.evaluate('log') == (await chrome.evaluate('log')) == []
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
 @pytest.mark.parametrize('catch', ['e.promise.catch(()=>{})', 'queueMicrotask(()=>e.promise.catch(()=>{}))'])
-def test_catch_during_notification_does_not_get_a_handled_event(reference, catch):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_catch_during_notification_does_not_get_a_handled_event(reference, catch):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     script = """globalThis.log=[];globalThis.done=false;
       onunhandledrejection=e=>{log.push(e.type);e.preventDefault();__CATCH__;setTimeout(()=>done=true,20)};
       onrejectionhandled=e=>log.push(e.type);Promise.reject('caught');'queued' """.replace('__CATCH__',catch)
     try:
         page = browser.new_profile().new_page()
-        chrome.evaluate(script)
-        chrome.wait_for_function('done')
+        (await chrome.evaluate(script))
+        (await chrome.wait_for_function('done'))
         page.evaluate(script)
-        page.wait_for('done')
-        assert page.evaluate('log') == chrome.evaluate('log') == ['unhandledrejection']
+        (await page.wait_for('done'))
+        assert page.evaluate('log') == (await chrome.evaluate('log')) == ['unhandledrejection']
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
-def test_exception_in_rejection_listener_reports_error_and_keeps_dispatching(reference):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_exception_in_rejection_listener_reports_error_and_keeps_dispatching(reference):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     script = """globalThis.log=[];globalThis.done=false;
       onerror=()=>{log.push('error');return true};
       addEventListener('unhandledrejection',e=>{e.preventDefault();log.push('first');throw new Error('listener')});
@@ -103,19 +103,19 @@ def test_exception_in_rejection_listener_reports_error_and_keeps_dispatching(ref
       Promise.reject('rejected');'queued' """
     try:
         page = browser.new_profile().new_page()
-        chrome.evaluate(script)
-        chrome.wait_for_function('done')
+        (await chrome.evaluate(script))
+        (await chrome.wait_for_function('done'))
         page.evaluate(script)
-        page.wait_for('done')
-        assert page.evaluate('log') == chrome.evaluate('log') == ['first','error','second']
+        (await page.wait_for('done'))
+        assert page.evaluate('log') == (await chrome.evaluate('log')) == ['first','error','second']
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
 
 
-def test_foreign_realm_promise_notifies_its_creation_global(reference):
-    browser = Browser(real_network=False, stub_logging='off')
-    chrome = reference.browser.new_page()
+async def test_foreign_realm_promise_notifies_its_creation_global(reference):
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     script = """globalThis.log=[];globalThis.done=false;
       const reason={tag:'shared'};
       onunhandledrejection=e=>{e.preventDefault();log.push('parent')};
@@ -128,10 +128,10 @@ def test_foreign_realm_promise_notifies_its_creation_global(reference):
       reject(reason);setTimeout(()=>done=true,20);'queued' """
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<iframe></iframe>');page.wait_for_load_state()
-        chrome.set_content('<iframe></iframe>')
-        chrome.evaluate(script);chrome.wait_for_function('done')
-        page.evaluate(script);page.wait_for('done')
-        assert page.evaluate('log') == chrome.evaluate('log') == [['child',True,True,True,True,True,True]]
+        (await page.set_content('<iframe></iframe>', wait_until="commit"));(await page.wait_for_load_state())
+        (await chrome.set_content('<iframe></iframe>'))
+        (await chrome.evaluate(script));(await chrome.wait_for_function('done'))
+        page.evaluate(script);(await page.wait_for('done'))
+        assert page.evaluate('log') == (await chrome.evaluate('log')) == [['child',True,True,True,True,True,True]]
     finally:
-        chrome.close();browser.close()
+        (await chrome.close());(await browser.close())

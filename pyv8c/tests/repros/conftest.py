@@ -3,7 +3,7 @@ import pytest
 
 
 @pytest.fixture(scope="session", autouse=True)
-def corpus_engine_lifetime():
+async def corpus_engine_lifetime():
     yield
     from harness import close_engine
-    close_engine()
+    (await close_engine())

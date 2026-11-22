@@ -6,8 +6,8 @@ pytest.importorskip('pyv8c.pyv8')
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='Chrome Windows Arial metrics')
-def test_svg_parser_text_metrics_match_chrome_on_windows_arial(page):
-    page.set_content('''<svg width="600" height="400"><g>
+async def test_svg_parser_text_metrics_match_chrome_on_windows_arial(page):
+    await page.set_content('''<svg width="600" height="400"><g>
       <text x="10" y="200" style="font:150px Arial">H</text></g></svg>''', url='https://text.test/')
     assert page.evaluate('''(() => {
       const t=document.querySelector('text'), rect=r=>[r.x,r.y,r.width,r.height];
@@ -19,13 +19,13 @@ def test_svg_parser_text_metrics_match_chrome_on_windows_arial(page):
                 [10,64,108.328125,168], [10,118.328125]]
 
 
-def test_svg_char_extent_uses_a_local_face_when_the_profile_font_file_is_absent(page):
+async def test_svg_char_extent_uses_a_local_face_when_the_profile_font_file_is_absent(page):
     """A Windows catalog family with no file here must still measure.
 
     The packaged profile names Segoe UI. macOS has the record and not the file,
     so shaping falls back to one local face. The extent is that face's box.
     """
-    page.set_content(
+    await page.set_content(
         '<svg><text y="20" style="font: 16px \'Segoe UI\'">H</text></svg>',
         url='https://text.test/')
     extent = page.evaluate('''(() => {
@@ -36,8 +36,8 @@ def test_svg_char_extent_uses_a_local_face_when_the_profile_font_file_is_absent(
     assert extent[1] > 0
 
 
-def test_svg_text_invalid_character_throws_and_removed_text_has_no_layout(page):
-    page.set_content('<svg><text style="font:20px Arial">Hi</text></svg>',url='https://text.test/')
+async def test_svg_text_invalid_character_throws_and_removed_text_has_no_layout(page):
+    await page.set_content('<svg><text style="font:20px Arial">Hi</text></svg>',url='https://text.test/')
     assert page.evaluate('''(() => {
       const t=document.querySelector('text'); let error;
       try{t.getExtentOfChar(2)}catch(e){error=e.name}
@@ -46,8 +46,8 @@ def test_svg_text_invalid_character_throws_and_removed_text_has_no_layout(page):
     })()''') == ['IndexSizeError',True,0,0]
 
 
-def test_font_shorthand_cascades_into_svg_and_html_longhands(page):
-    page.set_content('''<style>.sample {font:italic 24px/30px Arial} .sample {font-size:30px}</style>
+async def test_font_shorthand_cascades_into_svg_and_html_longhands(page):
+    await page.set_content('''<style>.sample {font:italic 24px/30px Arial} .sample {font-size:30px}</style>
       <div class="sample">H</div><svg><text class="sample">H</text></svg>''',url='https://text.test/')
     assert page.evaluate('''[...document.querySelectorAll('.sample')].map(e=>{
       const s=getComputedStyle(e);return [s.fontSize,s.fontFamily,s.fontStyle,s.lineHeight];

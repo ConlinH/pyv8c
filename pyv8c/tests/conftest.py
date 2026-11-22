@@ -31,7 +31,8 @@ if os.environ.get("PYV8C_OFFLINE") == "1":
     # gives local runs, ``tools/check_policy.py`` and CI one identical rule.
     class _NoNativeExtension(importlib.abc.MetaPathFinder):
         def find_spec(self, fullname, path=None, target=None):
-            if fullname == "pyv8c.pyv8" or fullname.startswith("pyv8c.pyv8."):
+            if (fullname in ("pyv8c.pyv8", "pyv8c._native._native")
+                    or fullname.startswith("pyv8c.pyv8.")):
                 raise ModuleNotFoundError(
                     "pyv8c.pyv8 deliberately unavailable (PYV8C_OFFLINE)",
                     name=fullname,
@@ -69,58 +70,58 @@ def default_loader(url, request):
     return {"status": 200, "url": str(url), "body": "", "headers": {"content-type": "text/html"}}
 
 
-def make_browser(**options):
-    """Build a quiet, offline :class:`~pyv8c.Browser`.
+async def make_browser(**options):
+    """Build a quiet, offline :class:`~pyv8c.async_api.Browser`.
 
     ``resource_loader`` defaults to :func:`default_loader`; pass an explicit
     one to serve fixtures.  Unknown keywords are forwarded to ``Browser``.
     """
     require_pyv8()
-    from pyv8c import Browser
+    from pyv8c.async_api import Browser
 
     options = {**QUIET_BROWSER_OPTIONS, **options}
     options.setdefault("resource_loader", default_loader)
-    return Browser(**options)
+    return (await Browser(**options).__aenter__())
 
 
 @pytest.fixture
-def browser():
+async def browser():
     """A quiet offline Browser, closed on teardown."""
-    instance = make_browser()
+    instance = (await make_browser())
     try:
         yield instance
     finally:
-        instance.close()
+        (await instance.close())
 
 
 @pytest.fixture
-def page(browser):
+async def page(browser):
     """A fresh Page on ``about:blank``, closed before its Browser."""
     instance = browser.new_profile().new_page()
     try:
         yield instance
     finally:
-        instance.close()
+        (await instance.close())
 
 
 @pytest.fixture(scope="module")
-def shared_browser():
+async def shared_browser():
     """A quiet offline Browser shared by a module."""
-    instance = make_browser()
+    instance = (await make_browser())
     try:
         yield instance
     finally:
-        instance.close()
+        (await instance.close())
 
 
 @pytest.fixture(scope="module")
-def shared_page(shared_browser):
+async def shared_page(shared_browser):
     """One Page for a whole module: only for cases that never write to it."""
     instance = shared_browser.new_profile().new_page()
     try:
         yield instance
     finally:
-        instance.close()
+        (await instance.close())
 
 
 @pytest.fixture
@@ -167,3 +168,8 @@ def pytest_configure(config):
         target = Path(selected).resolve()
         idl.DEFAULT_IDL_PATH = target
         os.environ["PYV8C_TEST_IDL_PATH"] = str(target)
+
+
+def pytest_asyncio_loop_factories():
+    from pyv8c.foundation.event_loop import create_event_loop
+    return {"runtime": create_event_loop}

@@ -20,25 +20,21 @@
 不支持的 URL scheme 不会交给加载器。`chrome-extension:` 只处理环境档案中声明且匹配的资源；当前项目不包含扩展文件，返回的是占位内容并记录警告，不能将其视为真实扩展资源。
 
 ```python
-from pyv8c import Browser
+from pyv8c.async_api import Browser, run
 
-def load(url, request):
-    if url == "https://example.test/":
-        return {
-            "body": "<script src='/app.js'></script>",
-            "headers": {"content-type": "text/html; charset=utf-8"},
-        }
-    if url == "https://example.test/app.js":
-        return {"body": "globalThis.ready = true", "headers": {"content-type": "text/javascript"}}
-    raise RuntimeError(f"未提供本地资源：{url}")
+async def main():
 
-browser = Browser(real_network=False, resource_loader=load)
-try:
-    page = browser.new_profile().new_page()
-    page.goto("https://example.test/")
-    page.wait_for("ready === true", timeout=1)
-finally:
-    browser.close()
+    def load(url, request):
+        if url == 'https://example.test/':
+            return {'body': "<script src='/app.js'></script>", 'headers': {'content-type': 'text/html; charset=utf-8'}}
+        if url == 'https://example.test/app.js':
+            return {'body': 'globalThis.ready = true', 'headers': {'content-type': 'text/javascript'}}
+        raise RuntimeError(f'未提供本地资源：{url}')
+    async with Browser(real_network=False, resource_loader=load) as browser:
+        page = browser.new_profile().new_page()
+        await page.goto('https://example.test/')
+        await page.wait_for('ready === true', timeout=1)
+run(main())
 ```
 
 响应字典常用键为 `body`、`status`、`statusText`、`url` 和 `headers`。二进制放入字典的 `body`，不要先转换为文本表示。不同资源应返回对应 Content-Type；未知 fixture 请求明确失败，不能统一伪装为成功空页面。
@@ -68,13 +64,15 @@ def intercept(url, request):
 
 `threaded_loaders=False` 时，普通宿主回调可在页面 owner 上运行，阻塞会阻止该线程推进。`threaded_loaders=True` 使用 Browser 有界线程池；Worker 源加载、Fetch 与 importScripts 的宿主回调强制在线程池执行。池回调只处理输入和普通数据，不访问页面、Realm 或活 JS 句柄，不通过 `page.evaluate()` 反向等待 owner。
 
-LoadHandle 管理请求原子终态和传输迟绑定；ResourceOwnership 统一登记并接入 ResourceScope，回调先于句柄返回也必须释放一次。请求取消后可以允许无法中断的底层 Python 工作结束，但不能再跳转、写缓存或交付页面结果。
+LoadHandle 管理请求的原子终态和传输迟绑定。ResourceOwnership 将请求登记到 ResourceScope，并在终态释放登记。取消后，已运行的 Python 工作可以完成清理，后续跳转和页面结果交付停止。
 
 文档资源协调器使用类型化条目、token、导航代次和子文档身份维护加载屏障。iframe 传输完成后仍需等待有效子文档完成；移除、重插、导航或 srcdoc 替换后的旧回调不能释放新屏障或发送旧 load 事件。
 
 Worker 的 ResourceRequestSession 冻结资源配置及有效 origin。importScripts 阻塞 Worker 当前调用，等待普通传输结果，不等待父页面 owner，也不嵌套驱动事件循环。等待沿用当前操作剩余期限；终止或关闭唤醒等待，迟到结果不再执行脚本。
 
-实现集中于 `pyv8c/pyv8c/platform/resources/`：session 提供共用来源、安全策略及 Worker 普通数据请求，worker 管理 Worker 请求快照、等待和 networking 交付，fetcher 处理页面请求，callbacks 执行宿主回调，cache 存普通载荷，ownership/handles 管登记与终态，discovery/tracker/completion/documents 管文档资源，frames 管 iframe 生命周期。
+Window、导航和 Worker 使用同一个 `ResourceRequestSession`。它根据发起上下文推进缓存、预检和重定向，交付普通 Python 响应数据。`fetcher` 与 `worker` 分别在 Runtime 或 Worker 所属线程构造 Web Response。启用自定义 loader 或 interceptor 时，仍按配置在线程池或 Window 所属线程运行 Python 回调。
+
+`local.py` 负责协议校验和本地资源解析，`response.py` 负责响应转换。`fetcher.py` 和 `worker.py` 各自管理等待方式与结果回投，复用同一个 Web Response 构造函数。请求句柄在继续处理下一步前解绑已完成的传输。
 
 ## 来源、跳转与安全策略
 
@@ -86,9 +84,11 @@ Profile 内共享 Blob 注册不授予跨源读取权限。先撤销 Blob URL �
 
 扩展资源目前按环境 `extensions` 中的公开规则本地回答占位内容，并不执行真实扩展包或携带完整文件字节。
 
-## 磁盘缓存
+## 响应缓存
 
-只有 `cache=True` 且指定 `cache_dir` 才使用持久响应缓存。缓存属于 Profile 的资源组件，多个实例指定同一目录仍可能共享文件。
+只有 `cache=True` 且指定 `cache_dir` 才启用响应缓存。每个 Profile 先查自己的内存缓存，最多保留 256 条或约 16 MiB。磁盘读写在线程池执行。多个实例指定同一目录时可以共享磁盘文件。
+
+取消与缓存发布权在请求句柄上按先后顺序判定。取消先发生时，写入任务清理临时文件。写入任务先取得发布权时，在工作线程完成原子替换。关闭会异步等待这项工作清理完毕。
 
 GET/HEAD 在满足缓存条件时可写入。键包含方法、URL、模式、凭据、发起 origin 和规范化请求头；携带 Authorization、Cookie 或匹配 CookieJar 内容的请求绕过缓存。请求 no-store/reload/no-cache，及响应 no-store/no-cache/private、Set-Cookie、Vary: *、非成功状态等均不按普通可缓存响应处理。
 

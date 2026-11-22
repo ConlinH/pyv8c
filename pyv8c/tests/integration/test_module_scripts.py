@@ -1,8 +1,8 @@
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.fetch.response import Response
 
 
-def test_static_module_imports_execute_dependency_before_entry_and_block_dcl():
+async def test_static_module_imports_execute_dependency_before_entry_and_block_dcl():
     deferred = []
 
     def loader(url, request):
@@ -15,13 +15,13 @@ def test_static_module_imports_execute_dependency_before_entry_and_block_dcl():
             return Response("import { answer as value } from './dep.js'; window.__order.push('main:' + value);", {"url": url, "content-type": "text/javascript"})
         return Response("", {"url": url})
 
-    browser = Browser(resource_loader=loader)
+    browser = (await Browser(resource_loader=loader).__aenter__())
     page = browser.new_profile().new_page()
     page.evaluate("window.__order=[]; window.addEventListener('DOMContentLoaded', () => __order.push('dcl'))")
-    page.set_content("<body><script type='module' src='/main.js'></script><div id='after'></div></body>", url="http://example.test/")
+    (await page.set_content("<body><script type='module' src='/main.js'></script><div id='after'></div></body>", url="http://example.test/", wait_until="commit"))
     # Module fetch/execution is deferred; parsing itself continues.
     assert page.evaluate("document.querySelector('#after') !== null")
     assert deferred == [[]]
-    page.run_until_idle()
+    (await page.run_until_idle())
     assert page.evaluate("__order") == ["dep", "main:41", "dcl"]
-    browser.close()
+    (await browser.close())

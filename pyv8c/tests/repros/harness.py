@@ -12,6 +12,8 @@ engine for a human, so only the class is compared.
 """
 from __future__ import annotations
 
+import asyncio
+
 import contextlib
 import dataclasses
 import json
@@ -24,11 +26,17 @@ from typing import Any
 from corpus import Repro
 
 REFERENCE_ENV = "PYV8C_CHROME"
+BASELINE_ENV = "PYV8C_CHROME_BASELINE"
 
 CHROME_PATHS = (
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 )
 
 #: pyv8 spells an error ``PageTypeError``, Chrome writes ``TypeError: boom``; the class
@@ -93,14 +101,15 @@ def normalize(value):
     return value
 
 
-def chrome_executable():
+def chrome_executable(*, baseline=False):
     """``(path, "")`` for the Chrome to compare against, or ``(None, reason)``."""
-    override = os.environ.get(REFERENCE_ENV)
+    variable = BASELINE_ENV if baseline and os.environ.get(BASELINE_ENV) else REFERENCE_ENV
+    override = os.environ.get(variable)
     if override:
         path = Path(override)
         if path.exists():
             return path, ""
-        return None, f"{REFERENCE_ENV}={override} does not exist"
+        return None, f"{variable}={override} does not exist"
 
     for candidate in CHROME_PATHS:
         path = Path(os.path.expandvars(candidate))
@@ -117,33 +126,33 @@ def chrome_executable():
 _ENGINE = None
 
 
-def _engine():
+async def _engine():
     global _ENGINE
     if _ENGINE is None:
-        from pyv8c import Browser
+        from pyv8c.async_api import Browser
 
-        _ENGINE = Browser(real_network=False, stub_logging="off")
+        _ENGINE = (await Browser(real_network=False, stub_logging="off").__aenter__())
     return _ENGINE
 
 
-def close_engine():
+async def close_engine():
     """Release the run's engine and permit another run in this process."""
     global _ENGINE
     engine, _ENGINE = _ENGINE, None
     if engine is not None:
-        engine.close()
+        await engine.close()
 
 
-def observe_here(case: Repro) -> Observation:
+async def observe_here(case: Repro, *, environment=None) -> Observation:
     """What this environment observes for a case."""
-    context = _engine().new_profile()
+    context = (await _engine()).new_profile()
     try:
-        page = context.new_page()
-        page.set_content(case.html, url=case.url)
-        page.wait_for_load_state("load")
+        page = context.new_page(environment=environment)
+        (await page.set_content(case.html, url=case.url, wait_until="commit"))
+        (await page.wait_for_load_state("load"))
         if case.settle:
-            time.sleep(case.settle)
-        page.run_until_idle(timeout=1)
+            (await asyncio.sleep(case.settle))
+        (await page.run_until_idle(timeout=1))
         try:
             return Observation(value=normalize(page.evaluate(case.script)))
         except BaseException as error:  # a script that throws is an observation too
@@ -151,7 +160,20 @@ def observe_here(case: Repro) -> Observation:
                 error=error_name(str(error), error) or type(error).__name__, detail=str(error)
             )
     finally:
-        context.close()
+        (await context.close())
+
+
+async def client_hint_environment(page):
+    """Inputs for comparing requests and UAData against this browser profile."""
+    return await page.evaluate("""() => {
+        const {brands, mobile, platform} = navigator.userAgentData;
+        return {
+            user_agent: navigator.userAgent.replace('HeadlessChrome', 'Chrome'),
+            'client_hints.brands': brands,
+            'client_hints.mobile': mobile,
+            'client_hints.platform': platform
+        };
+    }""")
 
 
 class ChromeReference:
@@ -167,53 +189,57 @@ class ChromeReference:
         """The live Playwright browser, for a test that drives it itself."""
         return self._browser
 
-    def observe(self, case: Repro) -> Observation:
-        page = self._browser.new_page()
+    async def observe(self, case: Repro, *, environment=None) -> Observation:
+        page = await self._browser.new_page()
         try:
-            page.route(
+            await page.route(
                 "**/*",
                 lambda route: route.fulfill(
                     status=200, content_type="text/html", body=case.html
                 ),
             )
-            page.goto(case.url)
+            (await page.goto(case.url))
+            if environment is not None:
+                environment.update(await client_hint_environment(page))
             if case.settle:
                 # Both sides allow the case's declared settling time after load.
-                page.wait_for_timeout(int(case.settle * 1000))
+                await page.wait_for_timeout(int(case.settle * 1000))
             try:
-                return Observation(value=normalize(page.evaluate(case.script)))
+                return Observation(value=normalize(await page.evaluate(case.script)))
             except BaseException as error:
                 return Observation(
                     error=error_name(str(error), error) or type(error).__name__, detail=str(error)
                 )
         finally:
-            page.close()
+            await page.close()
 
 
-@contextlib.contextmanager
-def chrome_reference():
+@contextlib.asynccontextmanager
+async def chrome_reference(*, launch_args=(), baseline=False):
     """The locally installed Chrome, or :class:`ReferenceUnavailable` saying why not."""
-    executable, reason = chrome_executable()
+    executable, reason = chrome_executable(baseline=baseline)
     if executable is None:
         raise ReferenceUnavailable(reason)
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
     except ImportError as error:
         raise ReferenceUnavailable(
             f"playwright is not installed ({error}); pip install playwright"
         ) from error
 
-    # Playwright's sync dispatcher is a greenlet owned by this thread.  Both
-    # browser.close and stop must run here, including failed launches.
-    with sync_playwright() as playwright:
+    # Keep the async driver and browser on their creating event loop,
+    # including failed launches and cleanup.
+    async with async_playwright() as playwright:
         try:
-            browser = playwright.chromium.launch(headless=True, executable_path=str(executable))
+            browser = await playwright.chromium.launch(
+                headless=True, executable_path=str(executable), args=list(launch_args)
+            )
         except Exception as error:
             raise ReferenceUnavailable(f"cannot start {executable}: {error}") from error
         try:
             yield ChromeReference(browser, executable, browser.version)
         finally:
-            browser.close()
+            (await browser.close())
 
 
 

@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8", reason="the comparison runs in the native environment")
 
-from harness import ReferenceUnavailable, chrome_reference
+from harness import ReferenceUnavailable, chrome_reference, client_hint_environment
 
 from _shared_web_pages import PAGE, PNG
 
@@ -95,17 +95,17 @@ def _normalized(headers):
 
 
 @pytest.fixture(scope="module")
-def reference():
+async def reference():
     """One local Chrome for the module, or a skip saying what is missing."""
     try:
-        with chrome_reference() as session:
+        async with chrome_reference(baseline=True) as session:
             yield session
     except ReferenceUnavailable as unavailable:
         pytest.skip(str(unavailable))
 
 
 @pytest.fixture(scope="module")
-def compared(reference):
+async def compared(reference):
     """The same page and script in both browsers; both sides' servers are here."""
     servers = []
     for _ in range(2):
@@ -119,28 +119,30 @@ def compared(reference):
     try:
         with LOCK:
             RECORDS.clear()
-        chrome_page = reference.browser.new_page()
+        chrome_page = (await reference.browser.new_page())
         try:
-            chrome_page.goto(url, wait_until="load")
-            chrome_page.evaluate(script)
-            chrome_page.wait_for_function("window.__requestsDone === true")
+            (await chrome_page.goto(url, wait_until="load"))
+            environment = await client_hint_environment(chrome_page)
+            (await chrome_page.evaluate(script))
+            (await chrome_page.wait_for_function("window.__requestsDone === true"))
         finally:
-            chrome_page.close()
+            (await chrome_page.close())
         with LOCK:
             chrome = _collect(list(RECORDS))
 
-        from pyv8c import Browser
+        from pyv8c.async_api import Browser
 
         with LOCK:
             RECORDS.clear()
-        browser = Browser(real_network=True, stub_logging="off")
+        browser = (await Browser(real_network=True, stub_logging="off",
+                                 environment=environment).__aenter__())
         try:
             page = browser.new_profile().new_page()
-            page.goto(url, wait_until="load")
+            (await page.goto(url, wait_until="load"))
             page.evaluate(script)
-            page.wait_for("window.__requestsDone === true", timeout=5)
+            (await page.wait_for("window.__requestsDone === true", timeout=5))
         finally:
-            browser.close()
+            (await browser.close())
         with LOCK:
             mine = _collect(list(RECORDS))
         yield {"chrome": chrome, "pyv8c": mine}
@@ -150,14 +152,14 @@ def compared(reference):
             server.server_close()
 
 
-def test_every_request_the_browser_makes_is_made_here(compared):
+async def test_every_request_the_browser_makes_is_made_here(compared):
     missing = sorted(set(compared["chrome"]) - set(compared["pyv8c"]))
     assert missing == [("GET", "/favicon.ico")], (
         "only the favicon may be absent; Chrome sent " + repr(missing)
     )
 
 
-def test_each_request_carries_the_same_headers_with_the_same_values(compared):
+async def test_each_request_carries_the_same_headers_with_the_same_values(compared):
     for key, reference_headers in sorted(compared["chrome"].items()):
         if key not in compared["pyv8c"]:
             continue
@@ -168,7 +170,7 @@ def test_each_request_carries_the_same_headers_with_the_same_values(compared):
             assert ours[name] == value, f"{key}: {name}"
 
 
-def test_the_order_agrees_once_the_transports_own_are_removed(compared):
+async def test_the_order_agrees_once_the_transports_own_are_removed(compared):
     for key, reference_headers in sorted(compared["chrome"].items()):
         if key not in compared["pyv8c"]:
             continue
@@ -177,7 +179,7 @@ def test_the_order_agrees_once_the_transports_own_are_removed(compared):
         assert ours == theirs, f"{key}: order differs"
 
 
-def test_the_transport_placed_headers_are_still_sent(compared):
+async def test_the_transport_placed_headers_are_still_sent(compared):
     """``Host``, ``Connection`` and ``Content-Length`` may move, not disappear."""
     for key, reference_headers in sorted(compared["chrome"].items()):
         if key not in compared["pyv8c"]:

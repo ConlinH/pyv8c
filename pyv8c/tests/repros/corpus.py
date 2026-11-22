@@ -30,7 +30,7 @@ def page(head="", body=""):
 #: A form holding one of everything the collection rules tell apart: an image button
 #: (submittable, not listed), controls outside it that name it with ``form=``, and an
 #: element whose tag is unmodelled here but is still a listed element in both engines.
-FORM_PAGE = page(body="""
+FORM_PAGE = (page(body="""
     <form id=f>
       <input id=one name=a>
       <input type=image id=image name=img>
@@ -43,12 +43,12 @@ FORM_PAGE = page(body="""
     </form>
     <input id=outside form=f>
     <input id=other>
-""")
+"""))
 
 #: A document with an empty body.  The cases that put nodes in the tree need one;
 #: a document built from no markup at all is a different question, and it is asked
 #: separately.
-EMPTY_PAGE = page(body="")
+EMPTY_PAGE = (page(body=""))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,27 +66,43 @@ class Repro:
     settle: float = 0.0
     #: An optional dependency; a runner that cannot import it skips the case.
     requires: str = ""
+    match_client_hints: bool = False
+    comparison_script: str = ""
+    baseline_reference: bool = False
+    software_rendering: bool = False
 
+
+WEBGL_EXTENSIONS = """((type, exactCount) => {
+  const gl = document.createElement('canvas').getContext(type);
+  const names = gl.getSupportedExtensions();
+  const missing = names.filter((name) => gl.getExtension(name) === null);
+  const inventory = exactCount ? names.length :
+      names.length > 0 && new Set(names).size === names.length && missing.length === 0;
+  if (type === 'webgl') return [inventory, missing];
+  return [inventory, names.includes('EXT_color_buffer_float'),
+          names.includes('OES_vertex_array_object'),
+          gl.getExtension('OES_vertex_array_object')];
+})"""
 
 CASES = (
     Repro(
         name="title_collapses_whitespace",
         note="The IDL attribute collapses; the element keeps what was written.",
-        html=page(head="<title>  Live   Page </title>"),
+        html=(page(head="<title>  Live   Page </title>")),
         script="document.title",
         expected="Live Page",
     ),
     Repro(
         name="title_element_keeps_raw_text",
-        html=page(head="<title>  Live   Page </title>"),
+        html=(page(head="<title>  Live   Page </title>")),
         script="document.querySelector('title').textContent",
         expected="  Live   Page ",
     ),
     Repro(
         name="get_elements_by_name_is_live",
         note="The list follows the tree; querySelectorAll does not.",
-        html=page(body="<form name=login><input name=user><input name=user></form>"
-                       "<p name=user></p>"),
+        html=(page(body="<form name=login><input name=user><input name=user></form>"
+                       "<p name=user></p>")),
         script="""
             (() => {
               const list = document.getElementsByName('user');
@@ -100,14 +116,14 @@ CASES = (
     ),
     Repro(
         name="get_elements_by_name_keeps_document_order",
-        html=page(body="<form name=login><input name=user><input name=user></form>"
-                       "<p name=user></p>"),
+        html=(page(body="<form name=login><input name=user><input name=user></form>"
+                       "<p name=user></p>")),
         script="Array.from(document.getElementsByName('user'), node => node.tagName)",
         expected=["INPUT", "INPUT", "P"],
     ),
     Repro(
         name="static_and_live_collections_differ",
-        html=page(body="<div id=one></div>"),
+        html=(page(body="<div id=one></div>")),
         script="""
             (() => {
               const static_list = document.querySelectorAll('div');
@@ -121,7 +137,7 @@ CASES = (
     ),
     Repro(
         name="anchor_href_resolves_against_the_document",
-        html=page(body="<a id=link href=\"/dir/target?q=1#frag\">link</a>"),
+        html=(page(body="<a id=link href=\"/dir/target?q=1#frag\">link</a>")),
         script="""
             (() => {
               const anchor = document.getElementById('link');
@@ -137,7 +153,7 @@ CASES = (
         note="Setting .value clears every option first, then selects the first match --"
         " so a value that matches nothing, 'b' against an option worth 'B', leaves the"
         " select with no selection at all instead of keeping the previous one.",
-        html=page(body="<select><option value=a>A</option><option>B</option></select>"),
+        html=(page(body="<select><option value=a>A</option><option>B</option></select>")),
         script="""
             (() => {
               const options = document.querySelectorAll('option');
@@ -150,7 +166,7 @@ CASES = (
     Repro(
         name="a_select_exposes_its_options_collection",
         note="The collection is the same object every read, and it is live.",
-        html=page(body="<select><option value=a>A</option><option value=b>B</option></select>"),
+        html=(page(body="<select><option value=a>A</option><option value=b>B</option></select>")),
         script="""
             (() => {
               const select = document.querySelector('select');
@@ -167,7 +183,7 @@ CASES = (
     ),
     Repro(
         name="a_select_reports_its_own_value_and_index",
-        html=page(body="<select><option value=a>A</option></select>"),
+        html=(page(body="<select><option value=a>A</option></select>")),
         script="""
             (() => {
               const select = document.querySelector('select');
@@ -180,8 +196,8 @@ CASES = (
     Repro(
         name="selected_index_moves_the_selection",
         note="A position outside the list clears the selection rather than clamping it.",
-        html=page(body="<select><option value=a>A</option><option value=b>B</option>"
-                       "<option value=c>C</option></select>"),
+        html=(page(body="<select><option value=a>A</option><option value=b>B</option>"
+                       "<option value=c>C</option></select>")),
         script="""
             (() => {
               const select = document.querySelector('select');
@@ -197,7 +213,7 @@ CASES = (
     ),
     Repro(
         name="form_controls_are_in_document_order",
-        html=page(body="<form><input name=a><input name=b><button name=c></button></form>"),
+        html=(page(body="<form><input name=a><input name=b><button name=c></button></form>")),
         script="""
             (() => {
               const controls = document.forms[0].querySelectorAll('input, button');
@@ -273,18 +289,18 @@ CASES = (
         name="a_control_belongs_to_the_form_its_attribute_names",
         note="form= wins over the ancestor: naming a form that is not there leaves the"
         " control owned by nobody rather than by the form it sits in.",
-        html=page(body="<form id=first><input id=inside form=nosuch><input id=plain>"
-                       "<input id=moved form=second></form><form id=second></form>"),
+        html=(page(body="<form id=first><input id=inside form=nosuch><input id=plain>"
+                       "<input id=moved form=second></form><form id=second></form>")),
         script="[Array.from(document.forms[0].elements, element => element.id),"
                " Array.from(document.forms[1].elements, element => element.id)]",
         expected=[["plain"], ["moved"]],
     ),
     Repro(
         name="computed_style_follows_the_cascade",
-        html=page(
+        html=(page(
             head="<style>div { font-size: 20px } #sized { width: 40px; display: block }</style>",
             body="<div><span id=sized>x</span></div>",
-        ),
+        )),
         script="""
             (() => {
               const style = getComputedStyle(document.getElementById('sized'));
@@ -295,7 +311,7 @@ CASES = (
     ),
     Repro(
         name="innerhtml_round_trip",
-        html=page(body="<div id=host><b>x</b></div>"),
+        html=(page(body="<div id=host><b>x</b></div>")),
         script="""
             (() => {
               const host = document.getElementById('host');
@@ -359,7 +375,7 @@ CASES = (
     ),
     Repro(
         name="instanceof_reaches_the_interfaces",
-        html=page(body="<p id=para>x</p>"),
+        html=(page(body="<p id=para>x</p>")),
         script="[document instanceof Document, window instanceof Window,"
                " document.body instanceof HTMLElement, document.body instanceof Node]",
         expected=[True, True, True, True],
@@ -998,7 +1014,7 @@ CASES = (
         name="a_label_element_and_its_html_for",
         note="<label> has its own interface, its htmlFor reflects the attribute, and "
              "its control resolves the element it labels.",
-        html=page(body="<label for=f>L</label><input id=f>"),
+        html=(page(body="<label for=f>L</label><input id=f>")),
         script="(() => { const label = document.querySelector('label');"
                " return [label.constructor.name, typeof label.htmlFor, label.htmlFor,"
                "         label.control === document.getElementById('f'),"
@@ -1010,8 +1026,8 @@ CASES = (
         note="Excluded: in a standards-mode document the box model measures a control "
              "from its attributes alone, so the user-agent sheet's border, padding and "
              "margins are not part of the box.",
-        html="<!DOCTYPE html>" + page(
-            body='<input id=i type=text style="margin:0;width:120px;height:20px">'),
+        html="<!DOCTYPE html>" + (page(
+            body='<input id=i type=text style="margin:0;width:120px;height:20px">')),
         script="""(() => { const r = document.getElementById('i').getBoundingClientRect();
                    return [r.width, r.height]; })()""",
         expected=[120, 20],
@@ -1395,12 +1411,12 @@ CASES = (
         name="computed_style_inherits_from_a_stylesheet_rule",
         note="Both children read the rule's colour, and the one that declares its own "
              "spacing keeps it.",
-        html=page(body="""
+        html=(page(body="""
             <style>.outer { color: rgb(4, 5, 6); font-weight: 700; }
                    .inner { letter-spacing: 3px; }</style>
             <div class="outer"><span class="inner">t</span></div>
             <div class="outer"><span>t</span></div>
-        """),
+        """)),
         script="""
             (() => {
               const inner = document.querySelector('span.inner');
@@ -1434,7 +1450,7 @@ CASES = (
         name="the_navigation_api_reports_the_current_entry",
         note="A page that has not moved has one entry -- the current one -- nothing"
              " behind or ahead of it, and no transition.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               const current = navigation.currentEntry;
@@ -1455,7 +1471,7 @@ CASES = (
     Repro(
         name="trusted_types_wraps_what_a_policy_returns",
         note="A policy calls the page's own callback and wraps the string it returns.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               const policy = trustedTypes.createPolicy('repro', {
@@ -1480,7 +1496,7 @@ CASES = (
         name="trusted_types_answers_nothing_about_attribute_types",
         note="Excluded: the spec's attribute and property type tables are not modelled,"
              " so the queries answer nothing.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               return [trustedTypes.getAttributeType('div', 'onclick'),
@@ -1497,7 +1513,7 @@ CASES = (
         note="A drawn pixel comes back as its own RGBA bytes, the array is a real"
              " Uint8ClampedArray, and outside the canvas pixels are transparent black.",
         requires="pillow",
-        html=page(body='<canvas id="c" width="4" height="2"></canvas>'),
+        html=(page(body='<canvas id="c" width="4" height="2"></canvas>')),
         script="""
             (() => {
               const canvas = document.getElementById('c');
@@ -1517,7 +1533,7 @@ CASES = (
     Repro(
         name="window_accessories_report_their_idle_state",
         note="Each accessory object is present and says nothing is happening.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               return [external.constructor.name, typeof external.AddSearchProvider,
@@ -1535,7 +1551,7 @@ CASES = (
     Repro(
         name="speech_synthesis_and_the_scheduler_start_idle",
         note="Nothing is spoken, and scheduling hands back a promise.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               return [speechSynthesis.pending, speechSynthesis.speaking,
@@ -1552,7 +1568,7 @@ CASES = (
         name="a_document_with_no_referrer_reads_empty",
         note="A navigation nothing linked to has an empty referrer, and reading it as a"
              " string is what a script does.",
-        html=page(body=""),
+        html=(page(body="")),
         script="[typeof document.referrer, document.referrer, document.referrer.length]",
         expected=["string", "", 0],
     ),
@@ -1560,7 +1576,7 @@ CASES = (
         name="the_page_reports_its_sheets_orientation_and_timings",
         note="The sheet list counts what the page wrote, the screen's orientation follows"
              " its dimensions, and the deprecated timing objects are still there.",
-        html=page(head="<style>.a{color:red}</style>", body="<div class=a>x</div>"),
+        html=(page(head="<style>.a{color:red}</style>", body="<div class=a>x</div>")),
         script="""(() => {
             return [document.styleSheets.length, typeof document.styleSheets,
                     screen.orientation.type, screen.orientation.angle,
@@ -1577,7 +1593,7 @@ CASES = (
         name="a_media_element_reports_its_idle_state",
         note="Nothing decodes here, so an audio element reports the state a fresh one"
              " has, and canPlayType answers the types Chrome answers.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               const audio = document.createElement('audio');
@@ -1606,7 +1622,7 @@ CASES = (
         name="can_play_type_reads_the_container_and_its_codecs",
         note="Chrome answers for the container and the codecs it carries: a codec it "
              "does not play is an empty string, and a family with no profile a maybe.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const audio = document.createElement('audio');
             const video = document.createElement('video');
@@ -1664,7 +1680,7 @@ CASES = (
         name="a_link_reports_the_as_it_was_given",
         note="as reflects the attribute limited to known values: an unknown one is"
              " stored and reads back empty.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const link = document.createElement('link');
             const set = (value) => { link.as = value;
@@ -1678,7 +1694,7 @@ CASES = (
         name="document_open_empties_the_document_and_returns_it",
         note="open() drops what the document held and hands the document back, so the"
              " writes that follow build a new one.",
-        html=page(body="<p id=old>old</p>"),
+        html=(page(body="<p id=old>old</p>")),
         script="""(() => {
             const before = [document.readyState, document.querySelectorAll('*').length];
             const returned = document.open() === document;
@@ -1776,7 +1792,7 @@ CASES = (
     Repro(
         name="a_document_location_is_the_windows_location",
         note="One Location per window, from an own accessor, not the prototype.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const own = Object.getOwnPropertyDescriptor(document, 'location');
             return [document.location === window.location, document.location.href,
@@ -1792,7 +1808,7 @@ CASES = (
     Repro(
         name="a_document_with_no_browsing_context_has_neither_location_nor_view",
         note="A document a script built has no window, so both read null.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const made = document.implementation.createHTMLDocument('t');
             return [String(made.location), String(made.defaultView)];
@@ -1802,7 +1818,7 @@ CASES = (
     Repro(
         name="assigning_location_on_that_document_throws",
         note="The assignment has no window to forward to.",
-        html=page(body=""),
+        html=(page(body="")),
         script="(() => { document.implementation.createHTMLDocument('t').location = '/x'; })()",
         expect_error="TypeError",
     ),
@@ -1810,10 +1826,10 @@ CASES = (
         name="a_sandbox_blocks_scripts_it_does_not_grant",
         note="Without allow-scripts the frame's own script never runs, while the "
              "element and its text stay in the document.",
-        html=page(head="<script>window.__ran = 'no';</script>",
+        html=(page(head="<script>window.__ran = 'no';</script>",
                   body='<iframe id="f" sandbox="allow-same-origin" srcdoc='
                        '"&lt;script&gt;parent.__ran = &quot;yes&quot;;&lt;/script&gt;">'
-                       '</iframe>'),
+                       '</iframe>')),
         script="""(() => {
             const frame = document.getElementById('f');
             return [window.__ran,
@@ -1824,10 +1840,10 @@ CASES = (
     Repro(
         name="a_sandbox_that_grants_scripts_runs_them",
         note="The same frame with allow-scripts runs the script it carries.",
-        html=page(head="<script>window.__ran = 'no';</script>",
+        html=(page(head="<script>window.__ran = 'no';</script>",
                   body='<iframe id="f" sandbox="allow-scripts allow-same-origin" srcdoc='
                        '"&lt;script&gt;parent.__ran = &quot;yes&quot;;&lt;/script&gt;">'
-                       '</iframe>'),
+                       '</iframe>')),
         script="""(() => {
             const frame = document.getElementById('f');
             return [window.__ran,
@@ -1837,10 +1853,11 @@ CASES = (
     ),
     Repro(
         name="the_client_hints_report_the_browser_shape",
+        match_client_hints=True,
         note="Brands and their order follow the captured browser profile; the frozen array "
              "and the object's identity are checked independently of version numbers.",
         url="https://repro.test/dir/page",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const data = navigator.userAgentData;
             const brands = data.brands;
@@ -1863,7 +1880,7 @@ CASES = (
         note="Both come from the same build: the hint's Chromium version is the "
              "one the user agent string names.",
         url="https://repro.test/dir/page",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const version = navigator.userAgent.match(/Chrome\\/(\\d+)/)[1];
             const brands = navigator.userAgentData.brands;
@@ -1877,7 +1894,7 @@ CASES = (
         name="the_client_hints_are_hidden_outside_a_secure_context",
         note="Chrome exposes no userAgentData on an insecure origin.",
         url="http://repro.test/dir/page",
-        html=page(body=""),
+        html=(page(body="")),
         script="[typeof navigator.userAgentData, isSecureContext]",
         expected=["undefined", False],
     ),
@@ -1887,7 +1904,7 @@ CASES = (
              "document loads: the fields are null, the interval is its own, and only the "
              "absolute orientation type says so.",
         url="https://repro.test/dir/page",
-        html=page(head="""<script>
+        html=(page(head="""<script>
             window.__motion = [];
             const note = (e) => window.__motion.push([
                 e.type,
@@ -1901,7 +1918,7 @@ CASES = (
                 'absolute' in e ? e.absolute : null]);
             for (const type of ['devicemotion', 'deviceorientation', 'deviceorientationabsolute'])
                 addEventListener(type, note);
-        </script>"""),
+        </script>""")),
         script="""(() => {
             const seen = {};
             for (const entry of window.__motion) seen[entry[0]] = entry.slice(1);
@@ -1920,7 +1937,7 @@ CASES = (
         name="dom_exception_length_counts_only_required_arguments",
         note="DOMException takes two optional arguments, so its constructor length is 0 "
              "while the legacy code still answers for the name.",
-        html=page(body=""),
+        html=(page(body="")),
         script="[DOMException.length, new DOMException('bad', 'InvalidStateError').code,"
                " new DOMException('bad', 'InvalidStateError').name]",
         expected=[0, 11, "InvalidStateError"],
@@ -1930,7 +1947,7 @@ CASES = (
         note="Chrome exposes no device-motion interface on an insecure origin: the names "
              "are absent, not merely silent.",
         url="http://repro.test/dir/page",
-        html=page(body=""),
+        html=(page(body="")),
         script="[typeof DeviceMotionEvent, typeof DeviceMotionEventAcceleration,"
                " typeof DeviceMotionEventRotationRate, typeof DeviceOrientationEvent,"
                " isSecureContext]",
@@ -1941,7 +1958,7 @@ CASES = (
         note="Chrome counts performance.now() from the document's own navigation, so the "
              "epoch origin plus the offset is still today and the offset starts small.",
         url="https://repro.test/dir/page",
-        html=page(body=""),
+        html=(page(body="")),
         script="[Math.abs(performance.timeOrigin + performance.now() - Date.now()) < 50,"
                " Math.round(performance.now()) < 1000,"
                " Math.abs(performance.timing.navigationStart - performance.timeOrigin) < 50]",
@@ -1952,12 +1969,12 @@ CASES = (
         note="Chrome reports pageshow as bubbling and follows it with one pagereveal, "
              "both fired at the window once the document has loaded.",
         url="https://repro.test/dir/page",
-        html=page(head="""<script>
+        html=(page(head="""<script>
             window.__seen = [];
             const note = (e) => window.__seen.push([e.type, e.bubbles,
                 e.constructor && e.constructor.name]);
             for (const name of ['pageshow', 'pagereveal']) addEventListener(name, note);
-        </script>"""),
+        </script>""")),
         script="window.__seen",
         settle=0.3,
         expected=[["pageshow", True, "PageTransitionEvent"],
@@ -1968,12 +1985,12 @@ CASES = (
         note="Nothing here decodes, and Chrome ends bytes it cannot use the same way: "
              "loadstart, progress, suspend, error, and never a load.",
         url="https://repro.test/dir/page",
-        html=page(head="<script>window.__media = [];</script>",
+        html=(page(head="<script>window.__media = [];</script>",
                   body='<video id="v" src="/movie.mp4"></video><script>'
                        'const video = document.querySelector("video");'
                        'for (const name of ["loadstart", "progress", "suspend", "error",'
                        ' "load", "loadend"])'
-                       ' video.addEventListener(name, (e) => __media.push(e.type));</script>'),
+                       ' video.addEventListener(name, (e) => __media.push(e.type));</script>')),
         script="window.__media",
         settle=0.5,
         expected=["loadstart", "progress", "suspend", "error"],
@@ -1982,7 +1999,7 @@ CASES = (
         name="an_inserted_frame_has_its_window_right_away",
         note="A frame with no document yet hands out no window; the insertion gives "
              "it one in the same turn, and every read returns that same object.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const frame = document.createElement('iframe');
             const detached = frame.contentWindow;
@@ -1998,7 +2015,7 @@ CASES = (
           name=f"an_inline_inserted_{label}_frame_starts_with_about_blank",
           note="Insertion exposes the child realm immediately; the requested document "
                "has not committed while the parent's inline script is running.",
-          html=page(body="""<script>
+          html=(page(body="""<script>
               const frame = document.createElement('iframe');
               __SETUP__;
               const detached = frame.contentWindow === null;
@@ -2010,7 +2027,7 @@ CASES = (
                   doc.defaultView === child, child.parent === window,
                   Object.getPrototypeOf(child) === child.Window.prototype,
                   child.Object !== Object, child.document.getElementById('inside') === null];
-          </script>""".replace("__SETUP__", setup)),
+          </script>""".replace("__SETUP__", setup))),
           script="window.__initialFrame",
           expected=[True, True, "about:blank", "complete", True, "BackCompat",
                     True, True, True, True, True, True, True, True, True],
@@ -2024,7 +2041,7 @@ CASES = (
           name="initial_blank_frame_writes_survive_its_load_event",
           note="An initial about:blank load does not replace the document the inserting "
                "script wrote; the child supplies its own native Window and intrinsics.",
-          html=page(body="""<script>
+          html=(page(body="""<script>
               const frame = document.createElement('iframe');
               frame.src = 'about:blank';
               window.__blankLoads = 0;
@@ -2033,7 +2050,7 @@ CASES = (
               window.__blankWindow = frame.contentWindow;
               window.__blankDocument = frame.contentDocument;
               __blankDocument.body.innerHTML = '<p id=inside>kept</p>';
-          </script>"""),
+          </script>""")),
           script="""[__blankLoads, __blankWindow === document.querySelector('iframe').contentWindow,
               __blankDocument === __blankWindow.document,
               __blankWindow.document.body.textContent, __blankDocument.readyState]""",
@@ -2060,14 +2077,14 @@ CASES = (
           name="srcdoc_commits_after_the_inserting_script",
           note="A srcdoc script runs after the insertion returns, with a stable "
                "WindowProxy and a different document from the initial about:blank.",
-          html=page(body="""<script>
+          html=(page(body="""<script>
               const frame = document.createElement('iframe');
               frame.srcdoc = '<body><script>parent.__srcdocRanAfter = parent.__insertionReturned === true<\\/script>';
               document.body.appendChild(frame);
               window.__srcdocWindow = frame.contentWindow;
               window.__initialDocument = frame.contentDocument;
               window.__insertionReturned = true;
-          </script>"""),
+          </script>""")),
           script="""[__srcdocRanAfter, __srcdocWindow === document.querySelector('iframe').contentWindow,
               __initialDocument !== __srcdocWindow.document, __srcdocWindow.document.URL]""",
           settle=0.1,
@@ -2095,7 +2112,7 @@ CASES = (
         name="a_child_window_keeps_its_member_names",
         note="The same-origin child is a proxy here, so what it hands back has to be the "
              "child's own member: a Python callback reaches the page named fn_<member>.",
-        html=page(body='<iframe name="f"></iframe>'),
+        html=(page(body='<iframe name="f"></iframe>')),
         script="""(() => {
             const frame = document.querySelector('iframe');
             const child = frame.contentWindow;
@@ -2141,6 +2158,7 @@ CASES = (
     ),
     Repro(
         name="a_cleared_webgl_buffer_reads_back_the_clear_colour",
+        software_rendering=True,
         note="The one drawing effect this backend keeps: clear fills the buffer.",
         script="""(() => {
   const gl = document.createElement('canvas').getContext('webgl');
@@ -2314,6 +2332,7 @@ CASES = (
     ),
     Repro(
         name="a_permissions_policy_answers_the_features_a_document_controls",
+        baseline_reference=True,
         note="The list is the reference browser's, so it is pinned to the Chrome it was read from.",
         script="""(() => {
   const policy = document.featurePolicy;
@@ -2354,9 +2373,9 @@ CASES = (
         name="an_absolutely_positioned_box_sits_where_its_offsets_put_it",
         note="The absolute box takes the padding box of the nearest positioned ancestor"
              " as its containing block, and offsetLeft measures from the same place.",
-        html=page(head="<style>#outer{position:absolute;left:10px;top:10px;width:200px;height:100px}"
+        html=(page(head="<style>#outer{position:absolute;left:10px;top:10px;width:200px;height:100px}"
                        "#box{position:absolute;left:50px;top:60px;width:40px;height:20px}</style>",
-                  body="<div id=outer><div id=box></div></div>"),
+                  body="<div id=outer><div id=box></div></div>")),
         script="""(() => {
   const box = document.getElementById('box');
   const outer = document.getElementById('outer').getBoundingClientRect();
@@ -2370,10 +2389,10 @@ CASES = (
         name="a_relative_offset_and_a_left_margin_move_the_box",
         note="A relative offset slides the box and its subtree without moving the flow;"
              " a left margin moves the box inside its containing block.",
-        html=page(head="<style>body{margin:0}"
+        html=(page(head="<style>body{margin:0}"
                        "#rel{position:relative;left:5px;top:7px;width:40px;height:20px}"
                        "#flow{margin-left:8px;width:40px;height:20px}</style>",
-                  body="<div id=rel></div><div id=flow></div>"),
+                  body="<div id=rel></div><div id=flow></div>")),
         script="""(() => {
   const relNode = document.getElementById('rel');
   const flowNode = document.getElementById('flow');
@@ -2542,7 +2561,7 @@ CASES = (
         name="a_transferred_message_port_arrives_in_the_events_ports",
         note="A transfer moves the port: the sender's reference is neutered, and the port"
              " arrives in the message event's ports, still entangled with its twin.",
-        html=page(body="""
+        html=(page(body="""
 <script>
   window.__seen = [];
   window.__neutered = false;
@@ -2557,32 +2576,32 @@ CASES = (
     channel.port1.postMessage('from-port1');
   };
   postMessage('init', '*', [channel.port2]);
-</script>"""),
+</script>""")),
         settle=0.5,
         script="[window.__seen, window.__neutered]",
         expected=[[["init", 1, True], ["reply", "from-port1"]], False],
     ),
     Repro(
         name="a_transfer_list_refuses_what_it_cannot_move",
-        html=page(body="""
+        html=(page(body="""
 <script>
   window.__error = '';
   try { postMessage('x', '*', [{}]); } catch (error) { window.__error = error.name + ': ' + error.message; }
-</script>"""),
+</script>""")),
         script="window.__error",
         expected="DataCloneError: Failed to execute 'postMessage' on 'Window':"
                  " Value at index 0 does not have a transferable type.",
     ),
     Repro(
         name="a_port_that_was_already_moved_cannot_be_moved_again",
-        html=page(body="""
+        html=(page(body="""
 <script>
   window.__error = '';
   const channel = new MessageChannel();
   postMessage('first', '*', [channel.port2]);
   try { postMessage('second', '*', [channel.port2]); }
   catch (error) { window.__error = error.name + ': ' + error.message; }
-</script>"""),
+</script>""")),
         script="window.__error",
         expected="DataCloneError: Failed to execute 'postMessage' on 'Window':"
                  " Port at index 0 is already neutered.",
@@ -2617,23 +2636,15 @@ CASES = (
     Repro(
         name="every_extension_a_context_lists_is_obtainable",
         note="Every name the context lists is one `getExtension` hands back.",
-        script="""(() => {
-  const gl = document.createElement('canvas').getContext('webgl');
-  const names = gl.getSupportedExtensions();
-  return [names.length, names.filter((name) => gl.getExtension(name) === null)];
-})()""",
+        script=WEBGL_EXTENSIONS + "('webgl', true)",
+        comparison_script=WEBGL_EXTENSIONS + "('webgl', false)",
         expected=[35, []],
     ),
     Repro(
         name="a_webgl2_context_lists_its_own_extensions",
         note="What WebGL 2 adds, and what it stops listing because the feature is core.",
-        script="""(() => {
-  const gl = document.createElement('canvas').getContext('webgl2');
-  const names = gl.getSupportedExtensions();
-  return [names.length, names.includes('EXT_color_buffer_float'),
-          names.includes('OES_vertex_array_object'),
-          gl.getExtension('OES_vertex_array_object')];
-})()""",
+        script=WEBGL_EXTENSIONS + "('webgl2', true)",
+        comparison_script=WEBGL_EXTENSIONS + "('webgl2', false)",
         expected=[32, True, False, None],
     ),
     Repro(
@@ -2715,7 +2726,7 @@ CASES = (
     Repro(
         name="an_unknown_permission_name_rejects_the_promise",
         note="A name outside the enum rejects the promise instead of throwing.",
-        html=page(body="""<script>
+        html=(page(body="""<script>
             window.__permission = '';
             try {
                 navigator.permissions.query({name: 'speaker'}).then(
@@ -2724,7 +2735,7 @@ CASES = (
             } catch (error) {
                 window.__permission = 'threw: ' + error.name;
             }
-        </script>"""),
+        </script>""")),
         script="window.__permission",
         settle=0.3,
         expected="TypeError: Failed to execute 'query' on 'Permissions': Failed to read the "
@@ -2735,14 +2746,14 @@ CASES = (
         name="a_permission_status_names_the_spec_permission",
         note="The status reports the permission the spec names, not always the one queried.",
         url="https://repro.test/dir/page",
-        html=page(body="""<script>
+        html=(page(body="""<script>
             window.__status = '';
             for (const name of ['camera', 'microphone', 'geolocation']) {
                 navigator.permissions.query({name: name}).then(
                     (status) => { window.__status += status.name + ':' + status.state + ' '; },
                     (error) => { window.__status += 'rejected '; });
             }
-        </script>"""),
+        </script>""")),
         script="window.__status",
         settle=0.3,
         expected="video_capture:prompt audio_capture:prompt geolocation:prompt ",
@@ -2816,6 +2827,7 @@ CASES = (
     ),
     Repro(
         name="the_navigation_entry_carries_this_documents_milestones",
+        baseline_reference=True,
         note="The document is its own resource: 48 fields, its milestones, and a duration "
              "that runs from its start to its load event.",
         script="""(() => {
@@ -2831,9 +2843,10 @@ CASES = (
     ),
     Repro(
         name="a_fetched_script_leaves_a_resource_entry",
+        baseline_reference=True,
         note="The page times its own script fetch and its observer hears about it; the "
              "entry reports the 34 fields Chrome writes.",
-        html=page(head="""<script>
+        html=(page(head="""<script>
             window.__seen = [];
             new PerformanceObserver(list => {
               for (const entry of list.getEntries()) window.__seen.push(entry.entryType);
@@ -2843,7 +2856,7 @@ CASES = (
             const made = document.createElement('script');
             made.src = url;
             document.head.append(made);
-        </script>"""),
+        </script>""")),
         script="""(() => {
   const entries = performance.getEntriesByType('resource');
   return [window.__ran, entries.length > 0,
@@ -2877,13 +2890,13 @@ CASES = (
     Repro(
         name="a_buffered_observer_is_handed_what_was_measured_before",
         note="buffered: true reaches back to the entries already in the buffer.",
-        html=page(head="""<script>
+        html=(page(head="""<script>
             window.__buffered = [];
             performance.mark('earlier');
             new PerformanceObserver(list => {
               window.__buffered.push(list.getEntriesByType('mark').length);
             }).observe({type: 'mark', buffered: true});
-        </script>"""),
+        </script>""")),
         script="String(window.__buffered)",
         expected="1",
     ),
@@ -2891,12 +2904,12 @@ CASES = (
         name="a_thrown_script_reports_where_it_failed",
         note="The error event carries the source, the line and the column, and the value "
              "the handler catches is the page's own Error.",
-        html=page(head="""<script>
+        html=(page(head="""<script>
             window.__seen = [];
             addEventListener('error', event => window.__seen.push([
               event.filename === location.href, event.lineno > 0, event.colno > 0,
               event.error instanceof Error, event.error.message]));
-        </script>""", body="<script>throw new Error('boom')</script>"),
+        </script>""", body="<script>throw new Error('boom')</script>")),
         script="window.__seen",
         expected=[[True, True, True, True, "boom"]],
     ),
@@ -2904,7 +2917,7 @@ CASES = (
         name="a_rel_list_knows_the_link_types_it_supports",
         note="supports() answers for the link types Blink implements: a <link> set, a "
              "hyperlink three, anything else an ordinary false.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
   const link = document.createElement('link');
   const anchor = document.createElement('a');
@@ -2921,10 +2934,10 @@ CASES = (
     ),
     Repro(
         name="an_audio_context_answers_like_chrome",
-        note="The audio feature detection the log ran: a running context with its clock, "
+        note="Audio feature detection at a shared sample rate: a running context with its clock, "
              "an oscillator at 440 Hz, an analyser's window, and promises that settle.",
         script="""(() => {
-  const context = new AudioContext();
+  const context = new AudioContext({sampleRate: 48000});
   const oscillator = context.createOscillator();
   const analyser = context.createAnalyser();
   const gain = context.createGain();
@@ -2945,7 +2958,7 @@ CASES = (
         name="every_audio_graph_node_answers_like_chrome",
         note="What the log reported as 待实现: the nodes a page builds report Chrome's "
              "parameters, ranges and channel metadata, measured from it and pinned here.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
   const context = new OfflineAudioContext(1, 128, 8000);
   const param = (value) => [value.value, value.defaultValue, value.minValue, value.maxValue,
@@ -3010,7 +3023,7 @@ CASES = (
         note="Both data methods on an unfed analyser: silence is -Infinity in the "
              "frequency domain and zeros in the time domain, an array longer than the "
              "window keeps whatever it held, and another type is refused.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
   const context = new OfflineAudioContext(1, 128, 8000);
   const analyser = context.createAnalyser();
@@ -3071,7 +3084,7 @@ CASES = (
         name="an_extension_from_a_frame_keeps_its_constants",
         note="A frame's extension object crosses in as a class with no config here: its "
              "overlay is committed before the template is built, so the constants survive.",
-        html=page(body='<iframe name="f"></iframe>'),
+        html=(page(body='<iframe name="f"></iframe>')),
         script="""(() => {
   const child = document.querySelector('iframe').contentWindow;
   const childGl = child.document.createElement('canvas').getContext('webgl');
@@ -3119,7 +3132,7 @@ CASES = (
         name="a_named_attribute_read_answers_the_attribute",
         note="NamedNodeMap answers a named read with the Attr, and an absent name with "
              "nothing at all.",
-        html=page(body="<p id=app data-x=1>x</p>"),
+        html=(page(body="<p id=app data-x=1>x</p>")),
         script="""(() => {
   const map = document.querySelector('p').attributes;
   return [String(map['data-x']), map.nope === undefined, 'data-x' in map, 'nope' in map,
@@ -3156,9 +3169,9 @@ CASES = (
         name="an_iframe_reports_the_attributes_it_was_given",
         note="Every reflecting attribute reads back the way a browser reads it, and "
              "the frame counts towards the window's frames.",
-        html=page(body='<iframe id="f" name="given" allow="camera" allowfullscreen '
+        html=(page(body='<iframe id="f" name="given" allow="camera" allowfullscreen '
                        'width="100" height="50" referrerpolicy="no-referrer" '
-                       'loading="lazy"></iframe>'),
+                       'loading="lazy"></iframe>')),
         script="""(() => {
             const frame = document.getElementById('f');
             return [frame.name, frame.allow, frame.allowFullscreen, frame.width,
@@ -3174,7 +3187,7 @@ CASES = (
         name="a_window_indexes_its_child_frames",
         note="The indexed slots are the child browsing contexts: they belong to the "
              "window itself and they enumerate in order.",
-        html=page(body="<iframe name=f></iframe>"),
+        html=(page(body="<iframe name=f></iframe>")),
         script="""(() => {
             const slots = [];
             for (const key in window) if (/^[0-9]+$/.test(key)) slots.push(key);
@@ -3188,7 +3201,7 @@ CASES = (
         note="Assigning over a slot is refused: silent outside strict mode, a TypeError "
              "inside it.  Deleting one leaves the frame in place, and a slot holding "
              "nothing is not a property at all.",
-        html=page(body="<iframe name=f></iframe>"),
+        html=(page(body="<iframe name=f></iframe>")),
         script="""(() => {
             let thrown = null;
             try { (function () { 'use strict'; window[0] = 5; })(); }
@@ -3203,7 +3216,7 @@ CASES = (
         name="a_reflected_indexed_define_is_refused",
         note="A define aimed at a slot the window does not have changes nothing; the "
              "store is refused either way.",
-        html=page(body="<iframe name=f></iframe>"),
+        html=(page(body="<iframe name=f></iframe>")),
         script="Reflect.defineProperty(window, 7, {value: 1})",
         expect_error="TypeError",
         known_divergence="the native indexed definer answers a refused define with false, "
@@ -3213,7 +3226,7 @@ CASES = (
         name="an_iframe_reads_back_the_defaults_a_browser_reports",
         note="Absent attributes read as the empty string, ``loading`` as ``auto``, and "
              "a value outside the allowed set falls back to it.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""(() => {
             const frame = document.createElement('iframe');
             const before = [frame.width, frame.height, frame.loading,
@@ -3231,7 +3244,7 @@ CASES = (
         name="a_srcdoc_frame_holds_its_own_markup",
         note="A frame whose markup travels with the element parses it as a document of "
              "its own, same-origin with the page that wrote it.",
-        html=page(body='<iframe id="f" srcdoc="&lt;p&gt;hi&lt;/p&gt;"></iframe>'),
+        html=(page(body='<iframe id="f" srcdoc="&lt;p&gt;hi&lt;/p&gt;"></iframe>')),
         script="""(() => {
             const frame = document.getElementById('f');
             return [frame.contentDocument.body.textContent, frame.contentDocument.URL,
@@ -3243,8 +3256,8 @@ CASES = (
         name="a_sandboxed_frame_is_cross_origin",
         note="Without ``allow-same-origin`` the frame gets an opaque origin, so its "
              "document is hidden and its window refuses the read.",
-        html=page(body='<iframe id="f" sandbox="allow-scripts" '
-                       'srcdoc="&lt;p&gt;hi&lt;/p&gt;"></iframe>'),
+        html=(page(body='<iframe id="f" sandbox="allow-scripts" '
+                       'srcdoc="&lt;p&gt;hi&lt;/p&gt;"></iframe>')),
         script="""(() => {
             const frame = document.getElementById('f');
             let name;
@@ -3258,7 +3271,7 @@ CASES = (
         name="a_xpath_expression_walks_the_document",
         note="One compiled expression, evaluated against the document and walked a "
              "node at a time.",
-        html=page(body="<p>one</p>"),
+        html=(page(body="<p>one</p>")),
         script="""
             (() => {
               const expression = document.createExpression('//html', null);
@@ -3274,7 +3287,7 @@ CASES = (
         name="xpath_predicates_and_snapshots",
         note="An attribute predicate and a positional one select what a page expects, "
              "and a snapshot reports its length and hands nodes back by index.",
-        html=page(body='<p class="x">1</p><p class="x">2</p><p>3</p>'),
+        html=(page(body='<p class="x">1</p><p class="x">2</p><p>3</p>')),
         script="""
             (() => {
               const snapshot = document.evaluate("//p[@class='x']", document, null,
@@ -3294,7 +3307,7 @@ CASES = (
         name="an_xpath_function_is_outside_the_subset",
         note="Excluded: functions and the other axes are refused rather than answered "
              "with the wrong nodes.",
-        html=page(body="<p>one</p>"),
+        html=(page(body="<p>one</p>")),
         script="""
             (() => {
               return document.evaluate("count(//p)", document, null,
@@ -3309,7 +3322,7 @@ CASES = (
         name="a_lock_manager_needs_a_secure_context",
         note="No lock manager is offered outside a secure context, which is where "
              "Chrome offers one too.",
-        html=page(body=""),
+        html=(page(body="")),
         script="navigator.locks === undefined",
         expected=True,
     ),
@@ -3317,7 +3330,7 @@ CASES = (
         name="a_custom_element_registry_remembers_its_definitions",
         note="Defining a name makes it readable back, and an unregistered class has"
              " no name at all.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               const Ctor = function () {};
@@ -3332,13 +3345,13 @@ CASES = (
     ),
     Repro(
         name="defining_a_name_without_a_dash_is_rejected",
-        html=page(body=""),
+        html=(page(body="")),
         script="customElements.define('nodash', function () {})",
         expect_error="SyntaxError",
     ),
     Repro(
         name="the_visual_viewport_matches_the_window_here",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               const view = visualViewport;
@@ -3351,7 +3364,7 @@ CASES = (
     ),
     Repro(
         name="create_event_makes_an_uninitialised_event",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               const made = ['Event', 'HTMLEvents', 'MouseEvent'].map(
@@ -3364,7 +3377,7 @@ CASES = (
     ),
     Repro(
         name="create_event_rejects_a_type_it_does_not_know",
-        html=page(body=""),
+        html=(page(body="")),
         script="document.createEvent('Nope')",
         expect_error="NotSupportedError",
     ),
@@ -3372,7 +3385,7 @@ CASES = (
         name="a_form_action_falls_back_to_the_document_url",
         note="With no action attribute the submission URL is the document's own, and a"
              " declared one resolves with its fragment dropped.",
-        html=page(body='<form id=f action="/go#frag"></form>'),
+        html=(page(body='<form id=f action="/go#frag"></form>')),
         script="""
             (() => {
               const form = document.getElementById('f');
@@ -3386,13 +3399,13 @@ CASES = (
     ),
     Repro(
         name="a_scripts_inner_text_is_its_source",
-        html=page(body="<script>window.__seen = 1;</script>"),
+        html=(page(body="<script>window.__seen = 1;</script>")),
         script="document.querySelector('script').innerText",
         expected="window.__seen = 1;",
     ),
     Repro(
         name="screen_avail_left_and_top_and_do_not_track",
-        html=page(body=""),
+        html=(page(body="")),
         script="[screen.availLeft, screen.availTop, navigator.doNotTrack]",
         expected=[0, 0, None],
     ),
@@ -3400,7 +3413,7 @@ CASES = (
         name="an_event_target_prototype_has_no_handler_attributes",
         note="Handler attributes belong to the interfaces that own them, so they do"
              " not show up on EventTarget, which a browser gives three methods.",
-        html=page(body=""),
+        html=(page(body="")),
         script="Object.getOwnPropertyNames(EventTarget.prototype)"
                ".filter(name => name.startsWith('on'))",
         expected=[],
@@ -3408,7 +3421,7 @@ CASES = (
     Repro(
         name="a_window_handler_slot_starts_empty",
         note="A handler attribute is null until a page sets one, and holds what it set.",
-        html=page(body=""),
+        html=(page(body="")),
         script="""
             (() => {
               const before = window.ononline;
@@ -3426,7 +3439,7 @@ CASES = (
         name="a_style_added_by_script_applies",
         note="Rules a page builds at runtime are read from the tree, so the cached "
              "sheet has to be dropped when a style element arrives.",
-        html=page(body="<div id=t>t</div>"),
+        html=(page(body="<div id=t>t</div>")),
         script="""
             (() => {
               const style = document.createElement('style');
@@ -3713,7 +3726,7 @@ CASES = (
         name="an_element_from_another_namespace_works_as_an_element",
         note="The element model is real whichever interface the realm bound: it holds "
              "attributes, takes children, and is found by name in the document.",
-        html=page(body="<div id=host></div>"),
+        html=(page(body="<div id=host></div>")),
         script="""(() => {
             const SVG = 'http://www.w3.org/2000/svg';
             const element = document.createElementNS(SVG, 'svg');
@@ -4060,7 +4073,7 @@ CASES = (
         name="a_listener_takes_itself_back_out_when_its_signal_fires",
         note="Registering with a signal is a lease: the listener runs until the signal "
              "fires and never again, and one that had already fired registers nothing.",
-        html=page(body="<div id=host></div>"),
+        html=(page(body="<div id=host></div>")),
         script="""(() => {
             const host = document.getElementById('host');
             const out = [];
@@ -4140,7 +4153,7 @@ CASES = (
         note="The type attribute keeps whatever the page wrote, but the property reads "
              "back empty for anything that is not text/css, and an absent attribute is "
              "the same empty string.",
-        html=page(head='<style id="s">p { color: red }</style>'),
+        html=(page(head='<style id="s">p { color: red }</style>')),
         script="""(() => {
             const style = document.getElementById('s');
             const fresh = document.createElement('style');
@@ -4164,7 +4177,7 @@ CASES = (
              "was assigned, and the content attribute is never touched. A boolean "
              "reflection is the obvious reading of an attribute called capture, and it is "
              "wrong in both directions.",
-        html=page(body='<input id=inp type=text>'),
+        html=(page(body='<input id=inp type=text>')),
         script="""(() => {
             const input = document.getElementById('inp');
             const out = [input.capture, input.getAttribute('capture')];
@@ -4208,7 +4221,7 @@ CASES = (
         note="The sheet belongs to the document's list, so a style element in a document "
              "answers with the very object styleSheets holds for it, and one that is in no "
              "document answers null.",
-        html=page(head='<style id=one>p { color: red }</style>'),
+        html=(page(head='<style id=one>p { color: red }</style>')),
         script="""(() => {
             const style = document.getElementById('one');
             const loose = document.createElement('style');
@@ -4226,7 +4239,7 @@ CASES = (
         note="What a sheet answers with is the object the list holds for its owner, and the "
              "owner is the element it came from. The rules come from the owner's text, so "
              "the sheet of a style element holding one rule reports one.",
-        html=page(head='<style id=one>p { color: red }</style>'),
+        html=(page(head='<style id=one>p { color: red }</style>')),
         script="""(() => {
             const sheet = document.getElementById('one').sheet;
             return [sheet.ownerNode === document.getElementById('one'),
@@ -4243,7 +4256,7 @@ CASES = (
              "attribute and any spelling of a keyword read back lower-cased, and anything "
              "the enum does not hold -- an unknown keyword or no attribute at all -- reads "
              "as inherit.",
-        html=page(body='<div id=host><span id=kid></span></div>'),
+        html=(page(body='<div id=host><span id=kid></span></div>')),
         script="""(() => {
             const host = document.getElementById('host');
             const out = [[host.contentEditable, String(host.getAttribute('contenteditable')),
@@ -4319,7 +4332,7 @@ CASES = (
         note="Inheritance runs up the tree, an explicit false stops it, and inherit hands "
              "the question back to the ancestor above. A detached tree counts too, which is "
              "why a loose element still answers.",
-        html=page(body='<div id=host><span id=kid></span></div>'),
+        html=(page(body='<div id=host><span id=kid></span></div>')),
         script="""(() => {
             const host = document.getElementById('host');
             const kid = document.getElementById('kid');
@@ -4343,7 +4356,7 @@ CASES = (
              "never throws. It is a property of a document, so it reaches the elements in "
              "it: an element the page holds loose needs its own contenteditable. The "
              "contenteditable property itself is untouched by it.",
-        html=page(body='<div id=host><span id=kid></span></div>'),
+        html=(page(body='<div id=host><span id=kid></span></div>')),
         script="""(() => {
             const doc = document;
             const start = doc.designMode;
@@ -4406,8 +4419,8 @@ CASES = (
              "medium and the rules nested in it. The text is Blink's own -- a style rule "
              "on one line, a grouping rule over several with its children indented two "
              "spaces, and a shorthand expanded the way the declaration block expands it.",
-        html=page(head="<style id=s>p { color: red } .a, .b { color: blue }"
-                       "@media screen { div { top: 1px } }</style>"),
+        html=(page(head="<style id=s>p { color: red } .a, .b { color: blue }"
+                       "@media screen { div { top: 1px } }</style>")),
         script="""(() => {
             const sheet = document.getElementById('s').sheet;
             const rules = sheet.cssRules;
@@ -4434,7 +4447,7 @@ CASES = (
     Repro(
         name="a_rule_style_keeps_a_shorthand_and_a_bare_zero_as_written",
         note="A rule's style is a declaration block read from the sheet's text.",
-        html=page(head="<style id=s>p { margin: 0 } div { top: 0 }</style>"),
+        html=(page(head="<style id=s>p { margin: 0 } div { top: 0 }</style>")),
         script="""(() => {
             const sheet = document.getElementById('s').sheet;
             const style = sheet.cssRules[0].style;
@@ -4454,7 +4467,7 @@ CASES = (
         note="insertRule puts the rule at the index it was given and answers that index, "
              "and deleteRule takes one away; a string that is not a rule is a "
              "SyntaxError.",
-        html=page(head="<style id=s>p { color: red }</style>"),
+        html=(page(head="<style id=s>p { color: red }</style>")),
         script="""(() => {
             const sheet = document.getElementById('s').sheet;
             const out = [sheet.cssRules.length];
@@ -4589,7 +4602,7 @@ CASES = (
              "aria-autocomplete and ariaColCount is aria-colcount. A value is written as "
              "it is given -- nothing is checked against a keyword list -- and nullish "
              "takes the attribute away.",
-        html=page(body='<div id=host></div>'),
+        html=(page(body='<div id=host></div>')),
         script="""(() => {
             const host = document.getElementById('host');
             const names = ['ariaAtomic', 'ariaAutoComplete', 'ariaColCount', 'ariaKeyShortcuts',
@@ -4639,7 +4652,7 @@ CASES = (
         note="Nine members answer with elements rather than with the string. Absent is "
              "null, an id that names nothing contributes nothing, an empty attribute gives "
              "an empty list, and a tree outside a document resolves nothing at all.",
-        html=page(body='<div id=host><span id=one></span><span id=two></span></div>'),
+        html=(page(body='<div id=host><span id=one></span><span id=two></span></div>')),
         script="""(() => {
             const host = document.getElementById('host');
             const ids = (list) => list.map((e) => (e === null ? 'null' : '#' + e.id));
@@ -4831,7 +4844,7 @@ CASES = (
              "br become newlines, and the ends are trimmed. The setter takes the string as "
              "written -- markup in it is not parsed, a newline becomes a br -- and null "
              "clears the element.",
-        html=page(body="<div id=host>one<span>two</span><div>three</div></div>"),
+        html=(page(body="<div id=host>one<span>two</span><div>three</div></div>")),
         script="""(() => {
             const host = document.getElementById('host');
             const keep = document.createElement('pre');
@@ -4861,8 +4874,8 @@ CASES = (
         note="document.styleSheets is live and its entries are stable objects: the same "
              "index twice is the same sheet, a name reaches the sheet whose owner carries "
              "that id, and an entry says where it came from.",
-        html=page(head='<style id="sheet-one">p { color: red }</style>'
-                       '<style>div { margin: 0 }</style>'),
+        html=(page(head='<style id="sheet-one">p { color: red }</style>'
+                       '<style>div { margin: 0 }</style>')),
         script="""(() => {
             const sheets = document.styleSheets;
             const first = sheets[0];
@@ -4884,7 +4897,7 @@ CASES = (
         note="attachShadow hands back a fragment the host keeps to itself: none of it "
              "shows through the host's children, text or markup, and only an open tree "
              "is reported again.",
-        html=page(body="<div id=host></div>"),
+        html=(page(body="<div id=host></div>")),
         script="""(() => {
             const host = document.getElementById('host');
             const root = host.attachShadow({mode: 'open'});
@@ -4907,7 +4920,7 @@ CASES = (
         note="Five refusals in Blink's own words: a second tree on one host, an argument "
              "that is not a dictionary, a dictionary with no mode, a mode that is not the "
              "enum, and a tag that is not a shadow host.",
-        html=page(body="<div id=host></div>"),
+        html=(page(body="<div id=host></div>")),
         script="""(() => {
             const out = [];
             const attempt = (host, options) => {
@@ -4984,7 +4997,7 @@ CASES = (
         note="A page that bundles its worker inline revokes the URL in the same turn it "
              "hands it over; the script is taken while the worker is made, so the revoke "
              "is too late to take it away.",
-        html=page(body="""<script>
+        html=(page(body="""<script>
             window.__out = [];
             const url = URL.createObjectURL(new Blob(
                 ["self.postMessage('started');"], {type: 'text/javascript'}));
@@ -4992,14 +5005,14 @@ CASES = (
             URL.revokeObjectURL(url);
             worker.onmessage = (event) => window.__out.push(String(event.data));
             worker.onerror = () => window.__out.push('onerror');
-        </script>"""),
+        </script>""")),
         script="window.__out",
         expected=["started"],
         settle=0.5,
     ),
     Repro(
         name="element_selector_queries_exclude_the_root",
-        html=page(body='<div id="root" class="match"><span class="match"></span></div>'),
+        html=(page(body='<div id="root" class="match"><span class="match"></span></div>')),
         script="""(() => {const root=document.getElementById('root'); return [
             root.querySelector('#root')===null, root.querySelectorAll('.match').length,
             root.querySelectorAll('#root,.match').length, root.matches('#root')];})()""",
@@ -5007,28 +5020,28 @@ CASES = (
     ),
     Repro(
         name="selector_combinators_backtrack_over_candidate_ancestors_and_siblings",
-        html=page(body='<main><div class="a"><div class="a"><i id="target"></i></div></div></main>'
-                       '<section><b class="a"></b><b class="b"></b><b class="b"></b><i id="sibling"></i></section>'),
+        html=(page(body='<main><div class="a"><div class="a"><i id="target"></i></div></div></main>'
+                       '<section><b class="a"></b><b class="b"></b><b class="b"></b><i id="sibling"></i></section>')),
         script="""(() => {return [document.querySelector('main > .a i')?.id,
             document.querySelector('.a + .b ~ i')?.id];})()""",
         expected=['target', 'sibling'],
     ),
     Repro(
         name="zero_coefficient_nth_selectors_match_only_the_offset",
-        html=page(body='<div><i id="a"></i><i id="b"></i><i id="c"></i></div>'),
+        html=(page(body='<div><i id="a"></i><i id="b"></i><i id="c"></i></div>')),
         script="Array.from(document.querySelectorAll('i:nth-child(0n+2)')).map(x=>x.id)",
         expected=['b'],
     ),
     Repro(
         name="empty_attribute_substring_selectors_match_nothing",
-        html=page(body='<i data-x="hello"></i><i data-x=""></i>'),
+        html=(page(body='<i data-x="hello"></i><i data-x=""></i>')),
         script="""['^=','$=','*='].map(op=>document.querySelectorAll('[data-x'+op+'""'+']').length)""",
         expected=[0,0,0],
     ),
 
     Repro(
         name="redispatched_events_update_their_target_and_clear_dispatch_state",
-        html=page(body='<div id="parent"><i id="a"></i><i id="b"></i></div>'),
+        html=(page(body='<div id="parent"><i id="a"></i><i id="b"></i></div>')),
         script="""(() => {const a=document.getElementById('a'),b=document.getElementById('b');
           const e=new Event('x',{bubbles:true}); const seen=[];
           document.getElementById('parent').addEventListener('x',v=>v.stopPropagation(),true);
@@ -5069,7 +5082,7 @@ CASES = (
 
     Repro(
         name="indexeddb_bulk_results_and_indexes_read_stored_objects",
-        html=page(body="""<script>
+        html=(page(body="""<script>
           const open=indexedDB.open('objects',1);
           open.onupgradeneeded=()=>{const s=open.result.createObjectStore('s',{keyPath:'id'});s.createIndex('name','name');};
           open.onsuccess=()=>{const db=open.result,tx=db.transaction('s','readwrite'),store=tx.objectStore('s');
@@ -5079,14 +5092,14 @@ CASES = (
                 rows[0].data instanceof ArrayBuffer,Array.from(new Uint8Array(rows[0].data))];
                 const index=db.transaction('s').objectStore('s').index('name').get('second');
                 index.onsuccess=()=>{notes.push(index.result.id);globalThis.idbProbe=notes;db.close();};};};};
-        </script>"""),
+        </script>""")),
         script="globalThis.idbProbe",
         expected=[['first','second'],True,True,[7,8],2],
         settle=0.05,
     ),
     Repro(
         name="indexeddb_generated_keys_are_injected_into_the_clone_once",
-        html=page(body="""<script>
+        html=(page(body="""<script>
           const open=indexedDB.open('generated',1);
           open.onupgradeneeded=()=>open.result.createObjectStore('s',{keyPath:'id',autoIncrement:true});
           open.onsuccess=()=>{const db=open.result,tx=db.transaction('s','readwrite');let reads=0;const value={};
@@ -5094,14 +5107,14 @@ CASES = (
             const put=tx.objectStore('s').put(value);let key;put.onsuccess=()=>key=put.result;
             tx.oncomplete=()=>{const get=db.transaction('s').objectStore('s').get(key);
               get.onsuccess=()=>{globalThis.idbProbe=[key,value.id===undefined,get.result.id,get.result.name,reads];db.close();};};};
-        </script>"""),
+        </script>""")),
         script="globalThis.idbProbe",
         expected=[1,True,1,'first',1],
         settle=0.05,
     ),
     Repro(
         name="indexeddb_handled_unique_index_errors_preserve_existing_records",
-        html=page(body="""<script>
+        html=(page(body="""<script>
           const open=indexedDB.open('unique',1);
           open.onupgradeneeded=()=>{const s=open.result.createObjectStore('s',{keyPath:'id'});s.createIndex('name','name',{unique:true});};
           open.onsuccess=()=>{const db=open.result,seed=db.transaction('s','readwrite');
@@ -5110,7 +5123,7 @@ CASES = (
               put.onerror=e=>{error=put.error.name;e.preventDefault();};
               tx.oncomplete=()=>{const all=db.transaction('s').objectStore('s').getAll();
                 all.onsuccess=()=>{globalThis.idbProbe=[error,all.result.map(x=>x.name)];db.close();};};};};
-        </script>"""),
+        </script>""")),
         script="globalThis.idbProbe",
         expected=['ConstraintError',['a','b']],
         settle=0.05,
@@ -5118,7 +5131,7 @@ CASES = (
 
     Repro(
         name="indexeddb_multi_entry_indexes_deduplicate_keys_without_changing_values",
-        html=page(body="""<script>
+        html=(page(body="""<script>
           const open=indexedDB.open('multi',1);
           open.onupgradeneeded=()=>{const s=open.result.createObjectStore('s',{keyPath:'id'});s.createIndex('tags','tags',{unique:true,multiEntry:true});};
           open.onsuccess=()=>{const db=open.result,tx=db.transaction('s','readwrite');
@@ -5126,7 +5139,7 @@ CASES = (
             tx.oncomplete=()=>{const store=db.transaction('s').objectStore('s'),count=store.index('tags').count('x');
               count.onsuccess=()=>{const get=db.transaction('s').objectStore('s').get(1);
                 get.onsuccess=()=>{globalThis.idbProbe=[count.result,get.result.tags];db.close();};};};};
-        </script>"""),
+        </script>""")),
         script="globalThis.idbProbe",
         expected=[1,['x','x']],
         settle=0.05,

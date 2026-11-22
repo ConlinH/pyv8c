@@ -3,25 +3,25 @@ import pytest
 
 pytest.importorskip('pyv8c.pyv8')
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def protected_page():
+async def protected_page():
     state = {'csp': "require-trusted-types-for 'script'; trusted-types default approved; script-src 'unsafe-inline' 'unsafe-eval'"}
     def load(url, request):
         return {'status': 200, 'headers': {'content-type': 'text/html',
                 'content-security-policy': state['csp']}, 'body': '<!doctype html><body></body>'}
-    browser = Browser(real_network=False, resource_loader=load, stub_logging='off')
+    browser = await Browser(real_network=False, resource_loader=load, stub_logging='off').__aenter__()
     try:
         page = browser.new_profile().new_page()
-        page.goto('https://policy.test/')
+        await page.goto('https://policy.test/')
         yield page, state
     finally:
-        browser.close()
+        await browser.close()
 
 
-def test_trusted_sinks_reject_plain_strings_without_default(protected_page):
+async def test_trusted_sinks_reject_plain_strings_without_default(protected_page):
     page, _ = protected_page
     assert page.evaluate('''(() => {
       const div=document.createElement('div'), script=document.createElement('script');
@@ -32,7 +32,7 @@ def test_trusted_sinks_reject_plain_strings_without_default(protected_page):
     })()''') == ['TypeError'] * 4
 
 
-def test_default_policy_transforms_sinks_and_receives_type_and_sink(protected_page):
+async def test_default_policy_transforms_sinks_and_receives_type_and_sink(protected_page):
     page, _ = protected_page
     assert page.evaluate('''(() => {
       const calls=[];
@@ -46,7 +46,7 @@ def test_default_policy_transforms_sinks_and_receives_type_and_sink(protected_pa
     })()''') == [True, '<b>safe</b>', '/safe.js', [['unsafe', 'TrustedHTML', 'Element innerHTML']]]
 
 
-def test_explicit_trusted_values_work_without_default(protected_page):
+async def test_explicit_trusted_values_work_without_default(protected_page):
     page, _ = protected_page
     assert page.evaluate('''(() => {
       const policy=trustedTypes.createPolicy('approved',{
@@ -60,7 +60,7 @@ def test_explicit_trusted_values_work_without_default(protected_page):
     })()''') == ['<b>ok</b>', '/ok.js', 5, 7]
 
 
-def test_policy_allowlist_and_duplicate_name_are_enforced(protected_page):
+async def test_policy_allowlist_and_duplicate_name_are_enforced(protected_page):
     page, _ = protected_page
     assert page.evaluate('''(() => {
       trustedTypes.createPolicy('approved',{});
@@ -70,7 +70,7 @@ def test_policy_allowlist_and_duplicate_name_are_enforced(protected_page):
     })()''') == ['TypeError', 'TypeError']
 
 
-def test_eval_obeys_trusted_types_and_preserves_direct_scope(protected_page):
+async def test_eval_obeys_trusted_types_and_preserves_direct_scope(protected_page):
     page, _ = protected_page
     assert page.evaluate('''(() => {
       let first;try{eval('1+1')}catch(e){first=e.name}
@@ -80,7 +80,7 @@ def test_eval_obeys_trusted_types_and_preserves_direct_scope(protected_page):
     })()''') == ['EvalError', 11, 'undefined']
 
 
-def test_default_script_policy_cannot_rewrite_eval_source(protected_page):
+async def test_default_script_policy_cannot_rewrite_eval_source(protected_page):
     page, _ = protected_page
     assert page.evaluate('''(() => {
       trustedTypes.createPolicy('default',{createScript:s=>'2+3'});
@@ -88,10 +88,10 @@ def test_default_script_policy_cannot_rewrite_eval_source(protected_page):
     })()''') == 'EvalError'
 
 
-def test_missing_unsafe_eval_blocks_even_trusted_script(protected_page):
+async def test_missing_unsafe_eval_blocks_even_trusted_script(protected_page):
     page, state = protected_page
     state['csp'] = "script-src 'unsafe-inline'"
-    page.goto('https://policy.test/next')
+    await page.goto('https://policy.test/next')
     assert page.evaluate('''(() => {
       const p=trustedTypes.createPolicy('approved',{createScript:s=>s});
       return [()=>eval('1'),()=>eval(p.createScript('1')),
@@ -101,7 +101,7 @@ def test_missing_unsafe_eval_blocks_even_trusted_script(protected_page):
     })()''') == ['EvalError'] * 3
 
 
-def test_about_blank_frame_inherits_policy_container(protected_page):
+async def test_about_blank_frame_inherits_policy_container(protected_page):
     page, _ = protected_page
     assert page.evaluate('''(() => {
       const frame=document.createElement('iframe');document.body.appendChild(frame);
@@ -111,8 +111,8 @@ def test_about_blank_frame_inherits_policy_container(protected_page):
     })()''') == 'TypeError'
 
 
-def test_meta_policy_applies_to_subsequent_eval(page):
-    page.set_content('''<head><meta http-equiv="content-security-policy"
+async def test_meta_policy_applies_to_subsequent_eval(page):
+    await page.set_content('''<head><meta http-equiv="content-security-policy"
       content="script-src 'unsafe-inline'"></head><body>
       <script>try{eval('1')}catch(e){window.blocked=e.name}</script></body>''',
       url='https://policy.test/')

@@ -1,7 +1,7 @@
 """Page request tickets, released independently from result delivery."""
 from threading import RLock
 
-from .handles import LoadHandle
+from ...foundation.load_handle import LoadHandle
 
 
 class ResourceOwnership:
@@ -18,9 +18,9 @@ class ResourceOwnership:
         with self._lock:
             return len(self._tickets)
 
-    def _register(self):
+    def _register(self, document_bound=False):
         with self._lock:
-            ticket = _Ticket(self)
+            ticket = _Ticket(self, document_bound)
             if self._closed:
                 ticket.cancelled = True
                 ticket.released = True
@@ -33,11 +33,11 @@ class ResourceOwnership:
         ticket.bind(handle)
         return ticket
 
-    def issue(self, start, url, request, callback):
-        ticket = self._register()
-        if ticket.cancelled:
-            handle = LoadHandle()
-            handle.cancel()
+    def issue(self, start, url, request, callback, *, document_bound=False):
+        ticket = self._register(document_bound)
+        handle = LoadHandle()
+        ticket.bind(handle)
+        if handle.cancelled:
             return handle
 
         def complete(response, error):
@@ -49,17 +49,25 @@ class ResourceOwnership:
             callback(response, error)
 
         try:
-            handle = start(url, request, complete)
-            ticket.bind(handle)
+            start(handle, url, request, complete)
             return handle
         except BaseException:
             ticket.cancel()
             raise
 
+    def cancel_document_requests(self, *, include_realm=False):
+        with self._lock:
+            tickets = tuple(ticket for ticket in self._tickets if include_realm or ticket.document_bound)
+        self._cancel(tickets)
+
     def close(self):
         with self._lock:
             self._closed = True
             tickets = tuple(self._tickets)
+        self._cancel(tickets)
+
+    @staticmethod
+    def _cancel(tickets):
         first_error = None
         for ticket in tickets:
             try:
@@ -72,14 +80,15 @@ class ResourceOwnership:
 
 
 class _Ticket:
-    __slots__ = ("owner", "handle", "released", "delivered", "cancelled")
+    __slots__ = ("owner", "handle", "released", "delivered", "cancelled", "document_bound")
 
-    def __init__(self, owner):
+    def __init__(self, owner, document_bound):
         self.owner = owner
         self.handle = None
         self.released = False
         self.delivered = False
         self.cancelled = False
+        self.document_bound = document_bound
 
     def release(self):
         with self.owner._lock:
@@ -93,9 +102,7 @@ class _Ticket:
             if cancelled:
                 self.cancelled = True
                 self.release()
-        if handle is None:
-            self.release()
-        elif cancelled:
+        if cancelled:
             handle.cancel()
         else:
             handle.add_done_callback(self._terminal)

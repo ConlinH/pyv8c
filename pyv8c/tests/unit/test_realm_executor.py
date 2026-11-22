@@ -1,3 +1,5 @@
+
+import asyncio
 import threading
 import time
 
@@ -7,12 +9,12 @@ from loguru import logger
 pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
 pytestmark = pytest.mark.native
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.foundation.host_errors import RealmBusyError
 from pyv8c.foundation.executor import RealmExecutor
 
 
-def test_terminated_task_is_not_reported_as_a_page_error():
+async def test_terminated_task_is_not_reported_as_a_page_error():
     from pyv8c import pyv8
 
     class Queue:
@@ -28,9 +30,8 @@ def test_terminated_task_is_not_reported_as_a_page_error():
     assert executor._run_turn() is True
 
 
-def test_close_settles_waiters_without_holding_submission_lock():
-    from concurrent.futures import Future
-    from pyv8c.foundation.executor import Command
+async def test_close_settles_waiters_without_holding_submission_lock():
+    from pyv8c.foundation.execution_state import Command, _Completion
 
     executor = RealmExecutor(name="test-close-callback")
     entered, release = threading.Event(), threading.Event()
@@ -44,23 +45,24 @@ def test_close_settles_waiters_without_holding_submission_lock():
         with executor._submit_lock:
             acquired.set()
 
-    def completed(_):
-        thread = threading.Thread(target=inspect_lock)
-        thread.start()
-        if acquired.wait(1):
-            checked.set()
-        thread.join(1)
+    class Completion(_Completion):
+        def finish(self, value=None, error=None):
+            thread = threading.Thread(target=inspect_lock)
+            thread.start()
+            if acquired.wait(1):
+                checked.set()
+            thread.join(1)
+            super().finish(value, error)
 
     try:
         assert executor.post(block)
-        assert entered.wait(2)
-        future = Future()
-        future.add_done_callback(completed)
-        executor._submit_command(Command(future, lambda: None, (), {}, time.perf_counter(), None, 999), None)
+        assert (await asyncio.to_thread(entered.wait, 2))
+        completion = Completion()
+        executor._submit_command(Command(completion, lambda: None, (), {}, time.perf_counter(), None, 999), None)
         executor.close(timeout=0)
-        assert checked.is_set(), 'Future callbacks ran while the submission lock was held'
+        assert checked.is_set(), 'completion ran while the submission lock was held'
         with pytest.raises(RuntimeError, match='closed'):
-            future.result()
+            (await asyncio.to_thread(completion.wait, None, None))
     finally:
         release.set()
         executor.close()
@@ -87,7 +89,7 @@ def wait_for_lines(messages, count=1, timeout=2.0):
         time.sleep(0.02)
 
 
-def test_executor_runs_calls_on_one_owner_thread_and_closes_waiters():
+async def test_executor_runs_calls_on_one_owner_thread_and_closes_waiters():
     executor = RealmExecutor(name="test-realm")
     try:
         caller = threading.get_ident()
@@ -100,44 +102,44 @@ def test_executor_runs_calls_on_one_owner_thread_and_closes_waiters():
         executor.call(lambda: None)
 
 
-def test_page_background_timer_runs_without_manual_queue_pump():
-    browser = Browser(stub_logging="off")
+async def test_page_background_timer_runs_without_manual_queue_pump():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
     try:
         page.evaluate("window.__executorTimer = 0; setTimeout(() => __executorTimer = 1, 10)")
-        time.sleep(0.2)
+        (await asyncio.sleep(0.2))
         assert page.evaluate("__executorTimer") == 1
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_page_close_stops_realm_executor():
-    browser = Browser(stub_logging="off")
+async def test_page_close_stops_realm_executor():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.close()
+    (await page.close())
     assert page.realm.executor.closed
-    browser.close()
+    (await browser.close())
 
 
-def test_timed_out_queued_command_is_not_executed_later():
+async def test_timed_out_queued_command_is_not_executed_later():
     executor = RealmExecutor(name="test-cancel")
     entered = threading.Event()
     release = threading.Event()
     side_effect = []
     try:
         executor.post(lambda: (entered.set(), release.wait(2)))
-        assert entered.wait(1)
+        assert (await asyncio.to_thread(entered.wait, 1))
         with pytest.raises(RealmBusyError, match="command cancelled"):
             executor.call(lambda: side_effect.append("ghost"), timeout=0.01)
         release.set()
-        time.sleep(0.05)
+        (await asyncio.sleep(0.05))
         assert side_effect == []
     finally:
         release.set()
         executor.close()
 
 
-def test_a_command_that_outlives_its_caller_reports_what_it_ended_with():
+async def test_a_command_that_outlives_its_caller_reports_what_it_ended_with():
     """The reason a wedged realm finally gives up is logged, not swallowed."""
     messages = []
     token = sink(messages)
@@ -158,7 +160,7 @@ def test_a_command_that_outlives_its_caller_reports_what_it_ended_with():
     assert "its caller waited 0.05s" in messages[0]
 
 
-def test_a_command_that_finishes_late_is_reported_too():
+async def test_a_command_that_finishes_late_is_reported_too():
     messages = []
     token = sink(messages)
     executor = RealmExecutor(name="test-late-success")

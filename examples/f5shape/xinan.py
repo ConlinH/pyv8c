@@ -1,9 +1,15 @@
-"""Southwest 单程航班查询 demo。
+"""Southwest 单程航班查询 demo；页面 fetch 触发 F5 Shape 并取 shopping 结果。
 
-直接运行本文件，无启动参数；修改底部的日期、起点、终点即可。
-search_flights("2026-11-14", "ISP", "BUR") 打印 Shape 头和航班信息，
-返回航班列表，不保存文件。代理、超时和固定业务参数均写在本文件。
+业务请求走 page.net.fetch（页面 JS 的 fetch），Shape SDK 才会注入
+Ee30zvqlwf-* 请求头；page.net.get 是宿主直连，拿不到这些头。
+直接运行本文件即可，日期/机场/代理/超时见 --help。
 """
+from __future__ import annotations
+
+import argparse
+import asyncio
+from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 import json
 import re
@@ -11,154 +17,140 @@ import sys
 from urllib.parse import urlencode, urljoin, urlsplit
 import uuid
 
-sys.dont_write_bytecode = True
-WORKSPACE = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(WORKSPACE / "pyv8"), str(WORKSPACE / "pyv8c")]
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'pyv8c'))
 
-from pyv8c import pyv8
 from loguru import logger
-from pyv8c import Browser, register_transport
+from pyv8c import register_transport
+from pyv8c.async_api import Browser
 from pyv8c.network.curl_cffi import CurlCffiTransport
 
-BASE_URL = "https://www.southwest.com"
-API_URL = BASE_URL + "/api/air-booking/v1/air-booking/page/air/booking/shopping"
-SDK_HEADERS = tuple(f"Ee30zvqlwf-{suffix}" for suffix in "ABCDFZ")
-
-PROXY = "http://127.0.0.1:7890"
-
-
-def _print_flights(flights):
-    print(f"\n查询成功，共 {len(flights)} 个航班方案（时间为各机场当地时间）：")
-    for index, flight in enumerate(flights, 1):
-        segments = flight.get("segments", [])
-        route = [flight["originationAirportCode"]] + [
-            segment["destinationAirportCode"] for segment in segments
-        ]
-        numbers = " / ".join(
-            f'{segment["marketingCarrierCode"]}{segment["flightNumber"]}'
-            for segment in segments
-        )
-        minutes = flight["totalDuration"]
-        stops = max(0, len(segments) - 1) + sum(
-            segment.get("numberOfStops", 0) for segment in segments
-        )
-        print(f"\n{index}. {numbers} | {' → '.join(route)}")
-        print(f'   出发：{flight["departureDateTime"]}')
-        print(f'   到达：{flight["arrivalDateTime"]}')
-        print(f"   总时长：{minutes // 60}小时{minutes % 60}分 | 经停：{stops}次")
-        fares = []
-        for name, product in flight.get("fareProducts", {}).get("ADULT", {}).items():
-            price = product.get("fare", {}).get("totalFare", {})
-            fares.append(
-                f'{name}: {price.get("currencyCode", "")} {price.get("value", "--")}'
-                f' [{product.get("availabilityStatus", "--")}]'
-            )
-        print("   票价：" + " | ".join(fares))
+BASE = 'https://www.southwest.com'
+API = BASE + '/api/air-booking/v1/air-booking/page/air/booking/shopping'
+SHAPE_HEADERS = tuple(f'Ee30zvqlwf-{s}' for s in 'ABCDFZ')
+DEFAULT_PROXY = 'http://127.0.0.1:7890'
+DEFAULT_DATE = (date.today() + timedelta(days=1)).isoformat()  # 明天
 
 
-def search_flights(date, origin, destination):
-    """查询日期 YYYY-MM-DD、起点 IATA、终点 IATA；打印并返回航班列表。"""
+def show_flights(flights):
+    """打印航班号、路线与成人票价。"""
+    for flight in flights:
+        segments = flight.get('segments', [])
+        numbers = '/'.join(
+            f'{s["marketingCarrierCode"]}{s["flightNumber"]}' for s in segments)
+        route = ' → '.join([flight['originationAirportCode']]
+                           + [s['destinationAirportCode'] for s in segments])
+        fares = ', '.join(
+            p.get('fare', {}).get('totalFare', {}).get('value', '--')
+            for p in flight.get('fareProducts', {}).get('ADULT', {}).values())
+        logger.info('{} {} → {} | {}', numbers, flight['departureDateTime'], route, fares)
+
+
+async def run(*, date=DEFAULT_DATE, origin='ISP', destination='BUR',
+              proxy=DEFAULT_PROXY, timeout=60):
+    """查询日期 YYYY-MM-DD、起点/终点 IATA；打印并返回航班列表。"""
     origin, destination = origin.strip().upper(), destination.strip().upper()
     body = {
-        "lapInfantPassengersCount": "0", "olderChildCount": "0", "teensCount": "0",
-        "youngerChildCount": "0", "adultsCount": "1", "adultPassengersCount": "1",
-        "destinationAirportCode": destination, "departureDate": date,
-        "departureTimeOfDay": "ALL_DAY", "fareType": "USD", "int": "HOMEQBOMAIR",
-        "originationAirportCode": origin, "passengerType": "ADULT", "promoCode": "",
-        "returnDate": "", "returnTimeOfDay": "ALL_DAY", "tripType": "oneway",
+        'lapInfantPassengersCount': '0', 'olderChildCount': '0', 'teensCount': '0',
+        'youngerChildCount': '0', 'adultsCount': '1', 'adultPassengersCount': '1',
+        'destinationAirportCode': destination, 'departureDate': date,
+        'departureTimeOfDay': 'ALL_DAY', 'fareType': 'USD', 'int': 'HOMEQBOMAIR',
+        'originationAirportCode': origin, 'passengerType': 'ADULT', 'promoCode': '',
+        'returnDate': '', 'returnTimeOfDay': 'ALL_DAY', 'tripType': 'oneway',
     }
-    page_url = BASE_URL + "/air/booking/select-depart?" + urlencode(
-        {**body, "from": origin, "to": destination}
-    )
+    page_url = BASE + '/air/booking/select-depart?' + urlencode(
+        {**body, 'from': origin, 'to': destination})
     config = {}
 
     def intercept(url, request):
         target = urlsplit(url)
-        if target.scheme not in ("http", "https"):
+        if target.scheme not in ('http', 'https'):
             return None
-        keep = target.hostname == "www.southwest.com" and (
-            url in (page_url, API_URL, config.get("bootstrap"))
-            or target.path.startswith("/resources/")
-            or target.path == "/assets/app/scripts/swa-common.js"
+        keep = target.hostname == 'www.southwest.com' and (
+            url in (page_url, API, config.get('bootstrap'))
+            or target.path.startswith('/resources/')
+            or target.path == '/assets/app/scripts/swa-common.js'
         )
         return None if keep else False
 
     class Transport(CurlCffiTransport):
         def _call(self, request):
-            request.timeout = 25
-            if request.url == API_URL:
-                headers = {name.lower(): value for name, value in request.headers.items()}
-                print("\n本次请求使用的 Shape 参数：")
-                for name in SDK_HEADERS:
-                    if not headers.get(name.lower()):
-                        raise RuntimeError(f"缺少 Shape 请求头：{name}")
-                    print(f"{name}: {headers[name.lower()]}")
+            request = replace(request, timeout=25)
+            if request.url == API:
+                headers = {k.lower(): v for k, v in request.headers.items()}
+                missing = [name for name in SHAPE_HEADERS if not headers.get(name.lower())]
+                if missing:
+                    raise RuntimeError(f'缺少 Shape 请求头：{", ".join(missing)}')
+                logger.info('Shape 头已就绪：{}', ', '.join(SHAPE_HEADERS))
             response = super()._call(request)
             if request.url == page_url:
-                if response.status != 200:
-                    raise RuntimeError(f"查询页面 HTTP {response.status}")
                 bootstrap = re.search(
-                    r'''src=["']([^"']*/swa-ui/bootstrap/[^"']+/data\.js)["']''',
-                    response.text,
-                )
-                version = re.search(r"/v2/air/booking/static/([^/]+)/js/", response.text)
+                    r'''src=["']([^"']*/swa-ui/bootstrap/[^"']+/data\.js)["']''', response.text)
+                version = re.search(r'/v2/air/booking/static/([^/]+)/js/', response.text)
                 if not bootstrap or not version:
-                    raise RuntimeError("页面缺少 bootstrap 或应用版本")
-                config["bootstrap"] = urljoin(BASE_URL, bootstrap[1])
-                config["version"] = version[1]
-            elif request.url == config.get("bootstrap"):
+                    raise RuntimeError('页面缺少 bootstrap 或应用版本')
+                config['bootstrap'] = urljoin(BASE, bootstrap[1])
+                config['version'] = version[1]
+            elif request.url == config.get('bootstrap'):
                 match = re.search(
                     r'''["'][^"']+/api-keys["']:\[function\(require,module,exports\)\{\s*module.exports\s*=\s*(\{.*?\});''',
-                    response.text,
-                )
+                    response.text)
                 if not match:
-                    raise RuntimeError("bootstrap 缺少 API key 配置")
-                config["api_key"] = json.loads(match[1])["prod"]
+                    raise RuntimeError('bootstrap 缺少 API key 配置')
+                config['api_key'] = json.loads(match[1])['prod']
             return response
 
-    register_transport("southwest-demo", Transport, proxy=True)
-    browser = Browser(
-        proxy=PROXY, http_engine="southwest-demo",
-        http_options={"impersonate": "chrome150", "timeout": 25}, cache=False,
-        resource_interceptor=intercept, threaded_loaders=True, stub_logging="off",
-    )
-    try:
+    register_transport('southwest-demo', Transport, proxy=True)
+    async with Browser(
+        proxy=proxy, http_engine='southwest-demo',
+        http_options={'impersonate': 'chrome150', 'timeout': 25},
+        cache=False, resource_interceptor=intercept,
+        threaded_loaders=True, stub_logging='off',
+    ) as browser:
         page = browser.new_profile().new_page()
-        page.goto(page_url, wait_until="domcontentloaded", timeout=45)
-        if not config.get("api_key"):
-            raise RuntimeError("bootstrap 未加载成功，无法读取 API key")
-        headers = {
-            "Accept": "application/json, text/plain, */*", "content-type": "application/json",
-            "x-api-key": config["api_key"], "x-channel-id": "southwest",
-            "x-app-id": "air-booking-v2", "x-app-version": config["version"],
-            "x-diagnostic": json.dumps({"spa": config["version"]}, separators=(",", ":")),
-            "x-user-experience-id": str(uuid.uuid4()),
-        }
-        # 页面 fetch 经过原始 SDK，直接 page.net.get() 不会生成这些头。
-        response = page.net.fetch(
-            API_URL, method="POST", headers=headers,
-            body=json.dumps(body, separators=(",", ":")), timeout=60,
+        await page.goto(page_url, wait_until='domcontentloaded', timeout=timeout)
+        if not config.get('api_key'):
+            raise RuntimeError('bootstrap 未加载成功，无法读取 API key')
+        response = await page.net.fetch(
+            API, method='POST',
+            headers={
+                'Accept': 'application/json, text/plain, */*', 'content-type': 'application/json',
+                'x-api-key': config['api_key'], 'x-channel-id': 'southwest',
+                'x-app-id': 'air-booking-v2', 'x-app-version': config['version'],
+                'x-diagnostic': json.dumps({'spa': config['version']}, separators=(',', ':')),
+                'x-user-experience-id': str(uuid.uuid4()),
+            },
+            body=json.dumps(body, separators=(',', ':')), timeout=timeout,
         )
         if response.status != 200:
-            raise RuntimeError(f"Shopping HTTP {response.status}: {response.text[:1000]}")
-        products = response.json().get("data", {}).get("searchResults", {}).get("airProducts")
+            raise RuntimeError(f'Shopping HTTP {response.status}: {response.text[:1000]}')
+        products = response.json().get('data', {}).get('searchResults', {}).get('airProducts')
         if not isinstance(products, list):
-            raise RuntimeError(f"接口未返回航班数据：{response.text[:1000]}")
-        flights = [flight for product in products for flight in product.get("details", [])]
-        _print_flights(flights)
-        return flights
-    finally:
-        browser.close()
+            raise RuntimeError(f'接口未返回航班数据：{response.text[:1000]}')
+        return [f for product in products for f in product.get('details', [])]
 
 
-if __name__ == "__main__":
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
+async def main():
+    parser = argparse.ArgumentParser(description='在 pyv8c 中查询 Southwest 单程航班。')
+    parser.add_argument('--date', default=DEFAULT_DATE, help='出发日期 YYYY-MM-DD；默认明天')
+    parser.add_argument('--origin', default='ISP')
+    parser.add_argument('--destination', default='BUR')
+    parser.add_argument('--proxy', default=DEFAULT_PROXY, help='代理地址；传 none 表示直连')
+    parser.add_argument('--timeout', type=float, default=60)
+    args = parser.parse_args()
+    proxy = None if args.proxy.lower() in {'none', ''} else args.proxy
     logger.remove()
-    logger.add(sys.stderr, level="WARNING")
+    logger.add(sys.stdout, level='INFO')
     try:
-        search_flights("2026-11-14", "ISP", "BUR")
-    except (Exception, pyv8.JSException) as error:
-        print(f"查询失败：{error}", file=sys.stderr)
-        raise SystemExit(1)
+        flights = await run(date=args.date, origin=args.origin,
+                            destination=args.destination, proxy=proxy, timeout=args.timeout)
+    except Exception as error:
+        logger.error('查询失败：{}: {}', type(error).__name__, error)
+        return 1
+    logger.success('查询成功，共 {} 个航班方案（时间为各机场当地时间）', len(flights))
+    show_flights(flights)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(asyncio.run(main()))

@@ -11,14 +11,13 @@ the rollback semantics that matter to real pages:
 * an aborted ``versionchange`` upgrade keeps the old schema, old version and
   old data, and does not leave a stale connection behind.
 """
-import time
 from uuid import uuid4
 
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 pytestmark = pytest.mark.slow
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 # Narrow bulk-result, generated-key, unique-index and multiEntry behaviour is
 # compared with Chrome in tests/repros/corpus.py. This battery retains the
@@ -33,18 +32,19 @@ def _loader(url, request):
 
 
 @pytest.fixture
-def page():
-    browser = Browser(resource_loader=_loader, stub_logging="off")
+async def page():
+    browser = (await Browser(resource_loader=_loader, stub_logging="off").__aenter__())
     context = browser.new_profile()
-    page = context.new_page(ORIGIN + "/")
+    page = context.new_page()
+    await page.goto(ORIGIN + "/")
     try:
         yield page
     finally:
-        page.close()
-        browser.close()
+        (await page.close())
+        (await browser.close())
 
 
-def test_a_stored_arraybuffer_keeps_its_bytes(page):
+async def test_a_stored_arraybuffer_keeps_its_bytes(page):
     """A buffer has nothing enumerable on it, so a clone that walks properties alone
     would store an empty object; what comes back is the buffer a browser stores."""
     page.evaluate("""(() => {
@@ -65,31 +65,17 @@ def test_a_stored_arraybuffer_keeps_its_bytes(page):
             };
         };
     })()""")
-    wait_until(page, "window.__seen !== null")
+    await page.wait_for("window.__seen !== null", timeout=10)
     assert page.evaluate("window.__seen") == [True, 4, "1,2,3,4"]
 
 
-def wait_until(page, expression, until=True, timeout=10.0, interval=0.01):
-    deadline = time.monotonic() + timeout
-    last = None
-    while time.monotonic() < deadline:
-        last = page.evaluate(expression)
-        if last == until:
-            return last
-        time.sleep(interval)
-    return last
-
-
-def run_probe(page, body, timeout=10.0):
+async def run_probe(page, body, timeout=10.0):
     """Evaluate ``body`` (an async script) and return its collected notes."""
     page.evaluate(
         "(() => { globalThis.__idb = null; })()"
     )
     page.evaluate(body)
-    finished = wait_until(
-        page, "!!globalThis.__idb && globalThis.__idb.done === true", timeout=timeout
-    )
-    assert finished, "probe did not finish in time"
+    await page.wait_for("!!globalThis.__idb && globalThis.__idb.done === true", timeout=timeout)
     result = page.evaluate("globalThis.__idb")
     assert "fatal" not in result, "probe hit a fatal error: %s" % result.get("fatal")
     return result
@@ -128,7 +114,7 @@ OPEN_HELPERS = r"""
 # Smoke: open / upgrade / write / read across connections
 # --------------------------------------------------------------------------
 
-def test_open_crud_and_cross_connection_persistence(page):
+async def test_open_crud_and_cross_connection_persistence(page):
     name = "crud_" + uuid4().hex[:12]
     body = r"""
 (async function () {
@@ -181,7 +167,7 @@ def test_open_crud_and_cross_connection_persistence(page):
 })();
 """.replace("__DB__", name)
 
-    result = run_probe(page, body)
+    result = await run_probe(page, body)
     assert result["dbVersion"] == 1
     assert result["storeNames"] == ["books"]
     assert result["count"] == 3
@@ -197,7 +183,7 @@ def test_open_crud_and_cross_connection_persistence(page):
 # Cursors and key ranges
 # --------------------------------------------------------------------------
 
-def test_cursor_directions_ranges_continue_and_advance(page):
+async def test_cursor_directions_ranges_continue_and_advance(page):
     name = "cursor_" + uuid4().hex[:12]
     body = r"""
 (async function () {
@@ -266,7 +252,7 @@ def test_cursor_directions_ranges_continue_and_advance(page):
 })();
 """.replace("__DB__", name)
 
-    result = run_probe(page, body)
+    result = await run_probe(page, body)
     assert result["nextKeys"] == [1, 2, 3, 4, 5]
     assert result["prevKeys"] == [5, 4, 3, 2, 1]
     assert result["lowOpenKeys"] == [3, 4, 5]
@@ -280,7 +266,7 @@ def test_cursor_directions_ranges_continue_and_advance(page):
 # Indexes: get/getAll/count/cursors keyed by index order
 # --------------------------------------------------------------------------
 
-def test_index_lookup_iteration_and_duplicate_index_keys(page):
+async def test_index_lookup_iteration_and_duplicate_index_keys(page):
     name = "index_" + uuid4().hex[:12]
     body = r"""
 (async function () {
@@ -327,7 +313,7 @@ def test_index_lookup_iteration_and_duplicate_index_keys(page):
 })();
 """.replace("__DB__", name)
 
-    result = run_probe(page, body)
+    result = await run_probe(page, body)
     assert result["indexNames"] == ["byName"]
     assert result["getBob"] == 2
     assert result["getKeyCara"] == 3
@@ -343,7 +329,7 @@ def test_index_lookup_iteration_and_duplicate_index_keys(page):
 # Transaction abort rollback semantics
 # --------------------------------------------------------------------------
 
-def test_abort_rolls_back_data_and_indexes(page):
+async def test_abort_rolls_back_data_and_indexes(page):
     name = "abort_" + uuid4().hex[:12]
     body = r"""
 (async function () {
@@ -408,7 +394,7 @@ def test_abort_rolls_back_data_and_indexes(page):
 })();
 """.replace("__DB__", name)
 
-    result = run_probe(page, body)
+    result = await run_probe(page, body)
     # explicit abort: every successful write was undone
     assert result["explicitOutcome"] == "aborted"
     assert result["afterExplicit"]["ids"] == [1, 2]
@@ -431,7 +417,7 @@ def test_abort_rolls_back_data_and_indexes(page):
 # Version change: an aborted upgrade must fully restore the old state
 # --------------------------------------------------------------------------
 
-def test_aborted_versionchange_keeps_old_schema_version_and_data(page):
+async def test_aborted_versionchange_keeps_old_schema_version_and_data(page):
     name = "upgr_" + uuid4().hex[:12]
     body = r"""
 (async function () {
@@ -492,7 +478,7 @@ def test_aborted_versionchange_keeps_old_schema_version_and_data(page):
 })();
 """.replace("__DB__", name)
 
-    result = run_probe(page, body)
+    result = await run_probe(page, body)
     assert result["abortError"] == "AbortError"
     assert result["versionAfterAbort"] == 1
     assert result["storesAfterAbort"] == ["s"]
@@ -508,7 +494,7 @@ def test_aborted_versionchange_keeps_old_schema_version_and_data(page):
 # Keys, ranges, cmp and DOMException names
 # --------------------------------------------------------------------------
 
-def test_key_ordering_keyrange_and_exception_names(page):
+async def test_key_ordering_keyrange_and_exception_names(page):
     name = "errs_" + uuid4().hex[:12]
     body = r"""
 (async function () {
@@ -585,7 +571,7 @@ def test_key_ordering_keyrange_and_exception_names(page):
 })();
 """.replace("__DB__", name)
 
-    result = run_probe(page, body)
+    result = await run_probe(page, body)
     assert result["cmp"] == [-1, 0, 1, -1]
     assert result["cmpBad"] == "DataError"
     assert result["range"] == [True, False, True, False, False, True, True]
@@ -599,23 +585,25 @@ def test_key_ordering_keyrange_and_exception_names(page):
     assert "delme" not in result["databases"]
 
 
-def test_databases_do_not_leak_across_contexts():
-    browser = Browser(resource_loader=_loader, stub_logging="off")
+async def test_databases_do_not_leak_across_contexts():
+    browser = (await Browser(resource_loader=_loader, stub_logging="off").__aenter__())
     try:
-        first = browser.new_profile().new_page(ORIGIN + "/")
+        first = browser.new_profile().new_page()
+        await first.goto(ORIGIN + "/")
         first.evaluate("""(() => { globalThis.out = null;
             const req = indexedDB.open('leaky', 1);
             req.onupgradeneeded = () => req.result.createObjectStore('s');
             req.onsuccess = () => { req.result.close(); globalThis.out = true; };
             req.onerror = () => { globalThis.out = req.error && req.error.name; };
         })()""")
-        assert wait_until(first, "globalThis.out") is True
+        await first.wait_for("globalThis.out === true", timeout=10)
 
-        second = browser.new_profile().new_page(ORIGIN + "/")
+        second = browser.new_profile().new_page()
+        await second.goto(ORIGIN + "/")
         second.evaluate("""(() => { globalThis.names = null;
             indexedDB.databases().then((dbs) => { globalThis.names = dbs.map((d) => d.name); });
         })()""")
-        assert wait_until(second, "globalThis.names !== null")
+        await second.wait_for("globalThis.names !== null", timeout=10)
         assert second.evaluate("globalThis.names") == []
     finally:
-        browser.close()
+        (await browser.close())

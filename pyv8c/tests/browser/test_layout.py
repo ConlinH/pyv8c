@@ -4,24 +4,24 @@ import os
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.foundation import system_fonts
 from pyv8c.foundation import text as text_engine
 from pyv8c.web.dom import layout
 
 
 @pytest.fixture
-def page():
-    browser = Browser(cache=False, stub_logging="off")
+async def page():
+    browser = (await Browser(cache=False, stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content("<body></body>", url="http://layout.test/")
+    (await page.set_content("<body></body>", url="http://layout.test/", wait_until="commit"))
     try:
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_family_is_measured_with_the_face_that_family_names():
+async def test_a_family_is_measured_with_the_face_that_family_names():
     """One table answers both "is this font here" and "how wide is this text", so a face
     ``local()`` finds is the face the page then measures with."""
     record = next((item for item in system_fonts.records() if item.path), None)
@@ -32,7 +32,7 @@ def test_a_family_is_measured_with_the_face_that_family_names():
     assert system_fonts.normalize(face.family) == system_fonts.normalize(record.family)
 
 
-def test_a_collection_face_is_measured_at_its_own_index():
+async def test_a_collection_face_is_measured_at_its_own_index():
     """A face inside a ``.ttc`` is a face of its own: measuring it needs the index."""
     record = next((item for item in system_fonts.records() if item.index), None)
     if record is None:
@@ -42,7 +42,7 @@ def test_a_collection_face_is_measured_at_its_own_index():
     assert text_engine.shape("A", path, index=record.index, size=16.0).width > 0
 
 
-def test_adjacent_inline_elements_keep_cross_element_kerning(page):
+async def test_adjacent_inline_elements_keep_cross_element_kerning(page):
     if not any(item.family == "Noto Sans SC" and system_fonts.file_for(item)
                for item in system_fonts.records()):
         pytest.skip("Noto Sans SC is not installed")
@@ -55,7 +55,7 @@ def test_adjacent_inline_elements_keep_cross_element_kerning(page):
     })()""") == [8.765625, 8.234375]
 
 
-def test_windows_cambria_math_uses_hinted_advance():
+async def test_windows_cambria_math_uses_hinted_advance():
     if os.name != "nt":
         pytest.skip("Windows font metrics")
     record = next((item for item in system_fonts.records()
@@ -66,7 +66,7 @@ def test_windows_cambria_math_uses_hinted_advance():
                              index=record.index, size=16).width == 11
 
 
-def test_an_uninstalled_family_falls_back_instead_of_failing():
+async def test_an_uninstalled_family_falls_back_instead_of_failing():
     """CSS walks the family list and then uses the platform's default, so a name this
     machine does not have still measures -- which is what an uninstalled font looks like."""
     if not system_fonts.records():
@@ -75,17 +75,17 @@ def test_an_uninstalled_family_falls_back_instead_of_failing():
     assert layout.text_width("abc", {"font-family": "Definitely Not A Font 123"}) > 0
 
 
-def test_center_is_a_block_containing_a_fixed_width_child(page):
-    page.set_content('''<!doctype html><body style="margin:0;width:640px">
+async def test_center_is_a_block_containing_a_fixed_width_child(page):
+    (await page.set_content('''<!doctype html><body style="margin:0;width:640px">
       <center id="container"><div id="child" style="width:300px;height:34px"></div></center>
-    </body>''')
+    </body>''', wait_until="commit"))
     assert page.evaluate('''(() => {
       const host=document.getElementById('container'),child=document.getElementById('child');
       return [getComputedStyle(host).display,host.offsetWidth,child.offsetWidth];
     })()''') == ['block', 640, 300]
 
 
-def test_nested_layout_reuses_cascade_within_one_pass_and_recomputes_after_change(page, monkeypatch):
+async def test_nested_layout_reuses_cascade_within_one_pass_and_recomputes_after_change(page, monkeypatch):
     from pyv8c.web.css import cascade
     original = cascade._selector_matches
     calls = 0
@@ -96,9 +96,9 @@ def test_nested_layout_reuses_cascade_within_one_pass_and_recomputes_after_chang
         return original(element, selector)
 
     monkeypatch.setattr(cascade, "_selector_matches", counted)
-    page.set_content("<style>div { color: red } .box { padding: 1px }</style>"
+    (await page.set_content("<style>div { color: red } .box { padding: 1px }</style>"
                      + "<div class='box'>" * 35 + "x" + "</div>" * 35,
-                     url="http://layout.test/")
+                     url="http://layout.test/", wait_until="commit"))
     calls = 0
     assert page.evaluate("document.querySelector('.box').offsetWidth > 0")
     assert calls < 300  # linear passes rather than every ancestor per element
@@ -109,9 +109,9 @@ def test_nested_layout_reuses_cascade_within_one_pass_and_recomputes_after_chang
     })()""")
 
 
-def test_geometry_reuses_boxes_within_one_property_read(page, monkeypatch):
-    page.set_content("<div id='box' style='width:40px;height:20px'></div>",
-                     url="http://layout.test/")
+async def test_geometry_reuses_boxes_within_one_property_read(page, monkeypatch):
+    (await page.set_content("<div id='box' style='width:40px;height:20px'></div>",
+                     url="http://layout.test/", wait_until="commit"))
     original = layout.layout
     calls = 0
 
@@ -128,9 +128,9 @@ def test_geometry_reuses_boxes_within_one_property_read(page, monkeypatch):
     assert calls == 0  # offset lookup reuses the snapshot directly
 
 
-def test_hit_testing_reuses_layout_styles_and_sees_mutations(page, monkeypatch):
-    page.set_content("<style>#box { width: 40px; height: 20px }</style>"
-                     "<div id='box'></div>", url="http://layout.test/")
+async def test_hit_testing_reuses_layout_styles_and_sees_mutations(page, monkeypatch):
+    (await page.set_content("<style>#box { width: 40px; height: 20px }</style>"
+                     "<div id='box'></div>", url="http://layout.test/", wait_until="commit"))
     assert page.evaluate("document.elementFromPoint(10, 10).id") == "box"
     original = layout.computed_style
 
@@ -146,17 +146,19 @@ def test_hit_testing_reuses_layout_styles_and_sees_mutations(page, monkeypatch):
     })()""") != "box"
 
 
-def test_explicit_empty_rules_remain_empty(page):
-    page.set_content("<style>#box { width: 300px }</style><div id='box'></div>",
-                     url="http://layout.test/")
+async def test_explicit_empty_rules_remain_empty(page):
+    from pyv8c.web.css.cascade import StyleRules
+
+    (await page.set_content("<style>#box { width: 300px }</style><div id='box'></div>",
+                     url="http://layout.test/", wait_until="commit"))
     node = page.document.fn_getElementById("box")
     assert layout.layout(node).width == 300
-    assert layout.layout(node, rules=()).width != 300
+    assert layout.layout(node, rules=StyleRules(())).width != 300
 
 
-def test_layout_snapshot_reuses_pass_and_invalidates_on_dom_changes(page, monkeypatch):
-    page.set_content("<div id='box' style='width:40px;height:20px'>x</div>",
-                     url="http://layout.test/")
+async def test_layout_snapshot_reuses_pass_and_invalidates_on_dom_changes(page, monkeypatch):
+    (await page.set_content("<div id='box' style='width:40px;height:20px'>x</div>",
+                     url="http://layout.test/", wait_until="commit"))
     original = layout._place
     roots = 0
 
@@ -195,9 +197,9 @@ def test_layout_snapshot_reuses_pass_and_invalidates_on_dom_changes(page, monkey
     assert roots == 4
 
 
-def test_layout_snapshot_observes_class_and_viewport(page, monkeypatch):
-    page.set_content("<style>.wide { width: 90px }</style><div id='box'></div>",
-                     url="http://layout.test/")
+async def test_layout_snapshot_observes_class_and_viewport(page, monkeypatch):
+    (await page.set_content("<style>.wide { width: 90px }</style><div id='box'></div>",
+                     url="http://layout.test/", wait_until="commit"))
     node = page.document.fn_getElementById('box')
     before = layout.layout(node).width
     node.attributes['class'] = 'wide'
@@ -209,9 +211,9 @@ def test_layout_snapshot_observes_class_and_viewport(page, monkeypatch):
     assert layout.layout(page.document.get_body()).width == 384
 
 
-def test_layout_snapshot_observes_stylesheet_fonts_and_navigation(page):
-    page.set_content("<style>#box { width: 40px }</style><div id='box'></div>",
-                     url="http://layout.test/")
+async def test_layout_snapshot_observes_stylesheet_fonts_and_navigation(page):
+    (await page.set_content("<style>#box { width: 40px }</style><div id='box'></div>",
+                     url="http://layout.test/", wait_until="commit"))
     node = page.document.fn_getElementById('box')
     assert layout.layout(node).width == 40
     old_snapshot = page.document._layout_snapshot
@@ -229,15 +231,15 @@ def test_layout_snapshot_observes_stylesheet_fonts_and_navigation(page):
     assert page.document._layout_snapshot is None
 
     previous = page.document
-    page.set_content("<div id='box' style='width:25px'></div>",
-                     url="http://layout.test/next")
+    (await page.set_content("<div id='box' style='width:25px'></div>",
+                     url="http://layout.test/next", wait_until="commit"))
     assert page.document is not previous
     assert page.evaluate("document.getElementById('box').offsetWidth") == 25
 
 
-def test_layout_snapshot_starts_fresh_at_event_boundary(page):
-    page.set_content("<button id='box' style='width:40px;height:20px'>ok</button>",
-                     url="http://layout.test/")
+async def test_layout_snapshot_starts_fresh_at_event_boundary(page):
+    (await page.set_content("<button id='box' style='width:40px;height:20px'>ok</button>",
+                     url="http://layout.test/", wait_until="commit"))
     assert page.evaluate("document.getElementById('box').offsetWidth") == 40
     previous = page.document._layout_snapshot
     assert previous is not None
@@ -247,9 +249,9 @@ def test_layout_snapshot_starts_fresh_at_event_boundary(page):
     assert page.document._layout_snapshot is not previous
 
 
-def test_link_sheet_attribute_change_reparses_rules(page):
-    page.set_content("<link id='sheet' rel='stylesheet'><div id='box'></div>",
-                     url="http://layout.test/")
+async def test_link_sheet_attribute_change_reparses_rules(page):
+    (await page.set_content("<link id='sheet' rel='stylesheet'><div id='box'></div>",
+                     url="http://layout.test/", wait_until="commit"))
     sheet = page.document.fn_getElementById('sheet')
     box = page.document.fn_getElementById('box')
     sheet._stylesheet_text = '#box { width: 70px }'
@@ -259,7 +261,7 @@ def test_link_sheet_attribute_change_reparses_rules(page):
     assert layout.layout(box).width != 70
 
 
-def test_hidden_element_keeps_layout_and_font_size_changes_height(page):
+async def test_hidden_element_keeps_layout_and_font_size_changes_height(page):
     # Chrome uses the profile's default font for the unknown family; its line is 165px.
     assert page.evaluate("""(() => {
         const div = document.createElement('div');
@@ -274,7 +276,7 @@ def test_hidden_element_keeps_layout_and_font_size_changes_height(page):
     })()""") == [True, 165, "DFPhelvetica", "114px", True]
 
 
-def test_the_cascade_orders_by_importance_and_specificity(page):
+async def test_the_cascade_orders_by_importance_and_specificity(page):
     """Important beats plain, and specificity beats the order the rules were written in."""
     assert page.evaluate("""(() => {
         document.body.innerHTML =
@@ -286,7 +288,7 @@ def test_the_cascade_orders_by_importance_and_specificity(page):
     })()""") == [9, 3]
 
 
-def test_a_fixed_box_measures_from_the_viewport(page):
+async def test_a_fixed_box_measures_from_the_viewport(page):
     """A fixed box measures against the viewport, and has no offset parent."""
     assert page.evaluate("""(() => {
         document.body.innerHTML = '<div style="position:relative;padding:40px">'
@@ -298,7 +300,7 @@ def test_a_fixed_box_measures_from_the_viewport(page):
     })()""") == [0, 0, "null"]
 
 
-def test_auto_margins_centre_the_box(page):
+async def test_auto_margins_centre_the_box(page):
     """``margin: auto`` shares the free space, so a declared width sits in the middle."""
     assert page.evaluate("""(() => {
         document.body.innerHTML = '<div id="t" style="width:100px;height:10px;margin:0 auto"></div>';
@@ -308,7 +310,7 @@ def test_auto_margins_centre_the_box(page):
     })()""")[2] is True
 
 
-def test_style_rules_and_basic_flex_grid_geometry(page):
+async def test_style_rules_and_basic_flex_grid_geometry(page):
     assert page.evaluate("""(() => {
         document.body.innerHTML = '<style>.item { height: 10px } span { color: red }</style>'
             + '<div id="flex" style="display:flex"><div class="item"></div><div class="item"></div></div>'
@@ -320,7 +322,7 @@ def test_style_rules_and_basic_flex_grid_geometry(page):
     })()""") == [10, "rgb(255, 0, 0)", 24, True]
 
 
-def test_nowrap_inline_width_includes_inter_element_space(page):
+async def test_nowrap_inline_width_includes_inter_element_space(page):
     assert page.evaluate("""(() => {
       document.body.innerHTML = '<span style="white-space:nowrap">'
         + '<b>first</b> <b>second</b></span>';
@@ -332,7 +334,7 @@ def test_nowrap_inline_width_includes_inter_element_space(page):
     })()""") is True
 
 
-def test_css_rotation_changes_client_rect_but_not_offset_size(page):
+async def test_css_rotation_changes_client_rect_but_not_offset_size(page):
     assert page.evaluate("""(() => {
       const box = document.createElement('div');
       box.style.cssText = 'width:16px;height:15px;transform:rotate(13deg)';
@@ -342,7 +344,7 @@ def test_css_rotation_changes_client_rect_but_not_offset_size(page):
     })()""") == [16, 15, 18.964187622070312, 18.214767456054688]
 
 
-def test_absolute_css_units_have_chrome_used_pixel_sizes(page):
+async def test_absolute_css_units_have_chrome_used_pixel_sizes(page):
     assert page.evaluate("""(() => {
       const parent = document.createElement('div');
       parent.style.cssText = 'position:fixed;left:-99999px;top:0;width:0;height:0;'
@@ -363,7 +365,7 @@ def test_absolute_css_units_have_chrome_used_pixel_sizes(page):
     ]
 
 
-def test_css_math_functions_produce_used_widths(page):
+async def test_css_math_functions_produce_used_widths(page):
     assert page.evaluate("""(() => {
       return ['calc(1px * pi)', 'calc(1px * e)',
               'calc(1px * sqrt(16))',
@@ -383,7 +385,7 @@ def test_css_math_functions_produce_used_widths(page):
     ]
 
 
-def test_css_math_keeps_used_precision_through_cssom_writes(page):
+async def test_css_math_keeps_used_precision_through_cssom_writes(page):
     assert page.evaluate("""(() => {
       const box = document.createElement('div');
       box.style.width = 'calc(1px * (12345.678901234))';
@@ -403,7 +405,7 @@ def test_css_math_keeps_used_precision_through_cssom_writes(page):
     ]
 
 
-def test_nested_css_math_keeps_blink_trigonometry_and_layout_units(page):
+async def test_nested_css_math_keeps_blink_trigonometry_and_layout_units(page):
     assert page.evaluate("""(() => {
       const expressions = [
         'calc( 1px * ( ( 2.71828 * 0.987654321 - 0.123456789 / ( 987654.321 * 12345.678 ) ) + 0.5555555 / sin( sin( 10000.1 * tan( 50000 ) / tan( 20000 ) + 1.0 / pi * 5.0 - 0.1111 ) / 100.0 + tan( 30000 + 40000 * 50000 + 0.0001 ) / 9999.9 * pi ) - 0.999999 * -100000.5 ) )',
@@ -425,7 +427,7 @@ def test_nested_css_math_keeps_blink_trigonometry_and_layout_units(page):
     ]
 
 
-def test_default_and_variable_font_weights_match_chrome_geometry(page):
+async def test_default_and_variable_font_weights_match_chrome_geometry(page):
     assert page.evaluate("""(() => {
       const result = [];
       for (const weight of ['400', '700']) {
@@ -445,13 +447,13 @@ def test_default_and_variable_font_weights_match_chrome_geometry(page):
     ]
 
 
-def test_root_client_box_uses_viewport_even_with_empty_body(page):
+async def test_root_client_box_uses_viewport_even_with_empty_body(page):
     assert page.evaluate("""[document.documentElement.clientWidth === innerWidth,
       document.documentElement.clientHeight === innerHeight,
       document.body.clientHeight]""") == [True, True, 0]
 
 
-def test_negative_absolute_positions_keep_computed_precision_and_quantize_geometry(page):
+async def test_negative_absolute_positions_keep_computed_precision_and_quantize_geometry(page):
     assert page.evaluate("""(() => {
       const box = document.createElement('div');
       box.style.cssText = 'position:fixed;left:-1.0053in;top:-1.03in;'
@@ -463,7 +465,7 @@ def test_negative_absolute_positions_keep_computed_precision_and_quantize_geomet
     })()""") == ['-96.5088px', '-98.88px', -96.5, -98.875]
 
 
-def test_rect_applies_transform_origin_and_ancestor_transform(page):
+async def test_rect_applies_transform_origin_and_ancestor_transform(page):
     assert page.evaluate('''(() => {
         const outer = document.createElement('div');
         outer.style.cssText = 'position:absolute;left:0;top:0;transform:translateX(100px)';
@@ -475,12 +477,12 @@ def test_rect_applies_transform_origin_and_ancestor_transform(page):
     })()''') == [50, 0, 50, 100]
 
 
-def test_button_intrinsic_size_tracks_value_and_variation_presentation(page):
+async def test_button_intrinsic_size_tracks_value_and_variation_presentation(page):
     from pyv8c.foundation import system_fonts
     available = {record.family.lower() for record in system_fonts.records()}
     if not {'arial', 'segoe ui emoji', 'noto sans sc'} <= available:
         pytest.skip('the Chrome comparison uses Arial, Segoe UI Emoji and Noto Sans SC')
-    page.set_content('<body></body>', url='https://example.test/')
+    (await page.set_content('<body></body>', url='https://example.test/', wait_until="commit"))
     assert page.evaluate('''(() => {
         const input = document.createElement('input');
         input.type = 'button'; input.style.all = 'revert';
@@ -498,13 +500,13 @@ def test_button_intrinsic_size_tracks_value_and_variation_presentation(page):
     ]
 
 
-def test_button_text_presentation_uses_monochrome_fallback(page):
+async def test_button_text_presentation_uses_monochrome_fallback(page):
     import os
     from pyv8c.foundation import system_fonts
     available = {record.family.lower() for record in system_fonts.records()}
     if os.name != 'nt' or not {'arial', 'segoe ui emoji', 'segoe ui symbol', 'noto sans sc'} <= available:
         pytest.skip('the Chrome comparison uses Windows Arial, Noto Sans SC and Segoe UI')
-    page.set_content('<body></body>', url='https://example.test/')
+    (await page.set_content('<body></body>', url='https://example.test/', wait_until="commit"))
     assert page.evaluate(r'''(() => {
         const input = document.createElement('input');
         input.type = 'button';
@@ -517,7 +519,7 @@ def test_button_text_presentation_uses_monochrome_fallback(page):
     })()''') == [[112, 147], [149, 135], [96, 135], [149, 135]]
 
 
-def test_button_explicit_border_box_size(page):
+async def test_button_explicit_border_box_size(page):
     assert page.evaluate('''(() => {
         const input = document.createElement('input');
         input.type = 'button';
@@ -528,7 +530,7 @@ def test_button_explicit_border_box_size(page):
     })()''') == [100, 80, 96, 76]
 
 
-def test_native_input_intrinsic_sizes_and_explicit_dimensions(page):
+async def test_native_input_intrinsic_sizes_and_explicit_dimensions(page):
     assert page.evaluate('''(() => {
         return ['color', 'checkbox', 'radio', 'range'].map(type => {
             const input = document.createElement('input');
@@ -546,7 +548,7 @@ def test_native_input_intrinsic_sizes_and_explicit_dimensions(page):
                  [13, 13, 13, 13, 80, 40], [129, 16, 129, 16, 80, 40]]
 
 
-def test_checkbox_without_native_appearance_has_no_intrinsic_size(page):
+async def test_checkbox_without_native_appearance_has_no_intrinsic_size(page):
     assert page.evaluate('''(() => {
         const input = document.createElement('input');
         input.type = 'checkbox'; input.style.appearance = 'none';
@@ -556,7 +558,7 @@ def test_checkbox_without_native_appearance_has_no_intrinsic_size(page):
     })()''') == [0, 0]
 
 
-def test_text_input_intrinsic_width_uses_size_and_font(page):
+async def test_text_input_intrinsic_width_uses_size_and_font(page):
     from pyv8c.foundation import system_fonts
     if 'arial' not in {record.family.lower() for record in system_fonts.records()}:
         pytest.skip('the Chrome comparison uses Arial')
@@ -577,7 +579,7 @@ def test_text_input_intrinsic_width_uses_size_and_font(page):
                  [151, 29], [177, 21], [251, 29], [247, 21], [351, 29]]
 
 
-def test_text_like_input_types_have_intrinsic_dimensions(page):
+async def test_text_like_input_types_have_intrinsic_dimensions(page):
     from pyv8c.foundation import system_fonts
     if 'arial' not in {record.family.lower() for record in system_fonts.records()}:
         pytest.skip('the Chrome comparison uses Arial')
@@ -589,7 +591,7 @@ def test_text_like_input_types_have_intrinsic_dimensions(page):
     }))()''') == [[177, 21, 169, 17]] * 6
 
 
-def test_submit_and_reset_with_explicit_labels_use_button_metrics(page):
+async def test_submit_and_reset_with_explicit_labels_use_button_metrics(page):
     from pyv8c.foundation import system_fonts
     if 'arial' not in {record.family.lower() for record in system_fonts.records()}:
         pytest.skip('the Chrome comparison uses Arial')
@@ -602,7 +604,7 @@ def test_submit_and_reset_with_explicit_labels_use_button_metrics(page):
     })))()''') == [[16, 21, 12, 17], [35.265625, 21, 31, 17]] * 2
 
 
-def test_submit_and_reset_default_labels_use_browser_ui_profile(page):
+async def test_submit_and_reset_default_labels_use_browser_ui_profile(page):
     from pyv8c.foundation import system_fonts
     families = {record.family.lower() for record in system_fonts.records()}
     if not {'arial', 'noto sans sc'} <= families:
@@ -619,22 +621,22 @@ def test_submit_and_reset_default_labels_use_browser_ui_profile(page):
         assert [height, client_width, client_height] == [25, 39, 21]
 
 
-def test_submit_ui_label_is_separate_from_navigator_language():
-    browser = Browser(real_network=False, stub_logging='off', environment={
+async def test_submit_ui_label_is_separate_from_navigator_language():
+    browser = (await Browser(real_network=False, stub_logging='off', environment={
         'form_controls.submit_label': 'OK', 'languages': ['zh-CN'],
-    })
+    }).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><input type="submit"></body>')
+        (await page.set_content('<body><input type="submit"></body>', wait_until="commit"))
         assert page.evaluate('''(() => {
             const input = document.querySelector('input');
             return [navigator.language, input.value, input.getBoundingClientRect().width];
         })()''') == ['zh-CN', '', 35.265625]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_file_input_intrinsic_size_uses_font_and_ui_labels(page):
+async def test_file_input_intrinsic_size_uses_font_and_ui_labels(page):
     from pyv8c.foundation import system_fonts
     families = {record.family.lower() for record in system_fonts.records()}
     if not {'arial', 'noto sans sc'} <= families:
@@ -653,7 +655,7 @@ def test_file_input_intrinsic_size_uses_font_and_ui_labels(page):
     })()''') == [[253, 25, 253, 25], [379, 35, 379, 35], [80, 40, 80, 40]]
 
 
-def test_time_input_fields_and_picker_dimensions(page):
+async def test_time_input_fields_and_picker_dimensions(page):
     from pyv8c.foundation import system_fonts
     if 'nsimsun' not in {record.family.lower() for record in system_fonts.records()}:
         pytest.skip('the Chrome comparison uses NSimSun')
@@ -673,7 +675,7 @@ def test_time_input_fields_and_picker_dimensions(page):
                  [94, 31, 90, 27], [80, 40, 76, 36]]
 
 
-def test_time_input_seconds_follow_value_and_minimum(page):
+async def test_time_input_seconds_follow_value_and_minimum(page):
     from pyv8c.foundation import system_fonts
     if 'nsimsun' not in {record.family.lower() for record in system_fonts.records()}:
         pytest.skip('the Chrome comparison uses NSimSun')
@@ -689,8 +691,8 @@ def test_time_input_seconds_follow_value_and_minimum(page):
     })()''') == [72, 95, 125, 95, 125]
 
 
-def test_computed_word_spacing_resolves_normal_and_inheritance(page):
-    page.set_content('<div id="a"><span id="b">hello world</span></div>')
+async def test_computed_word_spacing_resolves_normal_and_inheritance(page):
+    (await page.set_content('<div id="a"><span id="b">hello world</span></div>', wait_until="commit"))
     values = page.evaluate('''(() => {
         const a = document.querySelector('#a'), b = document.querySelector('#b');
         return ['', 'normal', 'initial', '1em'].map(value => {
@@ -703,23 +705,23 @@ def test_computed_word_spacing_resolves_normal_and_inheritance(page):
     ]
 
 
-def test_empty_atomic_inline_boxes_still_create_a_line_box(page):
-    page.set_content('''<!doctype html><body style="line-height:20px">
+async def test_empty_atomic_inline_boxes_still_create_a_line_box(page):
+    (await page.set_content('''<!doctype html><body style="line-height:20px">
         <div id="empty"><span></span></div>
         <div id="block"><span style="display:inline-block;width:0;height:0"></span></div>
         <div id="frame"><iframe style="width:0;height:0;border:0"></iframe></div>
         <div id="image"><img style="width:0;height:0"></div>
-        </body>''')
+        </body>''', wait_until="commit"))
     assert page.evaluate("['empty','block','frame','image'].map(id => document.getElementById(id).clientHeight)") == [0, 20, 20, 20]
 
 
-def test_text_input_client_width_excludes_editable_padding(page):
-    page.set_content('''<input id="search" type="search" style="width:200px;padding:10px 20px;border:3px solid">
-                        <input id="button" type="button" style="width:200px;padding:10px 20px;border:3px solid">''')
+async def test_text_input_client_width_excludes_editable_padding(page):
+    (await page.set_content('''<input id="search" type="search" style="width:200px;padding:10px 20px;border:3px solid">
+                        <input id="button" type="button" style="width:200px;padding:10px 20px;border:3px solid">''', wait_until="commit"))
     assert page.evaluate("['search','button'].map(id => {let x=document.getElementById(id);return [x.getBoundingClientRect().width,x.clientWidth]})") == [[200, 154], [200, 194]]
 
 
-def test_time_input_width_uses_font_metrics_and_bitmap_strikes(page):
+async def test_time_input_width_uses_font_metrics_and_bitmap_strikes(page):
     from pyv8c.foundation import system_fonts
     installed = {record.family.lower() for record in system_fonts.records()}
     if not {'nsimsun', 'consolas', 'courier new'} <= installed:
@@ -735,7 +737,7 @@ def test_time_input_width_uses_font_metrics_and_bitmap_strikes(page):
                   ['Courier New',77,103,137,105]]
 
 
-def test_font_fallback_cache_respects_each_environment():
+async def test_font_fallback_cache_respects_each_environment():
     from pyv8c.foundation.environment import BrowserEnvironment
     from pyv8c.foundation import system_fonts
     from pyv8c.web.dom.layout import _face_chain

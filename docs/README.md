@@ -7,6 +7,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [使用指南](pyv8c/usage.md) | 创建对象、页面执行、等待、环境配置、输入和关闭 |
+| [接口契约](pyv8c/api-contract.md) | 对象归属、同步与异步边界、超时和关闭 |
+| [协作式 Browser](pyv8c/cooperative-runtime.md) | 同步/异步入口、同线程执行、等待与生命周期契约 |
 | [架构设计](pyv8c/architecture.md) | 模块分层、绑定装配、所有权和状态归属 |
 | [任务调度](pyv8c/task-scheduling.md) | 执行组、Agent、任务源、微任务、定时器和渲染机会 |
 | [资源加载](pyv8c/resource-loading.md) | 拦截器、加载器、重定向、缓存及文档资源生命周期 |
@@ -18,7 +20,7 @@
 | [运行跟踪](pyv8c/tracing.md) | 跟踪配置、事件格式、线程约束和观测边界 |
 | [开发指南](pyv8c/development.md) | 实现规范、验证命令、行为对照和性能测量 |
 | [pyv8 使用指南](pyv8/user-guide.md) | 原生绑定的 API、生命周期与故障排查；构建以仓库根为准 |
-| [基准说明](../benchmarks/README.md) | 跨包基准、历史数据和性能对照 |
+| [基准说明](../benchmarks/README.md) | 统一基准入口、用例清单、性能测量口径与复现方法 |
 | [开发工具](../tools/README.md) | 仓库工具的用途与运行边界 |
 | [页面行为对照技能](../skills/pyv8c-challenge-parity/SKILL.md) | 以网站或本地页面定位浏览器语义差异 |
 

@@ -19,7 +19,7 @@ import pytest
     ('a\ufffd', '#a' + chr(92)),
     ('a ', '#a' + chr(92) + ' '),
 ])
-def test_escaped_id_queries_match_literal_identifier(page, identifier, selector):
+async def test_escaped_id_queries_match_literal_identifier(page, identifier, selector):
     args = json.dumps([identifier, selector])
     assert page.evaluate('''(([id,selector]) => {
         const element=document.createElement('div');element.id=id;
@@ -31,7 +31,7 @@ def test_escaped_id_queries_match_literal_identifier(page, identifier, selector)
     })(''' + args + ')') == [True, 0 if selector.endswith(chr(92)) else 1, True, True]
 
 
-def test_escaped_classes_groups_and_nested_arguments_keep_delimiters_literal(page):
+async def test_escaped_classes_groups_and_nested_arguments_keep_delimiters_literal(page):
     assert page.evaluate(r'''(() => {
         document.body.innerHTML='<div id="one" class="a,b x+y"><span></span></div>'+
             '<div id="two" class="a,b"></div>';
@@ -42,7 +42,7 @@ def test_escaped_classes_groups_and_nested_arguments_keep_delimiters_literal(pag
     })()''') == [['one','two'], ['one','two'], 1, 2]
 
 
-def test_escaped_attribute_string_does_not_close_quote_or_bracket(page):
+async def test_escaped_attribute_string_does_not_close_quote_or_bracket(page):
     assert page.evaluate(r'''(() => {
         const element=document.createElement('div');element.setAttribute('data-value','a"]b');
         document.body.appendChild(element);
@@ -50,6 +50,6 @@ def test_escaped_attribute_string_does_not_close_quote_or_bracket(page):
     })()''') is True
 
 
-def test_identifier_escape_cannot_continue_across_newline(page):
+async def test_identifier_escape_cannot_continue_across_newline(page):
     assert page.evaluate('''(() => {try{document.querySelector('#a'+String.fromCharCode(92,10)+'b');
         return false}catch(error){return error.name==='SyntaxError'}})()''') is True

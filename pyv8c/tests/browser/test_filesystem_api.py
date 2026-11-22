@@ -6,22 +6,22 @@ materialises the interface group before handing back the first object.
 """
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def page():
-    browser = Browser(stub_logging="off")
+async def page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content("<p>fs</p>", url="https://fs.test/page")
-    page.run_until_idle(timeout=1)
+    (await page.set_content("<p>fs</p>", url="https://fs.test/page", wait_until="commit"))
+    (await page.run_until_idle(timeout=1))
     try:
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_file_constructor_takes_parts_and_name(page):
+async def test_file_constructor_takes_parts_and_name(page):
     assert page.evaluate(
         "(() => { const f = new File(['hi'], 'a.txt', {type: 'Text/Plain', lastModified: 42}); "
         "return [f.name, f.size, f.type, f.lastModified, f instanceof Blob]; })()"
@@ -32,7 +32,7 @@ def test_file_constructor_takes_parts_and_name(page):
     ) == "TypeError"
 
 
-def test_window_method_materialises_the_feature_before_handing_back_an_object(page):
+async def test_window_method_materialises_the_feature_before_handing_back_an_object(page):
     assert page.evaluate("window.webkitRequestFileSystem.length") == 3
     before = page.binding_session.materialized_interfaces
     assert "DOMFileSystem" not in before
@@ -44,7 +44,7 @@ def test_window_method_materialises_the_feature_before_handing_back_an_object(pa
                     fs.root.toURL(), Object.prototype.toString.call(fs.root)];
         });
     """)
-    page.run_until_idle(timeout=2)
+    (await page.run_until_idle(timeout=2))
 
     assert page.evaluate("window.__fs") == [
         "temporary", "/", True, "filesystem:https://fs.test/page/temporary/", "[object DirectoryEntry]",
@@ -54,14 +54,14 @@ def test_window_method_materialises_the_feature_before_handing_back_an_object(pa
     assert {"DOMFileSystem", "Entry", "DirectoryEntry", "FileEntry"} <= materialized
 
 
-def test_invalid_type_is_rejected_synchronously(page):
+async def test_invalid_type_is_rejected_synchronously(page):
     assert page.evaluate(
         "(() => { try { window.webkitRequestFileSystem(9, 1024, () => {}); return 'no throw'; } "
         "catch (e) { return e.name; } })()"
     ) == "TypeError"
 
 
-def test_writer_reports_the_write_lifecycle(page):
+async def test_writer_reports_the_write_lifecycle(page):
     page.evaluate("""
         window.__log = [];
         window.__file = null;
@@ -84,7 +84,7 @@ def test_writer_reports_the_write_lifecycle(page):
             }, () => __log.push('getFile failed'));
         }, () => __log.push('request failed'));
     """)
-    page.run_until_idle(timeout=3)
+    (await page.run_until_idle(timeout=3))
 
     assert page.evaluate("window.__log") == ["writestart", "write", "progress:10/10", "writeend:10"]
     assert page.evaluate("window.__file") == ["note.txt", 10, ""]
@@ -93,7 +93,7 @@ def test_writer_reports_the_write_lifecycle(page):
     assert page.evaluate("window.__writer.length") == 10
 
 
-def test_directory_reader_and_remove(page):
+async def test_directory_reader_and_remove(page):
     page.evaluate("""
         window.__entries = null;
         window.__removed = false;
@@ -108,13 +108,13 @@ def test_directory_reader_and_remove(page):
             }, () => window.__entries = 'getDirectory failed');
         }, () => window.__entries = 'request failed');
     """)
-    page.run_until_idle(timeout=3)
+    (await page.run_until_idle(timeout=3))
 
     assert page.evaluate("window.__entries") == ["inner.txt:true"]
     assert page.evaluate("window.__removed") is True
 
 
-def test_entry_metadata_and_removal(page):
+async def test_entry_metadata_and_removal(page):
     page.evaluate("""
         window.__entry = null;
         window.__metadata = null;
@@ -129,7 +129,7 @@ def test_entry_metadata_and_removal(page):
             }, () => window.__metadata = 'getFile failed');
         }, () => window.__metadata = 'request failed');
     """)
-    page.run_until_idle(timeout=3)
+    (await page.run_until_idle(timeout=3))
 
     assert page.evaluate("window.__metadata") == [0, True]
     assert page.evaluate("window.__gone") is True

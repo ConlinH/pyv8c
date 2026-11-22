@@ -1,6 +1,6 @@
-def test_cached_stylesheet_parse_keeps_matching_live_and_query_errors_strict(page):
-    page.set_content('''<style>.selected{width:37px}
-        .selected:unsupported-pseudo{width:900px}</style><div id="item"></div>''')
+async def test_cached_stylesheet_parse_keeps_matching_live_and_query_errors_strict(page):
+    (await page.set_content('''<style>.selected{width:37px}
+        .selected:unsupported-pseudo{width:900px}</style><div id="item"></div>''', wait_until="commit"))
     assert page.evaluate('''(() => {
         const element=document.getElementById('item');
         element.className='selected';const first=element.offsetWidth;

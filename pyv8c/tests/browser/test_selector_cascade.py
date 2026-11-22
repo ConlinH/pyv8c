@@ -26,12 +26,12 @@ CASES = [
 
 
 @pytest.mark.parametrize('css,markup,width', CASES)
-def test_selector_list_cascade(page, css, markup, width):
-    page.set_content('<style>'+css+'</style>'+markup)
+async def test_selector_list_cascade(page, css, markup, width):
+    (await page.set_content('<style>'+css+'</style>'+markup, wait_until="commit"))
     assert page.evaluate("getComputedStyle(document.querySelector('div')).width") == f'{width}px'
 
 
-def test_escaped_stylesheet_matching_stays_live_inside_shadow_root(page):
+async def test_escaped_stylesheet_matching_stays_live_inside_shadow_root(page):
     assert page.evaluate(r'''(() => {
         const host=document.createElement('div');document.body.append(host);
         const root=host.attachShadow({mode:'open'});

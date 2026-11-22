@@ -1,4 +1,6 @@
 """Local WebSocket lifecycle and task checkpoints, compared serially."""
+
+import asyncio
 import pytest
 import threading
 
@@ -8,10 +10,10 @@ pytest.importorskip('websockets')
 from websockets.sync.server import serve
 
 from harness import chrome_reference, ReferenceUnavailable
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_connecting_close_events_and_microtasks_match_chrome():
+async def test_connecting_close_events_and_microtasks_match_chrome():
     script = """globalThis.events=[];
         const ws=new WebSocket('ws://127.0.0.1:1/');
         ws.onopen=()=>events.push('open');
@@ -21,24 +23,24 @@ def test_connecting_close_events_and_microtasks_match_chrome():
         events.push(['immediate',ws.readyState]);
     """
     try:
-        with chrome_reference() as reference:
-            chrome = reference.browser.new_page()
-            browser = Browser(ws_engine='websockets', stub_logging='off')
+        async with chrome_reference() as reference:
+            chrome = (await reference.browser.new_page())
+            browser = (await Browser(ws_engine='websockets', stub_logging='off').__aenter__())
             try:
                 page = browser.new_profile().new_page()
-                chrome.evaluate(script)
-                chrome.wait_for_function('events.length===4')
+                (await chrome.evaluate(script))
+                (await chrome.wait_for_function('events.length===4'))
                 page.evaluate(script)
-                page.wait_for('events.length===4', timeout=5)
-                assert page.evaluate('events') == chrome.evaluate('events')
+                (await page.wait_for('events.length===4', timeout=5))
+                assert page.evaluate('events') == (await chrome.evaluate('events'))
             finally:
-                browser.close()
-                chrome.close()
+                (await browser.close())
+                (await chrome.close())
     except ReferenceUnavailable as error:
         pytest.skip(str(error))
 
 
-def test_buffered_bytes_task_boundaries_and_send_after_close_match_chrome():
+async def test_buffered_bytes_task_boundaries_and_send_after_close_match_chrome():
     received = []
 
     def echo(connection):
@@ -73,25 +75,25 @@ def test_buffered_bytes_task_boundaries_and_send_after_close_match_chrome():
         """
         try:
             try:
-                with chrome_reference() as reference:
-                    chrome = reference.browser.new_page()
-                    browser = Browser(ws_engine='websockets', stub_logging='off')
+                async with chrome_reference() as reference:
+                    chrome = (await reference.browser.new_page())
+                    browser = (await Browser(ws_engine='websockets', stub_logging='off').__aenter__())
                     try:
                         page = browser.new_profile().new_page()
-                        chrome.evaluate(script)
-                        chrome.wait_for_function('done', timeout=10000)
+                        (await chrome.evaluate(script))
+                        (await chrome.wait_for_function('done', timeout=10000))
                         page.evaluate(script)
-                        page.wait_for('done', timeout=10)
-                        assert page.evaluate('events') == chrome.evaluate('events') == [
+                        (await page.wait_for('done', timeout=10))
+                        assert page.evaluate('events') == (await chrome.evaluate('events')) == [
                             ['open', 12], ['micro', 12], ['closing', 3], ['closed', 3], ['after', 7],
                         ]
                     finally:
-                        browser.close()
-                        chrome.close()
+                        (await browser.close())
+                        (await chrome.close())
             except ReferenceUnavailable as error:
                 pytest.skip(str(error))
         finally:
             server.shutdown()
-            thread.join(5)
+            (await asyncio.to_thread(thread.join, 5))
             assert not thread.is_alive()
         assert received == [['中', '😀', b'ab', '\ufffd']] * 2

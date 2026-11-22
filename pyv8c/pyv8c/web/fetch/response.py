@@ -18,7 +18,8 @@ def filtered_network_response(response, *, origin, initial_url, credentials='sam
                               redirect_crossed=False):
     """Give a network response its script-visible headers and immutable guard."""
     response = copy(response)
-    cors = response_is_cors(origin, initial_url, response.url, redirect_crossed)
+    cors = response_is_cors(origin, initial_url, response.url, redirect_crossed,
+                            local_extension=getattr(response, '_local_extension', False))
     names = readable_response_header_names(
         response.headers._data, cors=cors, credentials=credentials == 'include')
     response._visible_headers = Headers()

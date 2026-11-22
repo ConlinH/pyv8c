@@ -4,17 +4,18 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import Browser, BrowserEnvironment
+from pyv8c import BrowserEnvironment
+from pyv8c.async_api import Browser
 from pyv8c.foundation.environment import PROFILE
 
 
-def new_page(environment=None):
-    browser = Browser(environment=environment, stub_logging="off")
+async def new_page(environment=None):
+    browser = (await Browser(environment=environment, stub_logging="off").__aenter__())
     return browser, browser.new_profile().new_page()
 
 
-def test_default_plugins_match_current_chrome_pdf_snapshot():
-    browser, page = new_page()
+async def test_default_plugins_match_current_chrome_pdf_snapshot():
+    browser, page = (await new_page())
     try:
         assert page.evaluate("""
             (() => [
@@ -59,11 +60,11 @@ def test_default_plugins_match_current_chrome_pdf_snapshot():
             ],
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_plugin_and_mime_type_collections_follow_browser_legacy_collection_rules():
-    browser, page = new_page()
+async def test_plugin_and_mime_type_collections_follow_browser_legacy_collection_rules():
+    browser, page = (await new_page())
     try:
         assert page.evaluate("""
             (() => {
@@ -99,16 +100,16 @@ def test_plugin_and_mime_type_collections_follow_browser_legacy_collection_rules
             False, False, "function", True, True,
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_environment_plugins_support_mapping_and_page_overrides():
+async def test_environment_plugins_support_mapping_and_page_overrides():
     base = {
         "plugins": [{
-            "name": "Browser Plugin",
+            "name": "Runtime Plugin",
             "filename": "browser-plugin",
-            "description": "Browser description",
-            "mime_types": [{"type": "application/browser", "suffixes": "browser", "description": "Browser MIME"}],
+            "description": "Runtime description",
+            "mime_types": [{"type": "application/browser", "suffixes": "browser", "description": "Runtime MIME"}],
         }],
     }
     override = {
@@ -122,14 +123,14 @@ def test_environment_plugins_support_mapping_and_page_overrides():
             ],
         }],
     }
-    browser = Browser(environment=base, stub_logging="off")
+    browser = (await Browser(environment=base, stub_logging="off").__aenter__())
     try:
         context = browser.new_profile()
         default_page = context.new_page()
         override_page = context.new_page(environment=override)
         assert default_page.evaluate(
             "[navigator.plugins[0].name, navigator.mimeTypes[0].type]"
-        ) == ["Browser Plugin", "application/browser"]
+        ) == ["Runtime Plugin", "application/browser"]
         assert override_page.evaluate("""
             [
                 navigator.plugins.length,
@@ -141,10 +142,10 @@ def test_environment_plugins_support_mapping_and_page_overrides():
             1, "page-plugin", "page", "Page Plugin",
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_plugin_configuration_is_immutable_and_validated():
+async def test_plugin_configuration_is_immutable_and_validated():
     environment = BrowserEnvironment({
         "plugins": [{"name": "Test", "mime_types": [{"type": "application/test"}]}],
     })
@@ -163,9 +164,9 @@ def test_plugin_configuration_is_immutable_and_validated():
         BrowserEnvironment({"plugins": "not a plugin sequence"})
 
 
-def test_navigator_runtime_surfaces_match_chrome_shapes_and_identity():
-    browser, page = new_page({
-        "user_agent": "Mozilla/5.0 Test Browser",
+async def test_navigator_runtime_surfaces_match_chrome_shapes_and_identity():
+    browser, page = (await new_page({
+        "user_agent": "Mozilla/5.0 Test Runtime",
         "webdriver": True,
         "connection.effective_type": "3g",
         "connection.rtt": 250,
@@ -177,7 +178,7 @@ def test_navigator_runtime_surfaces_match_chrome_shapes_and_identity():
         "battery.level": 0.75,
         "storage.persistent.usage": 10,
         "storage.persistent.quota": 40,
-    })
+    }))
     try:
         assert page.evaluate("""
             (() => [
@@ -194,7 +195,7 @@ def test_navigator_runtime_surfaces_match_chrome_shapes_and_identity():
                 navigator.getBattery.length,
             ])()
         """) == [
-            "5.0 Test Browser", True, True, "[object NetworkInformation]",
+            "5.0 Test Runtime", True, True, "[object NetworkInformation]",
             "3g", 250, 1.5, True, True,
             "[object DeprecatedStorageQuota]", 0,
         ]
@@ -211,18 +212,18 @@ def test_navigator_runtime_surfaces_match_chrome_shapes_and_identity():
                 100, quota => globalThis.grantedQuota = quota
             );
         """)
-        page.run_until_idle()
+        (await page.run_until_idle())
         assert page.evaluate("batterySnapshot") == [
             "[object BatteryManager]", False, 120, 3600, 0.75,
         ]
         assert page.evaluate("quotaSnapshot") == [10, 40]
         assert page.evaluate("grantedQuota") == 40
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_get_battery_invalid_receiver_rejects_instead_of_throwing():
-    browser, page = new_page()
+async def test_get_battery_invalid_receiver_rejects_instead_of_throwing():
+    browser, page = (await new_page())
     try:
         page.evaluate('''(() => {
             window.batteryReceiverResults = [];
@@ -238,17 +239,17 @@ def test_get_battery_invalid_receiver_rejects_instead_of_throwing():
                 }
             }
         })()''')
-        page.wait_for('batteryReceiverResults.length === 8', timeout=2)
+        (await page.wait_for('batteryReceiverResults.length === 8', timeout=2))
         results = page.evaluate('batteryReceiverResults')
         assert results[:4] == [['returned', True]] * 4
         assert results[4:] == [['rejected', 'TypeError',
                                "Failed to execute 'getBattery' on 'Navigator': Illegal invocation"]] * 4
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_get_battery_invalid_receiver_uses_method_realm():
-    browser, page = new_page()
+async def test_get_battery_invalid_receiver_uses_method_realm():
+    browser, page = (await new_page())
     try:
         page.evaluate('''(() => {
             const frame = document.createElement('iframe'); document.body.appendChild(frame);
@@ -258,18 +259,18 @@ def test_get_battery_invalid_receiver_uses_method_realm():
             promise.catch(error => { batteryRealm.error = [error instanceof TypeError,
                 error instanceof child.TypeError, error.name, error.message]; });
         })()''')
-        page.wait_for('batteryRealm.error', timeout=2)
+        (await page.wait_for('batteryRealm.error', timeout=2))
         assert page.evaluate('batteryRealm') == {
             'parent': False, 'child': True,
             'error': [False, True, 'TypeError',
                       "Failed to execute 'getBattery' on 'Navigator': Illegal invocation"],
         }
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_navigator_subobjects_are_created_only_on_first_access():
-    browser, page = new_page()
+async def test_navigator_subobjects_are_created_only_on_first_access():
+    browser, page = (await new_page())
     try:
         navigator = page.window.navigator
         assert navigator._features.cached_names == frozenset()
@@ -297,10 +298,10 @@ def test_navigator_subobjects_are_created_only_on_first_access():
         assert page.evaluate("navigator.geolocation === navigator.geolocation")
         assert "geolocation" in navigator._features.cached_names
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_navigator_environment_records_validate_defaults():
+async def test_navigator_environment_records_validate_defaults():
     profile = json.loads(PROFILE.read_text(encoding="utf-8"))
     environment = BrowserEnvironment()
     assert environment.app_version == environment.user_agent.removeprefix("Mozilla/")

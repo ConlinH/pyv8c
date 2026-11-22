@@ -10,6 +10,8 @@ The teardown itself is *posted* to the worker's own thread rather than waited fo
 worker that is slow to answer costs the caller nothing; the last two tests hold that down from
 inside the page's realm, and hold down that the posted teardown still runs.
 """
+
+import asyncio
 import json
 import threading
 import time
@@ -20,7 +22,7 @@ from loguru import logger
 pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
 pytestmark = pytest.mark.native
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.foundation.host_errors import RealmBusyError
 from pyv8c.web.workers import runtime as worker_runtime
 
@@ -47,37 +49,24 @@ __AFTER__
 </script></body>"""
 
 
-def _bounded(action, seconds=10.0):
-    done = threading.Event()
-
-    def run():
-        try:
-            action()
-        except BaseException:  # noqa: BLE001
-            pass
-        finally:
-            done.set()
-
-    threading.Thread(target=run, daemon=True).start()
-    done.wait(seconds)
 
 
-def _pump(page, seconds=0.6):
+async def _pump(page, seconds=0.6):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            page.run_until_idle(timeout=0)
+            (await page.run_until_idle(timeout=0))
         except BaseException:  # noqa: BLE001
             pass
-        time.sleep(0.01)
+        (await asyncio.sleep(0.01))
 
 
 def _html(source, after=""):
-    return PAGE_HTML.replace("__SOURCE__", json.dumps(source).replace("</", "<\\/")) \
+    return PAGE_HTML.replace("__SOURCE__", json.dumps(source).replace("</", "<\\/"))\
                     .replace("__AFTER__", after)
 
 
-def _served(html):
+async def _served(html):
     """Serve *html* with a real worker runtime; the caller owns the browser."""
     messages = []
     token = logger.add(lambda message: messages.append(str(message).strip()), format="{message}")
@@ -85,14 +74,14 @@ def _served(html):
     def loader(url, request):
         return {"body": html, "headers": {"content-type": "text/html"}}
 
-    browser = Browser(stub_logging="off", real_network=False, resource_loader=loader)
+    browser = (await Browser(stub_logging="off", real_network=False, resource_loader=loader).__aenter__())
     page = browser.new_profile().new_page()
-    page.goto("http://worker.test/")
-    _pump(page)
+    (await page.goto("http://worker.test/"))
+    (await _pump(page))
     return browser, page, messages, token
 
 
-def _run(html, monkeypatch):
+async def _run(html, monkeypatch):
     """Serve *html* with a worker runtime whose teardown cannot be completed."""
     calls = []
 
@@ -100,32 +89,34 @@ def _run(html, monkeypatch):
         calls.append(self.script_url)
         raise RealmBusyError(WEDGED)
 
+    original_stop = worker_runtime.WorkerRuntime.stop
     monkeypatch.setattr(worker_runtime.WorkerRuntime, "stop", wedged)
-    browser, page, messages, token = _served(html)
+    browser, page, messages, token = (await _served(html))
     try:
         return json.loads(page.evaluate("JSON.stringify(window.__out)")), calls, messages
     finally:
         logger.remove(token)
-        _bounded(browser.close)
+        monkeypatch.setattr(worker_runtime.WorkerRuntime, "stop", original_stop)
+        await browser.close()
 
 
-def test_a_worker_that_closes_itself_is_not_thrown_the_hosts_failure(monkeypatch):
-    seen, calls, messages = _run(_html(CLOSES_ITSELF), monkeypatch)
+async def test_a_worker_that_closes_itself_is_not_thrown_the_hosts_failure(monkeypatch):
+    seen, calls, messages = (await _run(_html(CLOSES_ITSELF), monkeypatch))
     assert calls, "the worker never asked the host to stop it"
     assert seen == ["closed"], seen
-    assert any("WorkerGlobalScope.close" in line and "_cleanup_owner" in line for line in messages), \
+    assert any("WorkerGlobalScope.close" in line and "_cleanup_owner" in line for line in messages),\
         messages
 
 
-def test_a_page_that_terminates_a_worker_keeps_its_own_script_running(monkeypatch):
-    seen, calls, messages = _run(_html(CLOSES_ITSELF, TERMINATES_ITSELF), monkeypatch)
+async def test_a_page_that_terminates_a_worker_keeps_its_own_script_running(monkeypatch):
+    seen, calls, messages = (await _run(_html(CLOSES_ITSELF, TERMINATES_ITSELF), monkeypatch))
     assert calls, "the page never asked the host to stop the worker"
     assert "terminated" in seen, seen
     assert not [entry for entry in seen if entry.startswith(("threw:", "onerror:"))], seen
     assert any("Worker.terminate" in line for line in messages), messages
 
 
-def test_a_terminate_does_not_freeze_the_page_while_the_worker_answers(monkeypatch):
+async def test_a_terminate_does_not_freeze_the_page_while_the_worker_answers(monkeypatch):
     """A teardown the page asked for is the worker's to run, not the page's to wait on.
 
     ``stop()`` used to call into the worker's executor and wait there, so a worker that
@@ -143,7 +134,7 @@ def test_a_terminate_does_not_freeze_the_page_while_the_worker_answers(monkeypat
         return original(self)
 
     monkeypatch.setattr(worker_runtime.WorkerRuntime, "_cleanup_owner", slow_cleanup)
-    browser, page, _messages, token = _served(_html(IDLE))
+    browser, page, _messages, token = (await _served(_html(IDLE)))
     try:
         took = page.evaluate("""(() => {
             const t0 = performance.now();
@@ -152,14 +143,14 @@ def test_a_terminate_does_not_freeze_the_page_while_the_worker_answers(monkeypat
         })()""")
         assert isinstance(took, int), took
         assert took < 250, f"terminate() blocked the page for {took}ms"
-        assert entered.wait(5), "the teardown never started"
+        assert (await asyncio.to_thread(entered.wait, 5)), "the teardown never started"
     finally:
         answer.set()
         logger.remove(token)
-        _bounded(browser.close)
+        await browser.close()
 
 
-def test_the_teardown_a_terminate_asked_for_still_runs(monkeypatch):
+async def test_the_teardown_a_terminate_asked_for_still_runs(monkeypatch):
     """Posting the teardown is not dropping it: it runs, and closes its own executor."""
     ran = threading.Event()
     runtimes = []
@@ -178,16 +169,16 @@ def test_the_teardown_a_terminate_asked_for_still_runs(monkeypatch):
 
     monkeypatch.setattr(worker_runtime.WorkerRuntime, "_cleanup_owner", recorded_cleanup)
     monkeypatch.setattr(worker_runtime.WorkerRuntime, "stop", recording_stop)
-    browser, page, _messages, token = _served(_html(IDLE))
+    browser, page, _messages, token = (await _served(_html(IDLE)))
     try:
         page.evaluate("worker.terminate()")
-        assert ran.wait(5), "the posted teardown never ran"
+        assert (await asyncio.to_thread(ran.wait, 5)), "the posted teardown never ran"
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if runtimes and runtimes[0].executor.closed:
                 break
-            time.sleep(0.01)
+            (await asyncio.sleep(0.01))
         assert runtimes and runtimes[0].executor.closed, "the worker's executor is still running"
     finally:
         logger.remove(token)
-        _bounded(browser.close)
+        await browser.close()

@@ -2,6 +2,8 @@
 
 [简体中文](../../pyv8/bridge-refactor-results.md) | **English**
 
+> This is a historical experiment report; its commands and data reflect the old measurement approach. The current unified entry point is [benchmarks/README.md](../../../benchmarks/README.md).
+
 ## Scope and status
 
 Implemented the native lifecycle/resource refactor, CPython 3.12 Stable ABI,

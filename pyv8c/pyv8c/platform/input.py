@@ -26,7 +26,9 @@ surface.
 from __future__ import annotations
 
 import math
+import asyncio
 import time
+from contextlib import asynccontextmanager
 
 from pyv8c import pyv8
 
@@ -153,12 +155,12 @@ class MouseInput:
     """One page's mouse, reached as ``page.mouse``.
 
     ``position`` and ``pressed`` are plain reads of host-side state and may be
-    read from any thread; everything that dispatches events marshals onto the
-    page's owner thread, so it may be called from any thread too.
+    read from any thread. Event operations require the Runtime owner thread.
     """
 
     def __init__(self, page):
         self._page = page
+        self._gesture_lock = asyncio.Lock()
         self._x = 0.0
         self._y = 0.0
         self._movement_x = 0
@@ -184,94 +186,106 @@ class MouseInput:
         """The buttons currently held down, as a set of names."""
         return frozenset(name for name, bit in BUTTON_BIT.items() if self._bits & bit)
 
-    def move(self, x: float, y: float, *, steps: int | None = None,
-             duration: float | None = None, curve: str | None = None,
-             seed: int | None = None) -> None:
-        """Move the mouse to ``(x, y)``, moving through *steps* positions.
+    @asynccontextmanager
+    async def _gesture(self):
+        self._page._check_wait()
+        generation = self._page.navigation.generation
+        async with self._gesture_lock:
+            self._page._check_document_generation(generation)
+            yield generation
 
-        Each position fires the boundary events a crossing element makes and
-        then the two move events, so a page watching ``mouseover`` sees the
-        same sequence a real cursor produces.
+    async def move(self, x: float, y: float, *, steps=None, duration=None, curve=None, seed=None):
+        async with self._gesture():
+            await self._move(float(x), float(y), steps, duration, curve, seed)
 
-        :param x: viewport x coordinate.
-        :param y: viewport y coordinate.
-        :param steps: how many positions to report; ``1`` jumps, and a curve
-            samples :data:`HUMAN_SAMPLES` of its own when this is left out.
-        :param duration: seconds to spread the positions over; without it they
-            are dispatched as fast as they are built, which is what a
-            scripted driver usually wants.
-        :param curve: ``"human"`` walks a bowed, eased path instead of the
-            straight line, for a page that reads the shape of the movement.
-        :param seed: makes a curve replayable; without it each call bows its own way.
-        """
-        return self._call(self._move_to, float(x), float(y), steps, duration=duration,
-                          curve=curve, seed=seed)
+    async def _move(self, x, y, steps, duration, curve, seed):
+        generation = self._page.navigation.generation
+        if not duration:
+            return self._call(self._move_to, x, y, steps, curve=curve, seed=seed)
+        start, end = (self._x, self._y), (x, y)
+        points = (_curve_points(curve, start, end, steps, seed) if curve is not None
+                  else _straight_points(start, end, max(1, int(steps or 1))))
+        interval = max(0.0, float(duration)) / len(points)
+        for point_x, point_y in points:
+            await asyncio.sleep(interval)
+            self._page._check_document_generation(generation)
+            # A paced move is re-hit-tested after each suspension.
+            self._call(self._move_once, point_x, point_y)
 
-    def down(self, *, button: str = "left", click_count: int | None = None) -> None:
-        """Press *button* where the mouse is, and focus what the press lands on.
+    async def down(self, *, button="left", click_count=None):
+        async with self._gesture():
+            self._call(self._down, self._button(button), click_count)
 
-        :param button: ``"left"``, ``"middle"`` or ``"right"``.
-        :param click_count: the ``detail`` both the press and the matching click
-            report; by default a press close to the last one continues its run.
-        """
-        return self._call(self._down, self._button(button), click_count)
+    async def up(self, *, button="left", click_count=None):
+        async with self._gesture():
+            self._call(self._up, self._button(button), click_count)
 
-    def up(self, *, button: str = "left", click_count: int | None = None) -> None:
-        """Release *button*, firing the click a completed press produces.
+    async def click(self, x=None, y=None, *, button="left", click_count=None, delay=None):
+        async with self._gesture():
+            await self._click_sequence(x, y, self._button(button), click_count, delay)
 
-        The click lands on the nearest common ancestor of the press and the
-        release, which is the element itself when both happened in one place.
-        """
-        return self._call(self._up, self._button(button), click_count)
+    async def _click_sequence(self, x, y, button, click_count, delay, *, element=None, force=False):
+        generation = self._page.navigation.generation
+        def dispatch(action):
+            if element is not None:
+                return self._point_in(element, force, action)
+            return action(x, y, None)
+        if not delay:
+            return self._call(dispatch, lambda x, y, known: self._click(x, y, button, click_count, known))
+        def press(x, y, known):
+            if x is not None and y is not None:
+                self._move_to(float(x), float(y), 1, known)
+            self._down(button, click_count)
+        self._call(dispatch, press)
+        try:
+            await asyncio.sleep(max(0.0, float(delay)))
+            self._page._check_document_generation(generation)
+            self._call(self._up, button, click_count)
+        except BaseException:
+            # A cancelled press cannot synthesize a click on a replacement document.
+            self._pressed = None
+            self._bits &= ~BUTTON_BIT[button]
+            raise
 
-    def click(self,
-              x: float | None = None,
-              y: float | None = None,
-              *,
-              button: str = "left",
-              click_count: int | None = None,
-              delay: float | None = None) -> None:
-        """Move to ``(x, y)`` when both are given, then press and release *button*.
+    async def dblclick(self, x=None, y=None, *, button="left", delay=None):
+        async with self._gesture() as generation:
+            button = self._button(button)
+            await self._click_sequence(x, y, button, 1, delay)
+            self._page._check_document_generation(generation)
+            await self._click_sequence(None, None, button, 2, delay)
 
-        :param delay: seconds the button stays down before it is released; a real
-            press lasts tens of milliseconds, a scripted one none at all.
-        """
-        return self._call(self._click, x, y, self._button(button), click_count, delay=delay)
+    async def move_to_element(self, element, *, force=False, duration=None, curve=None, seed=None):
+        async with self._gesture() as generation:
+            if not duration:
+                return self._call(self._point_in, element, force,
+                    lambda x, y, known: self._move_to(x, y, None, known, curve=curve, seed=seed))
+            x, y, _ = self._call(self._point_in, element, force, lambda *point: point)
+            self._page._check_document_generation(generation)
+            await self._move(x, y, None, duration, curve, seed)
 
-    def dblclick(self,
-                 x: float | None = None,
-                 y: float | None = None,
-                 *,
-                 button: str = "left",
-                 delay: float | None = None) -> None:
-        """Two clicks reported as one run, ending in ``dblclick`` on the second."""
-        return self._call(self._dblclick, x, y, self._button(button), delay=delay)
+    async def click_element(self, element, *, button="left", click_count=1,
+                            force=False, delay=None, duration=None):
+        async with self._gesture() as generation:
+            button = self._button(button)
+            if duration:
+                x, y, _ = self._call(self._point_in, element, force, lambda *point: point)
+                self._page._check_document_generation(generation)
+                await self._move(x, y, None, duration, None, None)
+                self._page._check_document_generation(generation)
+            # Revalidate the element at dispatch. Geometry and the first input
+            # event share one native boundary, including after a queued gesture.
+            await self._click_sequence(None, None, button, int(click_count), delay,
+                                       element=element, force=force)
 
-    def move_to_element(self, element, *, force: bool = False,
-                        duration: float | None = None, curve: str | None = None,
-                        seed: int | None = None) -> None:
-        """Move the mouse to the centre of *element*, as :meth:`move` does.
-
-        :raises HostStateError: the element has no box (it is not rendered),
-            or something else covers the centre and *force* is false.
-        """
-        return self._call(self._move_to_element, element, force, duration=duration,
-                          curve=curve, seed=seed)
-
-    def click_element(self, element, *, button: str = "left", click_count: int = 1,
-                      force: bool = False, delay: float | None = None,
-                      duration: float | None = None) -> None:
-        """Move to the centre of *element* and click there, the way a user would.
-
-        :raises HostStateError: the element has no box, or the centre is not
-            the element or one of its descendants and *force* is false.
-        """
-        return self._call(
-            self._click_element, element, self._button(button), int(click_count), force,
-            delay=delay, duration=duration,
-        )
+    def _reset_document(self):
+        # Viewport coordinates survive navigation; DOM receivers and a press
+        # begun in the retired document do not.
+        self._hovered = self._pressed = self._last_click = None
+        self._bits = 0
+        self._inside_page = False
 
     def _call(self, action, *args, **kwargs):
+        self._page._check()
         return self._page.realm.executor.call(action, *args, **kwargs)
 
     def _button(self, name):
@@ -355,9 +369,15 @@ class MouseInput:
             # the fraction the layout measured.
             for name in ("clientX", "clientY", "screenX", "screenY"):
                 options[name] = math.floor(options[name])
-        return self._page.lifecycle.dispatch_page_event(
+        generation = self._page.navigation.generation
+        event = self._page.lifecycle.dispatch_page_event(
             event_type, target, options, event_class=interface, propagates=propagates,
         )
+        # Event handlers can replace the document synchronously, even in an
+        # unpaced gesture. Stop before the next event or default action.
+        if self._page.navigation.generation != generation:
+            raise HostStateError("document changed during input")
+        return event
 
     def _has_boundary_listener(self, target, event_type, *, capture_only=False):
         """Whether a boundary event at *target* would reach anyone.
@@ -379,25 +399,14 @@ class MouseInput:
             node = getattr(node, 'parentNode', None)
         return False
 
-    def _move_to(self, x, y, steps, known=None, duration=None, curve=None, seed=None):
-        """Move through *steps* positions, evenly spaced, or along *curve* when one is named."""
+    def _move_to(self, x, y, steps, known=None, *, curve=None, seed=None):
         start, end = (self._x, self._y), (float(x), float(y))
-        # A caller that already read the landing point hands it in for the last step.
         points = (_curve_points(curve, start, end, steps, seed) if curve is not None
                   else _straight_points(start, end, max(1, int(steps or 1))))
-        slice_seconds = 0.0 if duration is None else max(0.0, float(duration)) / len(points)
         batch = []
         for index, (point_x, point_y) in enumerate(points, start=1):
-            if slice_seconds:
-                # The document's clock follows real time, so the pause is what makes the
-                # positions arrive apart, the way a cursor's do.
-                time.sleep(slice_seconds)
-                # A paced position is its own reading: nothing is merged into it.
-                batch = []
-            pointer = self._move_once(point_x, point_y, known if index == len(points) else None,
-                                      tuple(batch))
+            pointer = self._move_once(point_x, point_y, known if index == len(points) else None, tuple(batch))
             if pointer is not None:
-                # A burst arrives as one batch; a page can read what was merged into it.
                 batch.append(pointer)
 
     def _move_once(self, x, y, known=None, coalesced=()):
@@ -507,20 +516,16 @@ class MouseInput:
         if count == 2:
             self._emit("dblclick", clicked, detail=count)
 
-    def _click(self, x, y, button, click_count, known=None, delay=None, duration=None):
+    def _click(self, x, y, button, click_count, known=None):
         if x is not None and y is not None:
-            self._move_to(float(x), float(y), 1, known, duration)
+            self._move_to(float(x), float(y), 1, known)
         self._down(button, click_count)
-        if delay:
-            time.sleep(max(0.0, float(delay)))
         self._up(button, click_count)
-
-    def _dblclick(self, x, y, button, delay=None):
-        self._click(x, y, button, 1, None, delay)
-        self._click(None, None, button, 2, None, delay)
 
     def _point_in(self, element, force, action):
         """The centre of *element*, once it is the element a click would reach there."""
+        if element.ownerDocument is not self._page.document or not element.isConnected:
+            raise HostStateError("input element belongs to a retired or detached document")
         box = border_box(element)
         if box.width <= 0 or box.height <= 0:
             raise HostStateError(
@@ -542,17 +547,6 @@ class MouseInput:
                 )
         return action(x, y, known)
 
-    def _move_to_element(self, element, force, duration=None, curve=None, seed=None):
-        return self._point_in(
-            element, force,
-            lambda x, y, known: self._move_to(x, y, None, known, duration, curve, seed),
-        )
-
-    def _click_element(self, element, button, click_count, force, delay=None, duration=None):
-        return self._point_in(
-            element, force,
-            lambda x, y, known: self._click(x, y, button, click_count, known, delay, duration),
-        )
 
 
 __all__ = ["MouseInput"]

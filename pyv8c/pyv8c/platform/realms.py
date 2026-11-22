@@ -177,7 +177,7 @@ class WorkerRealm:
         # services, including its microtask queue, not the creator page's.
         session.realm = self.services
         session.prepare("Worker")
-        self.isolate = pyv8.Isolate()
+        self.isolate = pyv8.Isolate(thread_bound=True)
         from ..web.fetch.response import wasm_response_payload
         self.isolate._set_wasm_response_handler(wasm_response_payload)
         self.microtasks = pyv8.MicrotaskQueue(self.isolate)
@@ -261,6 +261,7 @@ class PageRealm:
         self.page = page
         self.v8_context = None
         self.rejections = None
+        self.http_driver = None
         self.executor = executor
         browser = page.profile.browser
         # Web objects built through this session receive PageServices, not the
@@ -394,6 +395,7 @@ class PageRealm:
         self.executor.call(self._close_context)
 
     def _close_context(self):
+        self.http_driver = None
         if self.rejections is not None:
             self.rejections.close()
         _release_objects(self)

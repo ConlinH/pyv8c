@@ -65,7 +65,7 @@ finally:
 
 The project is not published on PyPI yet. Both source development and the wheel use the `pyv8c.pyv8` entry point. See the [development guide](pyv8c/development.md) for source build instructions.
 
-CPython 3.12 or newer with the GIL enabled is required, and a matching `pyv8` native extension must be importable. CI builds wheels and runs post-install smoke and native tests on all three platforms; the full CPython 3.12-3.15 browser test matrix currently runs on Windows only, so other platforms still need verification in their own environments. Free-threaded CPython is not supported.
+CPython 3.12 or newer with the GIL enabled is required, and a matching `pyv8` native extension must be importable. Free-threaded CPython is not supported.
 
 The repository contains `pyv8/` (V8 binding sources) and `pyv8c/` (browser framework sources). Run the following from the repository root with CPython 3.12:
 
@@ -76,28 +76,48 @@ python312 -c "from pyv8c import pyv8; print(pyv8.__file__)"
 
 Before working from source, set up the V8 build directory as described in the [native project documentation](../../pyv8/README.md).
 
-The default HTTP and WebSocket engines ship with the base dependencies. `dev` adds test tooling, `canvas` adds Pillow-backed drawing, `cronet` adds an optional network engine, `benchmark` adds optional process monitoring, and `reference` installs tooling that drives the Chrome already on your machine; no browser is downloaded. See the [pyv8 documentation](../../pyv8/README.md) for native extension build requirements.
+The default HTTP and WebSocket engines ship with the base dependencies. `dev` adds test tooling, `canvas` adds Pillow-backed drawing, `cronet` adds an optional HTTP engine (WebSockets stay on `websockets`), `benchmark` adds optional process monitoring, and `reference` installs tooling that drives the Chrome already on your machine; no browser is downloaded. See the [pyv8 documentation](../../pyv8/README.md) for native extension build requirements.
 
 ## Quick Start
 
-```python
-from pyv8c import Browser
+Choose `pyv8c.sync_api` for ordinary scripts and `pyv8c.async_api` for asyncio.
+Both expose Browser / Profile / Page and share the same-thread Runtime:
 
-browser = Browser(real_network=False)
-try:
-    page = browser.new_profile().new_page()
-    page.set_content("<main id='app'>ready</main>", url="https://example.test/")
-    assert page.evaluate("document.querySelector('#app').textContent") == "ready"
-    page.evaluate("globalThis.answer = 0; setTimeout(() => answer = 42, 0)")
-    page.wait_for("answer === 42", timeout=1)
-    assert page.evaluate("answer") == 42
-finally:
-    browser.close()
+```python
+from pyv8c.sync_api import Browser
+
+with Browser(real_network=False) as browser:
+    with browser.new_profile() as profile:
+        with profile.new_page() as page:
+            page.set_content("<title>Local page</title>")
+            page.evaluate("globalThis.ready=false;setTimeout(()=>ready=true,2)")
+            page.wait_for("ready", timeout=1)
+            assert page.evaluate("document.title") == "Local page"
+```
+
+The synchronous Browser owns one persistent loop; waits drive it, while evaluate
+stays direct. Host sleep does not pump page tasks — use `page.sleep(seconds)` to
+wait while page tasks keep running. Use async_api inside an active asyncio loop.
+Root Browser/Profile/Page/run aliases have been removed.
+The equivalent asynchronous entry point is:
+
+```python
+from pyv8c.async_api import Browser, run
+
+async def main():
+    async with Browser(real_network=False) as browser:
+        page = browser.new_profile().new_page()
+        await page.set_content("<main id='app'>ready</main>", url='https://example.test/')
+        assert page.evaluate("document.querySelector('#app').textContent") == 'ready'
+        page.evaluate('globalThis.answer = 0; setTimeout(() => answer = 42, 0)')
+        await page.wait_for('answer === 42', timeout=1)
+        assert page.evaluate('answer') == 42
+run(main())
 ```
 
 `Browser()` enables real network access by default, using `curl_cffi` for HTTP and `websockets` for WebSocket. For offline work, set `real_network=False` explicitly and supply pages with `set_content()` or a resource loader.
 
-To visit a site, use `page.goto(url, wait_until="load", timeout=30)` to wait for a specific load phase. `run_until_idle()` only drains work that is currently runnable; it does not wait for future network activity, timers or Worker results. `evaluate()` does not automatically await Promises.
+To visit a site, use `await page.goto(url, wait_until="load", timeout=30)` to wait for a specific load phase. `run_until_idle()` only drains work that is currently runnable; it does not wait for future network activity, timers or Worker results. `evaluate()` does not automatically await Promises.
 
 ## Object and Execution Model
 

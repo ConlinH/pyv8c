@@ -3,30 +3,19 @@ from __future__ import annotations
 
 from .backend import NetworkBackend
 from .proxy import PROXY_OPTION, RAW_OPTION_KEYS
-from .registry import KINDS, KIND_METHODS, accepts_proxy, create_transport
+from .registry import KINDS, KIND_METHODS, accepts_proxy, close_http, create_transport, require_http_close
 
 
 def _options(browser, role):
-    """The *role* engine's options, as a copy; ``None`` when none were set."""
     return dict(getattr(browser, f"{role}_options")) or None
 
 
 def _configured_raw_proxy(options):
-    """The engine's own proxy keys already in *options*, if any.
-
-    Those are how a proxy was configured before ``proxy=`` existed; the two ways of
-    saying it must not be mixed, or whichever lost would be invisible.
-    """
     return sorted(key for key in RAW_OPTION_KEYS if key in (options or {}))
 
 
 def _with_proxy(role, name, options, proxy):
-    """The *role* engine's options with the context's proxy merged in.
-
-    The engine is asked first and one that carries no proxy traffic is handed nothing.
-    For one that does, the key is always set -- ``""`` pins a direct connection, since
-    leaving it out would let both engines read a proxy from the environment.
-    """
+    """Merge the proxy in; ``""`` pins a direct connection."""
     configured = _configured_raw_proxy(options)
     if configured and proxy is not None:
         listed = ", ".join(repr(key) for key in configured)
@@ -48,16 +37,11 @@ def _with_proxy(role, name, options, proxy):
 
 
 def _serves(candidate, role):
-    """Whether *candidate* can perform this role."""
     return callable(getattr(candidate, KIND_METHODS[role], None))
 
 
 def _engine(browser, role, value, proxy):
-    """One role's engine: a registered name, a ready object, or a factory.
-
-    A name is built from the registry with that role's options; a factory is called per
-    context.  A ready engine can take no options and is refused rather than ignored.
-    """
+    """One role's engine: a name, a ready object, or a factory."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -74,15 +58,7 @@ def _engine(browser, role, value, proxy):
             "registered engine to pass options to it"
         )
     factory = isinstance(value, type) or (callable(value) and not _serves(value, role))
-    engine = value() if factory else value
-    if not _serves(engine, role):
-        if factory and callable(getattr(engine, 'close', None)):
-            engine.close()
-        raise TypeError(
-            f"{role}_engine must be a registered engine name, an object with "
-            f"{KIND_METHODS[role]}, or a factory for one"
-        )
-    return engine
+    return value() if factory else value
 
 
 def _refuse_unconsumed_options(browser):
@@ -127,11 +103,7 @@ def _refuse_proxy_without_engine(proxy):
 
 
 def assemble_backend(browser, proxy=None):
-    """Assemble one context's engines from what the Browser was built with.
-
-    *proxy* is the context's resolved proxy, merged into each role's options once that
-    engine has accepted it; options are checked against the engine that reads them.
-    """
+    """Assemble one context's engines from what the Browser was built with."""
     if not browser.real_network:
         _refuse_ready_engines(browser)
         _refuse_proxy_without_engine(proxy)
@@ -163,14 +135,18 @@ def assemble_backend(browser, proxy=None):
                 if isinstance(value, (str, type)) or (callable(value) and not _serves(value, role)):
                     created.append(engine)
                 if not _serves(engine, role):
-                    raise TypeError(f"{role}_engine must implement {KIND_METHODS[role]}")
+                    raise TypeError(
+                        f"{role}_engine must be a registered engine name, an object with "
+                        f"{KIND_METHODS[role]}, or a factory for one"
+                    )
+                if role == "http":
+                    require_http_close(engine)
                 engines[role] = engine
                 configured[role] = value
     except BaseException:
         for engine in reversed(created):
             try:
-                close = getattr(engine, 'close', None)
-                if callable(close): close()
+                close_http(engine)
             except Exception:
                 pass
         raise

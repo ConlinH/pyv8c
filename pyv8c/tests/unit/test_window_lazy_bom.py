@@ -4,18 +4,19 @@ import pytest
 pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
 pytestmark = pytest.mark.native
 
-from pyv8c import Browser  # noqa: E402
+from pyv8c.async_api import Browser
 
 
 def _loader(url, request):
     return {"url": url, "body": "", "headers": {"content-type": "text/html"}}
 
 
-def test_window_defers_low_frequency_bom_modules_and_keeps_identity():
-    browser = Browser(stub_logging="off", resource_loader=_loader)
+async def test_window_defers_low_frequency_bom_modules_and_keeps_identity():
+    browser = (await Browser(stub_logging="off", resource_loader=_loader).__aenter__())
     try:
         context = browser.new_profile()
-        page = context.new_page("http://lazy.test/start")
+        page = context.new_page()
+        await page.goto("http://lazy.test/start")
         window = page.window
         assert window.location.href == "http://lazy.test/start"
 
@@ -29,14 +30,15 @@ def test_window_defers_low_frequency_bom_modules_and_keeps_identity():
         assert "indexeddb" in browser.bindings.runtime.loaded_features
         assert page.evaluate("history.length") == 1
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_lazy_history_starts_at_the_current_document_url():
-    browser = Browser(stub_logging="off", resource_loader=_loader)
+async def test_lazy_history_starts_at_the_current_document_url():
+    browser = (await Browser(stub_logging="off", resource_loader=_loader).__aenter__())
     try:
         context = browser.new_profile()
-        page = context.new_page("http://lazy.test/original")
+        page = context.new_page()
+        await page.goto("http://lazy.test/original")
         window = page.window
         window.location.href = "http://lazy.test/current"
         assert page.evaluate("history.length") == 1
@@ -47,4 +49,4 @@ def test_lazy_history_starts_at_the_current_document_url():
         # ``Window.sync_history_url``).
         assert window.history._entries == [("http://lazy.test/current", None)]
     finally:
-        browser.close()
+        (await browser.close())

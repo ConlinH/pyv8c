@@ -10,11 +10,13 @@ A two-sided reading of the same three shapes shows that Chrome resolves the plai
 and the ``about:blank`` cases; the sandboxed ``srcdoc`` one it *does* drop (an open divergence,
 not asserted here as a Chrome fact).
 """
+
+import asyncio
 import json
 import threading
 import time
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 URL = "http://frames.test/page.html"
 
@@ -44,55 +46,51 @@ def _load(page_html):
     return loader
 
 
-def _pump(page, seconds=1.0):
+async def _pump(page, seconds=1.0):
     deadline = time.time() + seconds
     while time.time() < deadline:
         try:
-            page.run_until_idle(timeout=0)
+            (await page.run_until_idle(timeout=0))
         except BaseException:  # noqa: BLE001 - a busy realm is retried, not asserted on
             pass
-        time.sleep(0.05)
+        (await asyncio.sleep(0.05))
 
 
-def _bounded(action, seconds=10.0):
-    thread = threading.Thread(target=action, daemon=True)
-    thread.start()
-    thread.join(seconds)
 
 
-def _asked_for(page_html):
+async def _asked_for(page_html):
     """Serve *page_html* to one page and report the URLs its loader was asked for."""
     del SEEN[:]
-    browser = Browser(stub_logging="off", threaded_loaders=True, real_network=False,
-                      resource_loader=_load(page_html))
+    browser = (await Browser(stub_logging="off", threaded_loaders=True, real_network=False,
+                      resource_loader=_load(page_html)).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto(URL)
-        _pump(page)
+        (await page.goto(URL))
+        (await _pump(page))
     finally:
-        _bounded(browser.close)
+        await browser.close()
     return list(SEEN)
 
 
-def test_a_srcdoc_frame_resolves_a_root_relative_script_against_its_creator():
-    seen = _asked_for(_page("", "/frame-relative.js"))
+async def test_a_srcdoc_frame_resolves_a_root_relative_script_against_its_creator():
+    seen = (await _asked_for(((_page("", "/frame-relative.js")))))
     assert "http://frames.test/frame-relative.js" in seen, seen
     assert "/frame-relative.js" not in seen, seen
 
 
-def test_a_sandboxed_srcdoc_frame_resolves_it_the_same_way():
+async def test_a_sandboxed_srcdoc_frame_resolves_it_the_same_way():
     """The widget frame's shape: ``sandbox`` takes the origin away, never the base URL."""
-    seen = _asked_for(_page("frame.setAttribute('sandbox', 'allow-scripts');",
-                            "/sandboxed-relative.js"))
+    seen = (await _asked_for(((_page("frame.setAttribute('sandbox', 'allow-scripts');",
+                            "/sandboxed-relative.js")))))
     assert "http://frames.test/sandboxed-relative.js" in seen, seen
     assert "/sandboxed-relative.js" not in seen, seen
 
 
-def test_a_document_with_its_own_url_still_resolves_against_itself():
+async def test_a_document_with_its_own_url_still_resolves_against_itself():
     """The creator walk must not reach past a document that has an address of its own."""
-    seen = _asked_for(
+    seen = (await _asked_for(
         "<!doctype html><html><body>"
         '<script src="/page-relative.js"></scr' + "ipt>"
         "</body></html>"
-    )
+    ))
     assert "http://frames.test/page-relative.js" in seen, seen

@@ -92,4 +92,4 @@ you should resume first, then close after returning to the host execution thread
 | DevtoolsDebugger / DevToolsServer / DevToolsTarget | No longer public; use DevToolsOptions and DevToolsHandle |
 | Debugger.run_js / implicit first-statement pause | The on_ready callback only reports readiness; low-level explicit schedule_pause_on_next_statement |
 
-No second compatibility implementation is provided. Runtime, Debugger, and the Target subset above are supported; full Page, Network, and DOM inspection is not implemented.
+No second compatibility implementation is provided. Browser, Debugger, and the Target subset above are supported; full Page, Network, and DOM inspection is not implemented.

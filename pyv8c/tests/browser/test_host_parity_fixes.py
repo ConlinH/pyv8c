@@ -20,13 +20,13 @@ def _values(shared_page, source):
 
 
 @pytest.fixture(autouse=True)
-def _document(shared_page):
-    shared_page.set_content(
-        "<!doctype html><html><head></head><body></body></html>", url=ORIGIN)
+async def _document(shared_page):
+    (await shared_page.set_content(
+        "<!doctype html><html><head></head><body></body></html>", url=ORIGIN, wait_until="commit"))
     return shared_page
 
 
-def test_canvas_line_cap_and_join_keep_state(shared_page):
+async def test_canvas_line_cap_and_join_keep_state(shared_page):
     assert _values(shared_page, """(() => {
       const x = document.createElement('canvas').getContext('2d');
       const out = [x.lineCap, x.lineJoin];
@@ -40,7 +40,7 @@ def test_canvas_line_cap_and_join_keep_state(shared_page):
     })()""") == ["butt", "miter", "round", "bevel", "round", "round"]
 
 
-def test_check_visibility_answers_attached_and_hidden_elements(shared_page):
+async def test_check_visibility_answers_attached_and_hidden_elements(shared_page):
     assert _values(shared_page, """(() => {
       const visible = document.createElement('div');
       document.body.appendChild(visible);
@@ -54,7 +54,7 @@ def test_check_visibility_answers_attached_and_hidden_elements(shared_page):
     })()""") == [True, False, False]
 
 
-def test_animate_returns_a_pending_animation_with_a_keyframe_effect(shared_page):
+async def test_animate_returns_a_pending_animation_with_a_keyframe_effect(shared_page):
     assert _values(shared_page, """(() => {
       const el = document.createElement('div');
       document.body.appendChild(el);
@@ -65,14 +65,14 @@ def test_animate_returns_a_pending_animation_with_a_keyframe_effect(shared_page)
     })()""") == ["running", 0, None, 1, True, "", "active", "KeyframeEffect"]
 
 
-def test_computed_style_reports_css_initial_values(shared_page):
+async def test_computed_style_reports_css_initial_values(shared_page):
     assert _values(shared_page, """(() => {
       const cs = getComputedStyle(document.body);
       return JSON.stringify([cs.direction, cs.opacity, cs.zoom]);
     })()""") == ["ltr", "1", "1"]
 
 
-def test_computed_background_color_initial_and_declared(shared_page):
+async def test_computed_background_color_initial_and_declared(shared_page):
     assert _values(shared_page, """(() => {
       const el = document.createElement('div');
       document.body.appendChild(el);
@@ -84,7 +84,7 @@ def test_computed_background_color_initial_and_declared(shared_page):
     })()""") == ['rgba(0, 0, 0, 0)', 'rgb(255, 0, 0)', '']
 
 
-def test_computed_defaults_do_not_override_explicit_styles(shared_page):
+async def test_computed_defaults_do_not_override_explicit_styles(shared_page):
     assert _values(shared_page, """(() => {
       const e = document.createElement('div');
       document.body.appendChild(e);
@@ -97,7 +97,7 @@ def test_computed_defaults_do_not_override_explicit_styles(shared_page):
     })()""") == [['none', 'none', 'auto', 'none'], '40px', '30px', '2', True, '40px']
 
 
-def test_computed_additional_defaults_and_explicit_values(shared_page):
+async def test_computed_additional_defaults_and_explicit_values(shared_page):
     assert _values(shared_page, """(() => {
       const e = document.createElement('div'); document.body.appendChild(e);
       const values = s => [s.clear, s.content, s.boxShadow, s.tableLayout, s.aspectRatio, s.verticalAlign];
@@ -109,7 +109,7 @@ def test_computed_additional_defaults_and_explicit_values(shared_page):
                    'both', 'fixed', 'top']
 
 
-def test_computed_box_and_background_defaults_preserve_declarations(shared_page):
+async def test_computed_box_and_background_defaults_preserve_declarations(shared_page):
     assert _values(shared_page, """(() => {
       const e = document.createElement('div'); document.body.appendChild(e);
       let s = getComputedStyle(e);
@@ -121,7 +121,7 @@ def test_computed_box_and_background_defaults_preserve_declarations(shared_page)
     })()""") == [['0px', '0px', 'none', 'repeat', '8px'], '3px', '7px', '9px', True]
 
 
-def test_computed_border_defaults_follow_current_color(shared_page):
+async def test_computed_border_defaults_follow_current_color(shared_page):
     assert _values(shared_page, """(() => {
       const e = document.createElement('div'); e.style.color = 'red'; document.body.appendChild(e);
       const s = getComputedStyle(e);
@@ -130,7 +130,7 @@ def test_computed_border_defaults_follow_current_color(shared_page):
     })()""") == ['none', '0px', 'rgb(255, 0, 0)', 'auto', 'none', '0s', 'row']
 
 
-def test_computed_inherited_defaults_and_parent_values(shared_page):
+async def test_computed_inherited_defaults_and_parent_values(shared_page):
     assert _values(shared_page, """(() => {
       const p = document.createElement('div'), e = document.createElement('div');
       p.appendChild(e); document.body.appendChild(p);
@@ -143,7 +143,7 @@ def test_computed_inherited_defaults_and_parent_values(shared_page):
                    ['collapse', '4px', 'uppercase', 'pointer', 'none', 'square']]
 
 
-def test_computed_outline_overflow_and_alignment_defaults(shared_page):
+async def test_computed_outline_overflow_and_alignment_defaults(shared_page):
     assert _values(shared_page, """(() => {
       const e = document.createElement('div'); e.style.color = 'red'; document.body.appendChild(e);
       const s = getComputedStyle(e);
@@ -153,7 +153,7 @@ def test_computed_outline_overflow_and_alignment_defaults(shared_page):
                    'normal', 'normal', 'normal', 'auto']
 
 
-def test_computed_min_sizes_follow_parent_layout(shared_page):
+async def test_computed_min_sizes_follow_parent_layout(shared_page):
     assert _values(shared_page, """(() => {
       const p = document.createElement('div'), e = document.createElement('div');
       p.appendChild(e); document.body.appendChild(p);
@@ -163,7 +163,7 @@ def test_computed_min_sizes_follow_parent_layout(shared_page):
     })()""") == [['0px', '0px'], ['auto', 'auto'], ['10px', 'auto']]
 
 
-def test_dynamics_compressor_params_have_web_audio_nominal_ranges(shared_page):
+async def test_dynamics_compressor_params_have_web_audio_nominal_ranges(shared_page):
     assert _values(shared_page, """(() => {
       const ac = new AudioContext();
       const n = ac.createDynamicsCompressor();
@@ -175,7 +175,7 @@ def test_dynamics_compressor_params_have_web_audio_nominal_ranges(shared_page):
     })()""") == [0, 1, 0.25, -100, 0, 1, 40, 20]
 
 
-def test_request_idle_callback_runs_later_with_a_real_deadline(shared_page):
+async def test_request_idle_callback_runs_later_with_a_real_deadline(shared_page):
     shared_page.evaluate("""(() => {
       window.__p9_test_idle = null;
       window.__p9_test_id = requestIdleCallback(function (d) {
@@ -187,7 +187,7 @@ def test_request_idle_callback_runs_later_with_a_real_deadline(shared_page):
       });
       return 'armed';
     })()""")
-    shared_page.wait_for("window.__p9_test_idle !== null", timeout=5)
+    (await shared_page.wait_for("window.__p9_test_idle !== null", timeout=5))
     result = _values(shared_page, "JSON.stringify(window.__p9_test_idle)")
     assert result["didTimeout"] is False
     assert result["remainingType"] == "function"
@@ -195,7 +195,7 @@ def test_request_idle_callback_runs_later_with_a_real_deadline(shared_page):
     assert 0 <= result["remaining"] <= 50.0
 
 
-def test_is_uvpa_returns_a_promise_resolving_false(shared_page):
+async def test_is_uvpa_returns_a_promise_resolving_false(shared_page):
     shared_page.evaluate("""(() => {
       window.__p9_test_uvpa = null;
       const p = PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
@@ -203,12 +203,12 @@ def test_is_uvpa_returns_a_promise_resolving_false(shared_page):
       p.then(function (v) { window.__p9_test_uvpa = v; });
       return 'armed';
     })()""")
-    shared_page.wait_for("window.__p9_test_uvpa !== null", timeout=5)
+    (await shared_page.wait_for("window.__p9_test_uvpa !== null", timeout=5))
     assert shared_page.evaluate("window.__p9_test_uvpa") is False
     assert shared_page.evaluate("window.__p9_test_uvpa_is_promise") is True
 
 
-def test_animation_ready_and_finished_promises_settle(shared_page):
+async def test_animation_ready_and_finished_promises_settle(shared_page):
     """Chrome settles ready on the next frame and finished after the duration.
 
     The pre-phase-10 implementation created two pending Promises and never
@@ -225,13 +225,13 @@ def test_animation_ready_and_finished_promises_settle(shared_page):
       a.finished.then(function () { window.__p10_finished = a.playState; });
       return 'armed';
     })()""")
-    shared_page.wait_for("window.__p10_ready !== null", timeout=5)
-    shared_page.wait_for("window.__p10_finished !== null", timeout=5)
+    (await shared_page.wait_for("window.__p10_ready !== null", timeout=5))
+    (await shared_page.wait_for("window.__p10_finished !== null", timeout=5))
     assert shared_page.evaluate("window.__p10_ready") is True
     assert shared_page.evaluate("window.__p10_finished") == "finished"
 
 
-def test_animation_finish_and_cancel_never_leave_a_hanging_promise(shared_page):
+async def test_animation_finish_and_cancel_never_leave_a_hanging_promise(shared_page):
     shared_page.evaluate("""(() => {
       const el = document.createElement('div');
       document.body.appendChild(el);
@@ -245,12 +245,12 @@ def test_animation_finish_and_cancel_never_leave_a_hanging_promise(shared_page):
       b.cancel();
       return 'armed';
     })()""")
-    shared_page.wait_for("window.__p10_manual.length === 2", timeout=5)
+    (await shared_page.wait_for("window.__p10_manual.length === 2", timeout=5))
     assert _values(shared_page, "JSON.stringify(window.__p10_manual)") == [
         "finish", "AbortError"]
 
 
-def test_image_decode_returns_a_settled_promise(shared_page):
+async def test_image_decode_returns_a_settled_promise(shared_page):
     shared_page.evaluate("""(() => {
       window.__p10_decode = null;
       const img = new Image();
@@ -261,7 +261,7 @@ def test_image_decode_returns_a_settled_promise(shared_page):
              function (e) { window.__p10_decode = 'rejected'; });
       return 'armed';
     })()""")
-    shared_page.wait_for("window.__p10_decode !== null", timeout=5)
+    (await shared_page.wait_for("window.__p10_decode !== null", timeout=5))
     assert shared_page.evaluate("window.__p10_decode_is_promise") is True
     assert shared_page.evaluate("window.__p10_decode") is True
 
@@ -270,7 +270,7 @@ def test_image_decode_returns_a_settled_promise(shared_page):
 #    Expected values come from phase11_host_zero_probe.json /
 #    phase11_extended_probe.json (clean Chrome 157, zero site traffic).
 
-def test_video_element_reports_chrome_defaults_and_reflects_writes(shared_page):
+async def test_video_element_reports_chrome_defaults_and_reflects_writes(shared_page):
     assert _values(shared_page, """(() => {
       const v = document.createElement('video');
       const out = [v.videoWidth, v.videoHeight, v.width, v.height, v.poster,
@@ -284,7 +284,7 @@ def test_video_element_reports_chrome_defaults_and_reflects_writes(shared_page):
                 320, 0, True, True, "320", "0"]
 
 
-def test_image_reflected_attributes_report_chrome_defaults(shared_page):
+async def test_image_reflected_attributes_report_chrome_defaults(shared_page):
     assert _values(shared_page, """(() => {
       const i = document.createElement('img');
       const out = [i.currentSrc, i.decoding, i.isMap, i.loading,
@@ -302,7 +302,7 @@ def test_image_reflected_attributes_report_chrome_defaults(shared_page):
                 "sync"]
 
 
-def test_canvas_2d_direction_quality_and_dash_keep_state(shared_page):
+async def test_canvas_2d_direction_quality_and_dash_keep_state(shared_page):
     assert _values(shared_page, """(() => {
       const x = document.createElement('canvas').getContext('2d');
       const out = [x.direction, x.imageSmoothingQuality, x.getLineDash().length];

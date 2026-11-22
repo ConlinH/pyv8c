@@ -1,15 +1,17 @@
 """Local slow-worker source, early messages and termination against Chrome."""
+
+import asyncio
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from harness import chrome_reference
 
 
 @pytest.mark.parametrize('action', ['release','terminate','document-open'])
-def test_slow_source_and_early_messages_match_chrome(action):
+async def test_slow_source_and_early_messages_match_chrome(action):
     terminate = action == 'terminate'
     entered, release, served = threading.Event(), threading.Event(), threading.Event()
     class Handler(BaseHTTPRequestHandler):
@@ -44,54 +46,54 @@ def test_slow_source_and_early_messages_match_chrome(action):
               "setTimeout(()=>pulse=true,0)")
     results = []
     try:
-        with chrome_reference() as reference:
+        async with chrome_reference() as reference:
             for kind in ('chrome', 'pyv8c'):
                 entered.clear(); release.clear(); served.clear()
-                browser = Browser(stub_logging='off') if kind == 'pyv8c' else None
-                page = browser.new_profile().new_page() if browser else reference.browser.new_page()
+                browser = (await Browser(stub_logging='off').__aenter__()) if kind == 'pyv8c' else None
+                page = browser.new_profile().new_page() if browser else (await reference.browser.new_page())
                 runtimes = ()
                 try:
-                    page.goto(url)
-                    page.evaluate(script)
-                    assert entered.wait(3)
-                    assert page.evaluate('21*2') == 42
+                    (await page.goto(url))
+                    ((await page.evaluate(script)) if not browser else page.evaluate(script))
+                    assert (await asyncio.to_thread(entered.wait, 3))
+                    assert ((await page.evaluate('21*2')) if not browser else page.evaluate('21*2')) == 42
                     if browser:
-                        page.wait_for('pulse', timeout=2)
+                        (await page.wait_for('pulse', timeout=2))
                         runtimes = page.executor.call(lambda: tuple(w._runtime for w in page._owned.workers))
                     else:
-                        page.wait_for_function('pulse', timeout=2000)
+                        (await page.wait_for_function('pulse', timeout=2000))
                     if terminate:
-                        page.evaluate('worker.terminate()')
+                        ((await page.evaluate('worker.terminate()')) if not browser else page.evaluate('worker.terminate()'))
                         if browser:
                             for runtime in runtimes:
-                                runtime.executor._thread.join(1)
+                                (await asyncio.to_thread(runtime.executor._thread.join, 1))
                                 assert not runtime.executor._thread.is_alive()
                     elif action == 'document-open':
-                        page.evaluate("document.open();document.write('<body>new</body>');document.close()")
+                        ((await page.evaluate("document.open();document.write('<body>new</body>');document.close()")) if not browser else page.evaluate("document.open();document.write('<body>new</body>');document.close()"))
                     release.set()
-                    assert served.wait(3)
+                    assert (await asyncio.to_thread(served.wait, 3))
                     if terminate:
                         # Give a mistakenly delivered source a turn to execute.
-                        page.evaluate('globalThis.settled=false;setTimeout(()=>settled=true,100)')
+                        ((await page.evaluate('globalThis.settled=false;setTimeout(()=>settled=true,100)')) if not browser else page.evaluate('globalThis.settled=false;setTimeout(()=>settled=true,100)'))
                         if browser:
-                            page.wait_for('settled', timeout=2)
+                            (await page.wait_for('settled', timeout=2))
                         else:
-                            page.wait_for_function('settled', timeout=2000)
+                            (await page.wait_for_function('settled', timeout=2000))
                     elif browser:
-                        page.wait_for('messages.length===3', timeout=3)
+                        (await page.wait_for('messages.length===3', timeout=3))
                     else:
-                        page.wait_for_function('messages.length===3', timeout=3000)
-                    results.append(page.evaluate('messages'))
+                        (await page.wait_for_function('messages.length===3', timeout=3000))
+                    results.append(((await page.evaluate('messages')) if not browser else page.evaluate('messages')))
                 finally:
                     release.set()
-                    browser.close() if browser else page.close()
+                    (await browser.close()) if browser else (await page.close())
                     for runtime in runtimes:
-                        runtime.executor._thread.join(2)
+                        (await asyncio.to_thread(runtime.executor._thread.join, 2))
                         assert not runtime.executor._thread.is_alive()
         assert results == ([[], []] if terminate else [['boot', 'early', 'micro']] * 2)
     finally:
         release.set()
         server.shutdown()
         server.server_close()
-        thread.join(2)
+        (await asyncio.to_thread(thread.join, 2))
         assert not thread.is_alive()

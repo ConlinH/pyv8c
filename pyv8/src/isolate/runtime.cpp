@@ -140,12 +140,12 @@ RuntimeManager::ensure_initialized()
 }
 
 IsolateState*
-RuntimeManager::create_isolate()
+RuntimeManager::create_isolate(bool thread_bound)
 {
     if (!ensure_initialized())
         return nullptr;
 
-    IsolateState* state = new (std::nothrow) IsolateState();
+    IsolateState* state = new (std::nothrow) IsolateState(thread_bound);
     if (state == nullptr)
     {
         PyErr_NoMemory();

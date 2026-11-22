@@ -1,30 +1,19 @@
-"""Thread-safe HTTP transport bridge for the optional curl_cffi package.
-
-It exists for curl_cffi's impersonation layer; the context's jar is the only cookie
-store (the client's own is discarded, or cookies would be sent twice) and the bridge
-adds no headers, so the wire carries exactly the caller's merge.
-"""
+"""Cancellable curl_cffi bridge on the shared async delivery."""
+import asyncio
 import importlib
+import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
-from threading import RLock
+from math import ceil
 
-from ..foundation.logging import logger
-
-from ..foundation.host_errors import HostStateError, LoadFailure
-from .backend import RequestDelivery
-from .cookies import CookieJar
+from .async_delivery import AsyncTransport
 from .models import (
     NetworkRequest,
     NetworkResponse,
     NetworkUnavailableError,
-    cookie_header,
-    permits_credentials,
 )
 from .proxy import PROXY_OPTION, curl_proxies
 from .registry import signature_option_keys
 
-#: Per-request options forwarded straight to ``curl_cffi``; others are ignored here.
 _EXTRA_KWARGS = (
     "impersonate", "ja3", "akamai", "perk", "extra_fp",
     "proxies", "proxy", "proxy_auth", "verify", "cert",
@@ -32,8 +21,29 @@ _EXTRA_KWARGS = (
 )
 
 
+def _request_kwargs(request, *, proxies):
+    """The one set of curl_cffi keywords for every call."""
+    options = request.options or {}
+    kwargs = {
+        "headers": dict(request.headers),
+        "discard_cookies": True,
+        "allow_redirects": False,
+    }
+    if request.body is not None:
+        kwargs["data"] = request.body
+    if request.timeout is not None:
+        # libcurl truncates to milliseconds. The framework timer owns the deadline.
+        kwargs["timeout"] = (ceil(request.timeout * 1000) + 1) / 1000
+    if proxies is not None:
+        # Empty per-request values are the only ones that override HTTP_PROXY.
+        kwargs["proxies"] = dict(proxies)
+    for name in _EXTRA_KWARGS:
+        if options.get(name) is not None:
+            kwargs[name] = options[name]
+    return kwargs
+
+
 def _curl_cffi_module():
-    """The optional ``curl_cffi.requests`` module, or an error naming what is missing."""
     try:
         return importlib.import_module("curl_cffi.requests")
     except ImportError as exc:
@@ -42,107 +52,69 @@ def _curl_cffi_module():
         ) from exc
 
 
-def _curl_cffi_session_type(module):
-    session_type = getattr(module, "Session", None)
+def _async_session_type(module):
+    session_type = getattr(module, "AsyncSession", None)
     if session_type is None:
-        raise NetworkUnavailableError("installed curl_cffi does not expose requests.Session")
+        raise NetworkUnavailableError(
+            "installed curl_cffi does not expose requests.AsyncSession"
+        )
     return session_type
 
 
-class CurlCffiTransport(RequestDelivery):
-    """HTTP transport backed by one curl_cffi session.
+class CurlCffiTransport(AsyncTransport):
+    """HTTP transport backed by one curl_cffi ``AsyncSession``."""
 
-    ``use_thread_local_curl`` (curl_cffi's default) gives each thread its own
-    handle, so one instance serves both the synchronous and the pooled paths
-    without a lock.  It performs requests only: sockets come from whichever
-    WebSocket engine the context assembled alongside it.
-    """
+    bridge_option_keys = frozenset({"default_headers", PROXY_OPTION})
 
-    #: Options this bridge consumes itself: the pool size, ``default_headers``, and
-    #: the proxy, which is applied per request rather than handed to the session.
-    bridge_option_keys = frozenset({"default_headers", "max_workers", PROXY_OPTION})
+    @property
+    def http_concurrency(self):
+        return min(10, self.session.max_clients)
 
     @classmethod
     def accepted_option_keys(cls) -> frozenset[str] | None:
-        """The keys ``options=`` may carry: the bridge's, plus the session's own.
-
-        curl_cffi declares its session parameters to type checkers only, so ``None`` at
-        runtime says no list; the session refuses an unknown key when built.
-        """
-        session_keys = signature_option_keys(_curl_cffi_session_type(_curl_cffi_module()))
+        session_keys = signature_option_keys(_async_session_type(_curl_cffi_module()))
         if session_keys is None:
             return None
         return session_keys | cls.bridge_option_keys
 
     def __init__(self, *, options=None):
-        self.options = dict(options or {})
-        # Ours, not the session's: consume it here and never forward it.
-        max_workers = int(self.options.pop("max_workers", 4))
-        default_headers = bool(self.options.pop("default_headers", False))
-        self.proxies = curl_proxies(self.options.pop(PROXY_OPTION, None))
-        self.curl_cffi = _curl_cffi_module()
-        self.session = self._new_session(default_headers)
-        self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="pyv8c-curl")
-        self.cookies = CookieJar()
-        self._closed = False
-        self._lock = RLock()
+        options = dict(options or {})
+        self.default_headers = bool(options.pop("default_headers", False))
+        self.proxies = curl_proxies(options.pop(PROXY_OPTION, None))
+        super().__init__(options=options, loop_name="pyv8c-curl-loop")
 
-    def _new_session(self, default_headers):
-        session_type = _curl_cffi_session_type(self.curl_cffi)
+    def _open_session(self):
+        module = _curl_cffi_module()
+        session_type = _async_session_type(module)
+        self.curl_cffi = module
         options = dict(self.options)
-        options.setdefault("default_headers", default_headers)
+        options.setdefault("default_headers", self.default_headers)
         try:
-            return session_type(**options)
+            self.session = session_type(loop=self.loop, **options)
         except TypeError as exc:
             # No key list to check against: name where the option came from.
             raise TypeError(
-                f"http_options was refused by the curl_cffi session: {exc}"
+                f"http_options was refused by the curl_cffi AsyncSession: {exc}"
             ) from exc
 
-    def _call(self, request: NetworkRequest):
-        if self._closed:
-            raise HostStateError("network backend is closed")
-        logger.debug("network download: {} {}", request.method, request.url)
-        headers = dict(request.headers)
-        cookie = cookie_header(self.cookies, request)
-        if cookie and "cookie" not in {str(name).lower() for name in headers}:
-            headers["Cookie"] = cookie
-        options = request.options or {}
-        allow_redirects = options.get("allow_redirects")
-        kwargs = {
-            "headers": headers,
-            "discard_cookies": True,
-            # Only "follow" wants a chain; every other mode inspects the hops itself.
-            "allow_redirects": request.redirect == "follow" if allow_redirects is None else bool(allow_redirects),
-        }
-        if request.body is not None:
-            kwargs["data"] = request.body
-        if request.timeout is not None:
-            kwargs["timeout"] = request.timeout
-        if self.proxies is not None:
-            # Set before per-request options so the caller keeps the last word, and always set: libcurl would else read HTTP_PROXY itself.
-            kwargs["proxies"] = dict(self.proxies)
-        for name in _EXTRA_KWARGS:
-            if options.get(name) is not None:
-                kwargs[name] = options[name]
+    def _create_loop(self):
+        if sys.platform == "win32":
+            return asyncio.SelectorEventLoop()
+        return super()._create_loop()
+
+    async def _single_call(self, request: NetworkRequest) -> NetworkResponse:
+        kwargs = _request_kwargs(request, proxies=self.proxies)
         started = time.perf_counter()
-        try:
-            raw = self.session.request(str(request.method).upper(), request.url, **kwargs)
-        except Exception as exc:  # every transport failure reads the same here
-            raise LoadFailure(f"{request.method} {request.url} failed: {exc}") from exc
+        raw = await self.session.request(
+            str(request.method).upper(), request.url, **kwargs)
         response = self._response(raw, request.url, time.perf_counter() - started)
-        set_cookie = response.headers.get("set-cookie")
-        if set_cookie and permits_credentials(request):
-            self.cookies.add_from_response(response.url, set_cookie)
+        if response.redirected:
+            raise NetworkUnavailableError("curl_cffi followed a redirect despite allow_redirects=False")
         return response
 
     @staticmethod
     def _headers(raw):
-        """Response headers with lower-case names and every Set-Cookie kept.
-
-        ``multi_items`` is the only view that sees repeated headers, and values are
-        joined with ``, `` as the jar's splitter expects.
-        """
+        """Response headers with lower-case names and every Set-Cookie kept."""
         headers = getattr(raw, "headers", None)
         if headers is None:
             return {}
@@ -160,7 +132,8 @@ class CurlCffiTransport(RequestDelivery):
             items = [(key, value) for key, value in source]
         for key, value in items:
             collected.setdefault(str(key).lower(), []).append(str(value))
-        return {key: ", ".join(values) for key, values in collected.items()}
+        return {key: values if key == "set-cookie" else ", ".join(values)
+                for key, values in collected.items()}
 
     @classmethod
     def _response(cls, raw, url, fallback_elapsed):
@@ -177,20 +150,6 @@ class CurlCffiTransport(RequestDelivery):
             "basic",
             float(total_seconds()) if callable(total_seconds) else float(fallback_elapsed),
         )
-
-    def close(self):
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-        close = getattr(self.session, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:  # teardown must not raise
-                logger.debug("failed to close the curl_cffi session", exc_info=True)
-        self.executor.shutdown(wait=True, cancel_futures=True)
-        self.cookies.clear()
 
 
 __all__ = ["CurlCffiTransport"]

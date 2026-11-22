@@ -3,16 +3,16 @@ import time
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.mark.parametrize('size', [(0, 0), (240, 120)])
-def test_frame_uses_its_content_box_for_window_and_layout(page, size):
+async def test_frame_uses_its_content_box_for_window_and_layout(page, size):
     width, height = size
-    page.set_content(f'''<!doctype html><iframe id="frame"
+    (await page.set_content(f'''<!doctype html><iframe id="frame"
         style="width:{width}px;height:{height}px;border:3px solid;padding:2px"
-        srcdoc="<!doctype html><style>html,body{{margin:0}}</style><div></div>"></iframe>''')
-    page.wait_for("document.querySelector('iframe').contentDocument.querySelector('div') !== null", timeout=3)
+        srcdoc="<!doctype html><style>html,body{{margin:0}}</style><div></div>"></iframe>''', wait_until="commit"))
+    (await page.wait_for("document.querySelector('iframe').contentDocument.querySelector('div') !== null", timeout=3))
     assert page.evaluate('''(() => {
         const frame = document.querySelector('iframe');
         const win = frame.contentWindow;
@@ -23,7 +23,7 @@ def test_frame_uses_its_content_box_for_window_and_layout(page, size):
     assert page.evaluate("document.querySelector('iframe').contentWindow.innerWidth") == 360
 
 
-def test_frame_navigation_reports_referrer_and_reached_network_phases():
+async def test_frame_navigation_reports_referrer_and_reached_network_phases():
     def load(url, request):
         if url == 'https://parent.test/start?query=yes':
             body = '<!doctype html><iframe src="/frame"></iframe>'
@@ -34,10 +34,10 @@ def test_frame_navigation_reports_referrer_and_reached_network_phases():
             raise AssertionError(url)
         return {'headers': {'content-type': 'text/html'}, 'body': body}
 
-    browser = Browser(real_network=False, resource_loader=load)
+    browser = (await Browser(real_network=False, resource_loader=load).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto('https://parent.test/start?query=yes')
+        (await page.goto('https://parent.test/start?query=yes'))
         result = page.evaluate('''(() => {
             const win = document.querySelector('iframe').contentWindow;
             const t = win.performance.timing;
@@ -50,12 +50,12 @@ def test_frame_navigation_reports_referrer_and_reached_network_phases():
         assert all(value > 0 for value in result['times'])
         assert result['times'][4] - result['times'][1] >= 15
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_layout_resolves_font_relative_dimensions(page):
-    page.set_content('''<!doctype html><div id="box"
-        style="font-size:20px;width:10em;height:2em;padding:1em"></div>''')
+async def test_layout_resolves_font_relative_dimensions(page):
+    (await page.set_content('''<!doctype html><div id="box"
+        style="font-size:20px;width:10em;height:2em;padding:1em"></div>''', wait_until="commit"))
     assert page.evaluate('''(() => {
         const node=document.querySelector('#box'), box=node.getBoundingClientRect();
         return [box.width,box.height,getComputedStyle(node).width];

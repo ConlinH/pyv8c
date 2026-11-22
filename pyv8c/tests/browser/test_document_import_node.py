@@ -1,20 +1,20 @@
 """Imported nodes must be usable in replaceChild and owned by the destination."""
 import pytest
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def page():
-    browser = Browser(real_network=False)
+async def page():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><div id="placeholder"></div></body>')
+        (await page.set_content('<body><div id="placeholder"></div></body>', wait_until="commit"))
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_import_node_copies_into_destination_and_replaces_child(page):
+async def test_import_node_copies_into_destination_and_replaces_child(page):
     assert page.evaluate('''(()=>{
         const source=document.implementation.createHTMLDocument('source');
         source.body.innerHTML='<div id="origin"><span>child</span></div>';
@@ -30,7 +30,7 @@ def test_import_node_copies_into_destination_and_replaces_child(page):
     })()''') == ['<div id="origin"></div>', '<div id="origin"><span>child</span></div>'] + [True]*7
 
 
-def test_import_node_rejects_invalid_nodes_and_unimportable_roots(page):
+async def test_import_node_rejects_invalid_nodes_and_unimportable_roots(page):
     assert page.evaluate('''(()=>{
         const shadow=document.createElement('div').attachShadow({mode:'open'});
         return [undefined,null,{},document,shadow].map(node=>{
@@ -39,7 +39,7 @@ def test_import_node_rejects_invalid_nodes_and_unimportable_roots(page):
     })()''') == ['TypeError']*3 + ['NotSupportedError']*2
 
 
-def test_import_fragment_and_executed_script_are_detached_and_inert(page):
+async def test_import_fragment_and_executed_script_are_detached_and_inert(page):
     assert page.evaluate('''(()=>{
         window.calls=0;
         const script=document.createElement('script');script.textContent='calls++';
@@ -52,7 +52,7 @@ def test_import_fragment_and_executed_script_are_detached_and_inert(page):
     })()''') == [True, True, 1, 1, 0]
 
 
-def test_import_and_clone_preserve_svg_element_model_and_namespace(page):
+async def test_import_and_clone_preserve_svg_element_model_and_namespace(page):
     assert page.evaluate('''(()=>{
         const ns='http://www.w3.org/2000/svg';
         const svg=document.createElementNS(ns,'svg');

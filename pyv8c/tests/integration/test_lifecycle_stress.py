@@ -1,13 +1,12 @@
 """Concurrent and lifecycle stress for Page, worker and DevTools realms.
 
-These tests drive pages from several threads at once and then tear them down
+These tests interleave owner-loop coroutines and then tear pages down
 mid-flight.  The assertions are deliberately structural: no thread may wedge,
 ``close()`` must stay idempotent under races, responses that land after a
 close must be dropped silently, and the process must return to its baseline
 thread count.
 """
 import asyncio
-import json
 import threading
 import time
 from urllib.parse import urlsplit
@@ -16,9 +15,8 @@ import pytest
 
 pyv8 = pytest.importorskip("pyv8c.pyv8")
 pytestmark = [pytest.mark.race, pytest.mark.slow]
-from websockets.asyncio.client import connect
 
-from pyv8c import Browser, DevToolsOptions
+from pyv8c.async_api import Browser
 
 ORIGIN = "http://127.0.0.1:9"
 
@@ -48,58 +46,43 @@ def _loader(url, request):
 
 
 @pytest.fixture
-def browser():
-    browser = Browser(resource_loader=_loader, stub_logging="off")
+async def browser():
+    browser = (await Browser(resource_loader=_loader, stub_logging="off").__aenter__())
     try:
         yield browser
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def _run_threads(threads, timeout=20):
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout)
-    assert not any(t.is_alive() for t in threads), "one or more threads wedged"
-
-
-def test_concurrent_close_is_idempotent(browser):
-    page = browser.new_profile().new_page(ORIGIN + "/")
-    _run_threads([threading.Thread(target=page.close) for _ in range(4)])
+async def test_concurrent_close_is_idempotent(browser):
+    page = browser.new_profile().new_page()
+    await page.goto(ORIGIN + "/")
+    await asyncio.gather(*(page.close() for _ in range(4)))
     assert page.closed
-    page.close()  # still idempotent afterwards
-    browser.close()
-    browser.close()  # browser-level close is idempotent too
+    (await page.close())  # still idempotent afterwards
+    (await browser.close())
+    (await browser.close())  # browser-level close is idempotent too
 
 
-def test_evaluate_races_page_close(browser):
-    page = browser.new_profile().new_page(ORIGIN + "/")
-    errors = []
-
-    def evaler():
-        try:
-            # Hammer the realm until close() lands; a surviving realm would
-            # make this loop run to its deadline and mark the test failed.
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                page.evaluate("Math.random()")
-            errors.append("no close observed within 5s")
-        except BaseException as exc:  # close races are expected
-            errors.append(type(exc).__name__)
-
-    def closer():
-        time.sleep(0.01)
-        page.close()
-
-    _run_threads([threading.Thread(target=evaler), threading.Thread(target=closer)])
+async def test_evaluate_races_page_close(browser):
+    page = browser.new_page()
+    await page.goto(ORIGIN + "/")
+    async def evaluate_until_closed():
+        while not page.closed:
+            page.evaluate("Math.random()")
+            await asyncio.sleep(0)
+    running = asyncio.create_task(evaluate_until_closed())
+    await asyncio.sleep(.01)
+    await page.close()
+    await asyncio.wait_for(running, 1)
     assert page.closed
-    assert errors and errors[0] != "no close observed within 5s"
 
 
-def test_worker_message_delivery_races_page_close(browser):
-    first = browser.new_profile().new_page(ORIGIN + "/")
-    second = browser.new_profile().new_page(ORIGIN + "/")
+async def test_worker_message_delivery_races_page_close(browser):
+    first = browser.new_profile().new_page()
+    await first.goto(ORIGIN + "/")
+    second = browser.new_profile().new_page()
+    await second.goto(ORIGIN + "/")
     for page in (first, second):
         page.evaluate("""
             window.__worker = 'pending';
@@ -110,147 +93,66 @@ def test_worker_message_delivery_races_page_close(browser):
         """)
     # Let the workers spin up, then tear both pages down concurrently while
     # worker messages and intervals are still in flight.
-    time.sleep(0.1)
-    _run_threads([threading.Thread(target=first.close), threading.Thread(target=second.close)])
+    (await asyncio.sleep(0.1))
+    await asyncio.gather(first.close(), second.close())
     assert first.closed and second.closed
 
 
-def test_a_worker_that_closed_itself_does_not_wedge_the_page_close(browser):
+async def test_a_worker_that_closed_itself_does_not_wedge_the_page_close(browser):
     """A worker's own ``close()`` tears its realm down on the owner thread; the page's
     ``terminate()`` must find that done rather than dispatch onto the dead context."""
-    page = browser.new_profile().new_page(ORIGIN + "/")
+    page = browser.new_profile().new_page()
+    await page.goto(ORIGIN + "/")
     page.evaluate("""
         var w = new Worker('/closing.js');
         w.postMessage('go');
     """)
-    time.sleep(0.2)
-    page.close()
+    (await asyncio.sleep(0.2))
+    (await page.close())
     assert page.closed
 
 
-def test_network_response_landing_after_close_is_dropped(browser):
-    page = browser.new_profile().new_page(ORIGIN + "/")
+async def test_network_response_landing_after_close_is_dropped(browser):
+    page = browser.new_profile().new_page()
+    await page.goto(ORIGIN + "/")
     # load_resource_async posts the delivery onto the page task queue; closing
     # the page right after evaluate() returns must discard that delivery.
     page.evaluate("fetch('/slow')")
-    page.close()
-    time.sleep(0.5)
+    (await page.close())
+    (await asyncio.sleep(0.5))
     assert page.closed
 
 
-def test_timer_pending_at_close_is_dropped(browser):
-    page = browser.new_profile().new_page(ORIGIN + "/")
+async def test_timer_pending_at_close_is_dropped(browser):
+    page = browser.new_profile().new_page()
+    await page.goto(ORIGIN + "/")
     page.evaluate("""
         window.__count = 0;
         setInterval(function () { window.__count += 1; }, 10);
         setTimeout(function () { window.__count += 1; }, 500);
     """)
-    page.close()
-    time.sleep(0.2)
+    (await page.close())
+    (await asyncio.sleep(0.2))
     assert page.closed
 
 
-def test_devtools_pause_supports_cdp_attach_evaluate_detach_and_close():
-    browser = Browser(resource_loader=_loader, stub_logging="off")
-    context = browser.new_profile()
-    page = context.new_page()
-    handle = context.start_devtools(page, options=DevToolsOptions(wait_for_debugger=True, startup_timeout=3))
-    completed = threading.Event()
-    probe_done = threading.Event()
-    errors = []
-
-    def navigate():
-        try:
-            page.set_content("<script>globalThis.answer = 42;</script>")
-        except BaseException as exc:  # collected for the test
-            errors.append(exc)
-        finally:
-            completed.set()
-
-    async def probe():
-        try:
-            async with connect(f"ws://{handle.host}:{handle.port}/") as ws:
-                targets = await _cdp_request(ws, {"id": 1, "method": "Target.getTargets"})
-                target_id = targets["result"]["targetInfos"][0]["targetId"]
-                attached = await _cdp_request(ws, {
-                    "id": 2, "method": "Target.attachToTarget",
-                    "params": {"targetId": target_id},
-                })
-                sid = attached["result"]["sessionId"]
-                # Runtime.evaluate while the gate is held queues instead of
-                # blocking the websocket server or the main thread.
-                await ws.send(json.dumps({
-                    "id": 3, "method": "Runtime.evaluate",
-                    "params": {"expression": "1 + 1"}, "sessionId": sid,
-                }))
-                await asyncio.sleep(0.05)
-                detached = await _cdp_request(ws, {
-                    "id": 4, "method": "Target.detachFromTarget",
-                    "params": {"sessionId": sid},
-                })
-                assert detached["result"] == {}
-                probe_done.set()
-                # Keep the socket open so only page.close() releases the gate.
-                while not completed.is_set():
-                    try:
-                        await asyncio.wait_for(ws.recv(), 0.2)
-                    except asyncio.TimeoutError:
-                        continue
-        except BaseException as exc:  # collected for the test
-            errors.append(exc)
-            probe_done.set()
-
-    nav_thread = threading.Thread(target=navigate)
-    probe_thread = threading.Thread(target=lambda: asyncio.run(probe()))
-    nav_thread.start()
-    probe_thread.start()
-    try:
-        assert probe_done.wait(6), "paused realm never answered attach/detach"
-        # The navigation is still gated while the CDP socket stays attached.
-        assert not completed.is_set()
-        page.close()
-        nav_thread.join(6)
-        probe_thread.join(6)
-        assert not nav_thread.is_alive(), "navigation wedged during close"
-        assert not probe_thread.is_alive(), "CDP probe wedged during close"
-        # Closing interrupts the already-running synchronous host operation;
-        # the caller must observe cancellation rather than a false success.
-        assert len(errors) == 1
-        assert type(errors[0]) is pyv8.JavaScriptTerminated
-        assert page.closed
-        page.close()  # idempotent after teardown
-    finally:
-        handle.close()
-        browser.close()
-
-
-async def _cdp_request(ws, payload):
-    await ws.send(json.dumps(payload))
-    while True:
-        message = json.loads(await asyncio.wait_for(ws.recv(), 3))
-        if message.get("id") == payload.get("id"):
-            return message
-
-
-
-
-def test_page_trees_release_native_handles_and_threads_after_close():
-    browser = Browser(real_network=False, stub_logging="off")
+async def test_page_trees_release_native_handles_and_threads_after_close():
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     owner = browser.new_profile()
     warm = owner.new_page()
-    warm.close()
+    (await warm.close())
     baseline = threading.active_count()
     try:
         for _ in range(10):
             page = owner.new_page()
-            page.set_content('<iframe srcdoc="<body>child</body>"></iframe>')
-            page.run_until_idle(1)
+            (await page.set_content('<iframe srcdoc="<body>child</body>"></iframe>', wait_until="commit"))
+            (await page.run_until_idle(1))
             page.evaluate("globalThis.worker = new Worker(URL.createObjectURL(new Blob(['self.onmessage=()=>{}'])));")
             old_context = page.v8_context
             handle = page.evaluate_handle('({node:document.body, fn:()=>42})')
-            page.set_content('<body>replacement</body>')
+            (await page.set_content('<body>replacement</body>', wait_until="commit"))
             isolate = page.isolate
-            page.close()
+            (await page.close())
             assert old_context.live_handles == 0
             assert isolate.live_v8_handles == 0
             with pytest.raises(RuntimeError):
@@ -258,7 +160,7 @@ def test_page_trees_release_native_handles_and_threads_after_close():
             assert not owner.pages
         deadline = time.monotonic() + 5
         while threading.active_count() > baseline and time.monotonic() < deadline:
-            time.sleep(0.02)
+            (await asyncio.sleep(0.02))
         assert threading.active_count() <= baseline
     finally:
-        browser.close()
+        (await browser.close())

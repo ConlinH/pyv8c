@@ -226,9 +226,9 @@ def _chrome_wave_bands(frequency, rate):
 
 def _chrome_waveform(kind, phase, frequency, rate):
     """Read FFT bands using the same interpolation as the batch renderer."""
-    from ... import _audio_native
+    from ..._native import audio as native_audio
     high, low, mix = _chrome_wave_bands(frequency, rate)
-    return _audio_native.oscillator_waveform(
+    return native_audio.oscillator_waveform(
         ('sine', 'square', 'sawtooth', 'triangle').index(kind), phase, high, low, mix)
 
 
@@ -494,8 +494,8 @@ class OscillatorNode(AudioScheduledSourceNode):
         vector = (_OSCILLATOR_X86 and self._start == 0 and self._type != 'custom'
                   and frequency_constant and detune_constant
                   and frame >= RENDER_QUANTUM and 24000 < rate <= 88200 and increment >= .3)
-        from ... import _audio_native
-        phase, next_phase, lanes, lane, previous_increment = _audio_native.oscillator_phase_step(
+        from ..._native import audio as native_audio
+        phase, next_phase, lanes, lane, previous_increment = native_audio.oscillator_phase_step(
             self._phase, self._vector_lanes, self._vector_lane,
             self._vector_increment, increment, frame, vector)
         if self._type == "custom" and self._periodic is not None:
@@ -532,8 +532,8 @@ def _constant_oscillator_batch(node, length, rate):
         high, low, mix = _chrome_wave_bands(frequency, rate)
     except (OverflowError, ValueError):
         return None
-    from ... import _audio_native
-    payload, phase, lanes, lane = _audio_native.oscillator_block(
+    from ..._native import audio as native_audio
+    payload, phase, lanes, lane = native_audio.oscillator_block(
         ('sine', 'square', 'sawtooth', 'triangle').index(node._type),
         length, increment, high, low, mix)
     values = array.array('f')
@@ -1050,8 +1050,8 @@ class DynamicsCompressorNode(AudioNode):
             parameter._fixed_automation_rate = 'DynamicsCompressor.' + name
         self._reduction = 0.0
         rate = self._context.get_sampleRate() if self._context is not None else SAMPLE_RATE
-        from ..._audio_native import CompressorDSP
-        self._compressor = CompressorDSP(rate)
+        from ..._native import audio as native_audio
+        self._compressor = native_audio.CompressorDSP(rate)
 
     def get_threshold(self): return self._threshold
     def get_knee(self): return self._knee

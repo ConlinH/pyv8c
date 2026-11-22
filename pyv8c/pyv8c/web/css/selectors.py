@@ -268,13 +268,13 @@ def _matches_attribute(actual, op, wanted):
     return actual == wanted or actual.startswith(wanted + "-")
 
 
-def _class_set(node):
+def _class_set(node, attributes):
     """The classes of *node*, split once per value of its class attribute.
 
     A query walks the same tree over and over, and the split used to happen again
     for every node of every scan.
     """
-    class_name = node.attributes.get("class", "")
+    class_name = attributes.get("class", "")
     cached = node.__dict__.get("_selector_classes")
     if cached is None or cached[0] != class_name:
         cached = (class_name, frozenset(class_name.split()))
@@ -288,7 +288,7 @@ def _simple_match(node, simple):
     for value in simple.ids:
         if attributes.get("id", "") != value: return False
     if simple.classes:
-        classes = _class_set(node)
+        classes = _class_set(node, attributes)
         for value in simple.classes:
             if value not in classes: return False
     for name, op, wanted in simple.attrs:
@@ -308,47 +308,47 @@ def _simple_match(node, simple):
         if name == "disabled" and not _is_disabled(node): return False
         if name == "enabled" and (node.localName not in _FORM_CONTROL_TAGS or _is_disabled(node)): return False
         if name in ("not", "is", "where"):
-            result = any(_matches_ast(node, group) for group in parse(arg or ""))
+            result = any(matches_group(node, group) for group in parse(arg or ""))
             if (name == "not" and result) or (name != "not" and not result): return False
     return True
 
 
-def _matches_ast(node, ast):
+def matches_group(node, ast):
+    """Match one parsed selector group without retaining DOM results."""
     compounds, relations = ast
+    return _match_at(node, compounds, relations, len(compounds) - 1)
 
-    def at(current, index):
-        if current is None or not _simple_match(current, compounds[index]):
-            return False
-        if index == 0:
-            return True
-        relation = relations[index - 1]
-        if relation == ">":
-            return at(current.parentNode, index - 1)
-        if relation == "+":
-            return at(_previous_element(current), index - 1)
-        if relation == "~":
-            parent = current.parentNode
-            if parent is None:
-                return False
-            # Every earlier sibling is a candidate: a nearer partial match
-            # must not hide an earlier sibling whose entire prefix matches.
-            for sibling in parent._children:
-                if sibling is current:
-                    break
-                if at(sibling, index - 1):
-                    return True
-            return False
-        current = current.parentNode
-        while current is not None:
-            if at(current, index - 1):
-                return True
-            current = current.parentNode
+
+def _match_at(current, compounds, relations, index):
+    if current is None or not _simple_match(current, compounds[index]):
         return False
+    if index == 0:
+        return True
+    relation = relations[index - 1]
+    if relation == ">":
+        return _match_at(current.parentNode, compounds, relations, index - 1)
+    if relation == "+":
+        return _match_at(_previous_element(current), compounds, relations, index - 1)
+    if relation == "~":
+        parent = current.parentNode
+        if parent is None:
+            return False
+        # Test every earlier sibling, including its complete selector prefix.
+        for sibling in parent._children:
+            if sibling is current:
+                break
+            if _match_at(sibling, compounds, relations, index - 1):
+                return True
+        return False
+    current = current.parentNode
+    while current is not None:
+        if _match_at(current, compounds, relations, index - 1):
+            return True
+        current = current.parentNode
+    return False
 
-    return at(node, len(compounds) - 1)
 
-
-def matches(node, selector): return any(_matches_ast(node, group) for group in parse(selector))
+def matches(node, selector): return any(matches_group(node, group) for group in parse(selector))
 
 
 def select(root, selector, *, first=False):
@@ -371,7 +371,13 @@ def select(root, selector, *, first=False):
         return [node for node in candidates if _simple_match(node, simple)]
     if len(ast) == 1:
         group = ast[0]
-        selected = (node for node in candidates if _matches_ast(node, group))
+        if not first and group[0][-1].tag != '*':
+            candidates = root._tag_index_snapshot().get(group[0][-1].tag, ())
+        selected = (node for node in candidates if matches_group(node, group))
     else:
-        selected = (node for node in candidates if any(_matches_ast(node, group) for group in ast))
+        tags = {group[0][-1].tag for group in ast}
+        if '*' not in tags:
+            candidates = (node for node in candidates
+                          if isinstance(node, Element) and node.localName in tags)
+        selected = (node for node in candidates if any(matches_group(node, group) for group in ast))
     return next(selected, None) if first else list(selected)

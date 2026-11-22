@@ -10,7 +10,7 @@ from pyv8c.web.bom import crypto
 from pyv8c.web.page_errors import PageTypeError
 
 
-def test_crypto_rejects_non_views_and_non_integer_views(page):
+async def test_crypto_rejects_non_views_and_non_integer_views(page):
     result = page.evaluate('''(() => {
         const cases = [[], {}, new ArrayBuffer(8), new DataView(new ArrayBuffer(8)),
                        new Float32Array(2), new Float64Array(2)];
@@ -25,7 +25,7 @@ def test_crypto_rejects_non_views_and_non_integer_views(page):
     assert all(name == 'TypeMismatchError' for name in result[6:])
 
 
-def test_crypto_fills_the_entire_view_without_touching_its_neighbors(page, monkeypatch):
+async def test_crypto_fills_the_entire_view_without_touching_its_neighbors(page, monkeypatch):
     monkeypatch.setattr(crypto.os, 'urandom', lambda length: bytes(range(length)))
     assert page.evaluate('''(() => {
         const buffer = new ArrayBuffer(16), bytes = new Uint8Array(buffer);
@@ -38,7 +38,7 @@ def test_crypto_fills_the_entire_view_without_touching_its_neighbors(page, monke
     })()''') == [True, [90] * 4 + list(range(8)) + [90] * 4]
 
 
-def test_crypto_uses_byte_length_for_quota_and_supports_bigints(page, monkeypatch):
+async def test_crypto_uses_byte_length_for_quota_and_supports_bigints(page, monkeypatch):
     monkeypatch.setattr(crypto.os, 'urandom', lambda length: b'\x80' * length)
     result = page.evaluate('''(() => {
         const big = new BigUint64Array(1), cases = [new Uint8Array(65536),
@@ -53,7 +53,7 @@ def test_crypto_uses_byte_length_for_quota_and_supports_bigints(page, monkeypatc
                       '9259542123273814144']
 
 
-def test_crypto_detached_views_follow_chrome(page):
+async def test_crypto_detached_views_follow_chrome(page):
     assert page.evaluate('''(() => {
         const a = new Uint8Array(8), d = new DataView(new ArrayBuffer(8));
         structuredClone(a.buffer, {transfer: [a.buffer]});
@@ -64,7 +64,7 @@ def test_crypto_detached_views_follow_chrome(page):
     })()''') == [True, 0, 'TypeMismatchError']
 
 
-def test_crypto_rejects_shared_views():
+async def test_crypto_rejects_shared_views():
     context = pyv8.Context(object())
     try:
         view = context.exec_js('new Uint16Array(new SharedArrayBuffer(8), 2, 2)')
@@ -76,8 +76,8 @@ def test_crypto_rejects_shared_views():
         context.close()
 
 
-def test_subtle_digest_reads_view_bytes_and_offsets(page):
-    page.set_content('<body></body>', url='https://repro.test/')
+async def test_subtle_digest_reads_view_bytes_and_offsets(page):
+    (await page.set_content('<body></body>', url='https://repro.test/', wait_until="commit"))
     page.evaluate('''window.__digests = null; (async () => {
         const bytes = new Uint8Array([1,2,3,4,5,6,7,8]);
         const u16 = new Uint16Array(bytes.buffer, 2, 2);
@@ -94,7 +94,7 @@ def test_subtle_digest_reads_view_bytes_and_offsets(page):
         }
         window.__digests = result;
     })();''')
-    page.wait_for('__digests !== null', timeout=3)
+    (await page.wait_for('__digests !== null', timeout=3))
     actual = json.loads(page.evaluate('JSON.stringify(__digests)'))
     data = (bytes([3, 4, 5, 6]), bytes([5, 6, 7, 8]), bytes([2, 3]),
             bytes([1, 2, 3, 4, 5, 6, 7, 8]), b'')

@@ -2,7 +2,7 @@
 
 **简体中文** | [English](../en/pyv8/user-guide.md)
 
-本文档对应 pyv8c 0.1.0 中的内置 V8 引擎。ABI3 目标为启用 GIL 的 CPython 3.12 至 3.15、V8 15.4.68；3.15 已在 Windows 进行部分验证。
+本文档对应 pyv8c 0.2.0 中的内置 V8 引擎。ABI3 目标为启用 GIL 的 CPython 3.12 至 3.15、V8 15.4.68；3.15 已在 Windows 进行部分验证。
 
 桥接内核重构后，JS 对象默认返回句柄，需要 list/dict 时显式调用
 `result.to_python()`。接口、所有权和验证说明见 [桥接内核文档](bridge-kernel.md)。
@@ -44,7 +44,7 @@ Windows 是当前主要开发和完整测试平台。Windows 源码构建建议�
 ### 安装预编译 wheel
 
 ```bash
-python -m pip install path/to/pyv8c-0.1.0-cp312-abi3-win_amd64.whl
+python -m pip install path/to/pyv8c-0.2.0-cp312-abi3-win_amd64.whl
 ```
 
 `cp312-abi3` 表示同一扩展可以被启用 GIL 的 CPython 3.12 至 3.15 加载。ABI3 不会让二进制跨
@@ -1201,7 +1201,7 @@ isolate.close()
 Context.close 会撤销其关联持久句柄，因此无需先删除已经失效的 Python 包装对象。
 正在执行原生调用时不能销毁 Isolate，会抛出 `RuntimeError`。
 
-`pyv8.shutdown_v8()` 用于关闭默认 Isolate 和进程级 V8 Runtime：
+`pyv8.shutdown_v8()` 用于关闭默认 Isolate 和进程级 V8 Browser：
 
 ```python
 del context
@@ -1308,7 +1308,7 @@ devtools://devtools/bundled/inspector.html?experiments=true&ws=127.0.0.1:9005/de
 | `pyv8.v8_version()` | 返回实际链接的 V8 版本；不启动 V8 |
 | `pyv8.configure(params=None, icudtl_path=None)` | 指定下一次启动的 V8 参数与 ICU 数据；仅首次使用前有效 |
 | `pyv8.is_initialized()` | V8 是否已经启动 |
-| `pyv8.shutdown_v8()` | 永久关闭进程级 V8 Runtime；不启动 V8 |
+| `pyv8.shutdown_v8()` | 永久关闭进程级 V8 Browser；不启动 V8 |
 | `pyv8.start_devtools(...)` | 启动 Chrome DevTools bridge |
 | `pyv8.Null` | JavaScript `null` 单例 |
 | `pyv8.Undefined` | JavaScript `undefined` 单例 |

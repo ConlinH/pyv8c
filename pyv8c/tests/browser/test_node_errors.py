@@ -8,23 +8,23 @@ with the same words.  The one thing that did differ was the missing call prefix 
 """
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 PAGE_HTML = "<body><div id='root'></div></body>"
 
 
 @pytest.fixture
-def page():
-    browser = Browser(stub_logging="off")
+async def page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     instance = browser.new_profile().new_page()
-    instance.set_content(PAGE_HTML, url="https://node.test/")
+    (await instance.set_content(PAGE_HTML, url="https://node.test/", wait_until="commit"))
     try:
         yield instance
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_replace_child_refuses_with_chrome_s_wording(page):
+async def test_replace_child_refuses_with_chrome_s_wording(page):
     assert page.evaluate("""(() => {
         const messages = [];
         const root = document.getElementById('root');

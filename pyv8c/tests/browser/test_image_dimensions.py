@@ -4,11 +4,13 @@ Both halves were missing: nothing fetched ``<link rel=preload>``, so a page coul
 resource it asked for never arrived, and no image reported a size at all, so a challenge that
 measures one had nothing to read.  The size comes from the file's header -- no decoder here.
 """
+
+import asyncio
 import json
 import threading
 import time
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 LOGO = ("<svg xmlns='http://www.w3.org/2000/svg' width='88' height='33'>"
         "<rect width='88' height='33' fill='#333'/></svg>")
@@ -38,29 +40,16 @@ for (const id of ['reel', 'tune'])
 FETCHED = []
 
 
-def _bounded(action, seconds=10.0):
-    done = threading.Event()
-
-    def run():
-        try:
-            action()
-        except BaseException:  # noqa: BLE001
-            pass
-        finally:
-            done.set()
-
-    threading.Thread(target=run, daemon=True).start()
-    done.wait(seconds)
 
 
-def _pump(page, seconds=0.6):
+async def _pump(page, seconds=0.6):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            page.run_until_idle(timeout=0)
+            (await page.run_until_idle(timeout=0))
         except BaseException:  # noqa: BLE001
             pass
-        time.sleep(0.01)
+        (await asyncio.sleep(0.01))
 
 
 def _load(url, request):
@@ -73,13 +62,13 @@ def _load(url, request):
     return {"body": PAGE_HTML, "headers": {"content-type": "text/html"}}
 
 
-def main(seconds=0.6):
-    browser = Browser(stub_logging="off", threaded_loaders=True, real_network=False,
-                      resource_loader=_load)
+async def main(seconds=0.6):
+    browser = (await Browser(stub_logging="off", threaded_loaders=True, real_network=False,
+                      resource_loader=_load).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto(PROBE_URL)
-        _pump(page, seconds)
+        (await page.goto(PROBE_URL))
+        (await _pump(page, seconds))
         return page, json.loads(page.evaluate("""JSON.stringify((() => {
             const image = document.getElementById('logo');
             return {width: image.naturalWidth, height: image.naturalHeight,
@@ -88,24 +77,24 @@ def main(seconds=0.6):
                       .map(e => String(e.name)).filter(n => n.indexOf('woff2') >= 0)};
         })())"""))
     finally:
-        _bounded(browser.close)
+        await browser.close()
 
 
-def test_an_image_reports_the_size_its_file_declares():
-    _page, reading = main()
+async def test_an_image_reports_the_size_its_file_declares():
+    _page, reading = (await main())
     assert reading["width"] == 88, reading
     assert reading["height"] == 33, reading
     assert reading["complete"] is True, reading
 
 
-def test_a_preload_link_is_fetched_even_though_nothing_uses_it():
+async def test_a_preload_link_is_fetched_even_though_nothing_uses_it():
     del FETCHED[:]
-    _page, reading = main()
+    _page, reading = (await main())
     assert [target for target in FETCHED if target.endswith("quiet.woff2")], FETCHED
     assert reading["font"], reading
 
 
-def test_media_preload_links_are_fetched_too():
+async def test_media_preload_links_are_fetched_too():
     """``as=video``/``as=audio`` are Chrome's destinations: fetched, with ``load`` fired."""
     del FETCHED[:]
 
@@ -118,15 +107,15 @@ def test_media_preload_links_are_fetched_too():
             return {"body": b"ID3\x03", "headers": {"content-type": "audio/mpeg"}}
         return {"body": MEDIA_PAGE, "headers": {"content-type": "text/html"}}
 
-    browser = Browser(stub_logging="off", threaded_loaders=True, real_network=False,
-                      resource_loader=load)
+    browser = (await Browser(stub_logging="off", threaded_loaders=True, real_network=False,
+                      resource_loader=load).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto("https://preload.test/media")
-        _pump(page)
+        (await page.goto("https://preload.test/media"))
+        (await _pump(page))
         loaded = json.loads(page.evaluate("JSON.stringify(__out.loaded)"))
     finally:
-        _bounded(browser.close)
+        await browser.close()
     assert [target for target in FETCHED if target.endswith("reel.mp4")], FETCHED
     assert [target for target in FETCHED if target.endswith("tune.mp3")], FETCHED
     assert sorted(loaded) == ["reel", "tune"], loaded

@@ -75,6 +75,20 @@ class NavigationController:
         self.page.lifecycle.document_load_fired = True
 
     def commit_content(self, html, url, response=None, *, replace_initial=False):
+        with self.page.services.websocket_services.retiring_document():
+            self._replace_document(url, response, replace_initial=replace_initial)
+        target = self.page._devtools_target
+        if target is not None:
+            target.wait_for_startup()
+        self.parser_generation = self.generation
+        self.parser = IncrementalDOMParser(self.page.services, self.page.document, str(html))
+        self.parsing = True
+        # HTML parsing runs on the caller thread until a parser-blocking external
+        # script is hit; lifecycle notifications stay queued to the task boundary.
+        self.resume_parser(self.parser_generation)
+        return self.page
+
+    def _replace_document(self, url, response, *, replace_initial):
         lifecycle = self.page.lifecycle
         if self.has_navigation:
             # Chrome's order for the document being replaced: pageswap, pagehide, the
@@ -83,9 +97,6 @@ class NavigationController:
             lifecycle.dispatch_page_hide(False)
             lifecycle.dispatch_visibility_hidden()
             lifecycle.dispatch_unload()
-        self.generation += 1
-        self.page.services.task_services.cancel_animation_frames()
-        lifecycle.cancel_state_waiters()
         # A later document replaces the realm; the first one is the page's own.
         previous_origin = self.page.origin
         self.page._update_origin(url)
@@ -108,6 +119,16 @@ class NavigationController:
         self.denied_permissions = frozenset(denied)
         renew_realm = (self.has_navigation or replace_initial or
                        isolated != self.cross_origin_isolated or bool(policy.policies))
+        # Retire document requests and workers before publishing the new generation.
+        if renew_realm:
+            self.page._retire_document_workers()
+        self.page.resource_ownership.cancel_document_requests(include_realm=renew_realm)
+        self.generation += 1
+        self.page.net.cancel_document_requests()
+        if self.page._mouse is not None:
+            self.page._mouse._reset_document()
+        self.page.services.task_services.cancel_animation_frames()
+        lifecycle.cancel_state_waiters()
         self.cross_origin_isolated = isolated
         self.content_policy = policy
         self.page.services.realm_services.performance.clock.resolution_ms = 0.005 if isolated else 0.1
@@ -169,16 +190,6 @@ class NavigationController:
         from ..foundation.agent_tasks import TaskContext
         self.page.executor.bind_agent(self.page.realm.agent, TaskContext(
             self.page.realm, self.page.document, self.generation))
-        target = self.page._devtools_target
-        if target is not None:
-            target.wait_for_startup()
-        self.parser_generation = self.generation
-        self.parser = IncrementalDOMParser(self.page.services, self.page.document, str(html))
-        self.parsing = True
-        # HTML parsing runs on the caller thread until a parser-blocking external
-        # script is hit; lifecycle notifications stay queued to the task boundary.
-        self.resume_parser(self.parser_generation)
-        return self.page
 
     def set_content(self, html, url="about:blank", *, replace_initial=False, response=None):
         if self.page.closed or self.page.profile.closed:
@@ -296,7 +307,7 @@ class NavigationController:
             finish(error=exc)
         return operation.future
 
-    def cancel(self, expected=None):
+    def cancel(self, expected=None, *, observer_cancelled=False):
         operation = self.operation
         if expected is not None and (operation is None or operation.future is not expected):
             return
@@ -305,7 +316,10 @@ class NavigationController:
         if operation.handle is not None:
             operation.handle.cancel()
         self.page.tasks.cancel(operation.timer)
-        operation.future.set_exception(HostStateError('navigation was superseded or closed'))
+        if observer_cancelled:
+            operation.future.cancel()
+        else:
+            operation.future.set_exception(HostStateError('navigation was superseded or closed'))
 
     def close(self):
         self.cancel()
@@ -356,7 +370,10 @@ class NavigationController:
         if self.page.closed or self.page.profile.closed:
             return False
         document = self.page.document
+        self.page.resource_ownership.cancel_document_requests()
         self.generation += 1
+        if self.page._mouse is not None:
+            self.page._mouse._reset_document()
         self.parser_generation = self.generation
         self.parser_done = False
         document.ready_state = "loading"

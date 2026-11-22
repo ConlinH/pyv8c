@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from pyv8c.platform.resources.handles import LoadHandle
+from pyv8c.foundation.load_handle import LoadHandle
 from pyv8c.platform.resources.tracker import DocumentResource, DocumentResourceTracker
 
 

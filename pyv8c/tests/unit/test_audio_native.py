@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import _audio_native
+from pyv8c._native import audio as native_audio
 from pyv8c.web.bom import audio
 from pyv8c.web.bom.audio import OscillatorNode, _OSCILLATOR_X86, _constant_oscillator_batch
 
@@ -48,7 +48,7 @@ def test_generated_tables_match_reference_bands():
         (0.0009767559, 0.1201339364, 0.9332402349),
     )
     for kind, reference in enumerate(expected):
-        actual = [_audio_native.oscillator_waveform(kind, index / 4096, band, band, 0)
+        actual = [native_audio.oscillator_waveform(kind, index / 4096, band, band, 0)
                   for band, index in ((0, 1), (10, 123), (25, 1024))]
         assert actual == pytest.approx(reference, abs=2e-6)
 
@@ -87,7 +87,7 @@ def test_scalar_phase_wraps_for_positive_and_negative_frequency(increment):
     phase = 0.0
     expected = 0.0
     for frame in range(260):
-        read, phase, lanes, lane, previous = _audio_native.oscillator_phase_step(
+        read, phase, lanes, lane, previous = native_audio.oscillator_phase_step(
             phase, None, 0, None, increment, frame, False)
         assert read == expected
         expected = (expected + increment / 4096) % 1.0

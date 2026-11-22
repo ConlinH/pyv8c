@@ -1,22 +1,22 @@
 """Chrome 155 parity for the byte-stream path used by CompressionStream."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def _run(script):
-    browser = Browser(real_network=False)
+async def _run(script):
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<!doctype html><script>' + script + '</script>',
-                         url='https://streams.test/')
-        page.wait_for('window.result && window.result.done === true', timeout=3)
+        (await page.set_content('<!doctype html><script>' + script + '</script>',
+                         url='https://streams.test/', wait_until="commit"))
+        (await page.wait_for('window.result && window.result.done === true', timeout=3))
         return page.evaluate('window.result')
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_gzip_stream_bytes_and_native_interface_identity():
-    result = _run('''
+async def test_gzip_stream_bytes_and_native_interface_identity():
+    result = (await _run('''
       window.result = {};
       (async () => {
         try {
@@ -42,7 +42,7 @@ def test_gzip_stream_bytes_and_native_interface_identity():
         } catch (error) { result.error = [error.name, error.message]; }
         result.done = true;
       })();
-    ''')
+    '''))
     assert result == {
         'identity': [True, True, 'WritableStreamDefaultWriter',
                      'ReadableStreamDefaultReader', True, True],
@@ -52,8 +52,8 @@ def test_gzip_stream_bytes_and_native_interface_identity():
     }
 
 
-def test_three_formats_round_trip_incrementally():
-    result = _run('''
+async def test_three_formats_round_trip_incrementally():
+    result = (await _run('''
       window.result = {};
       (async () => {
         async function collect(reader) {
@@ -86,20 +86,20 @@ def test_three_formats_round_trip_incrementally():
         } catch (error) { result.error = [error.name, error.message]; }
         result.done = true;
       })();
-    ''')
+    '''))
     assert result == {'gzip': [23, [97, 98, 99]],
                       'deflate': [11, [97, 98, 99]],
                       'raw': [5, [97, 98, 99]], 'done': True}
 
 
-def test_unsupported_format_and_missing_argument_match_chrome():
-    result = _run('''
+async def test_unsupported_format_and_missing_argument_match_chrome():
+    result = (await _run('''
       window.result = {done: true, errors: []};
       for (const value of [undefined, 'brotli', null]) {
         try { value === undefined ? new CompressionStream() : new CompressionStream(value); }
         catch (error) { result.errors.push([error.name, error.message]); }
       }
-    ''')
+    '''))
     assert result['errors'] == [
         ['TypeError', "Failed to construct 'CompressionStream': 1 argument required, but only 0 present."],
         ['TypeError', "Failed to construct 'CompressionStream': Unsupported compression format: 'brotli'"],
@@ -107,8 +107,8 @@ def test_unsupported_format_and_missing_argument_match_chrome():
     ]
 
 
-def test_corrupt_and_truncated_input_reject_reader_and_writer():
-    result = _run('''
+async def test_corrupt_and_truncated_input_reject_reader_and_writer():
+    result = (await _run('''
       window.result = {};
       (async () => {
         async function attempt(bytes) {
@@ -125,7 +125,7 @@ def test_corrupt_and_truncated_input_reject_reader_and_writer():
         result.truncated = await attempt([31, 139, 8, 0, 0, 0, 0, 0, 0, 10]);
         result.done = true;
       })();
-    ''')
+    '''))
     invalid = ['TypeError', 'The compressed data was not valid: incorrect header check.']
     truncated = ['TypeError', 'Compressed input was truncated.']
     assert result == {'corrupt': [invalid, invalid, invalid],

@@ -1,11 +1,11 @@
-"""Browser-facing behavior for the standard DOM collection interfaces."""
+"""Runtime-facing behavior for the standard DOM collection interfaces."""
 
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 from pyv8c import pyv8
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.dom.collections import HTMLAllCollection, HTMLCollection
 from pyv8c.web.html.registry import HTML_CLASSES
 from pyv8c.web.dom.element import Element
@@ -23,36 +23,36 @@ TAGS = ["HTML", "HEAD", "TITLE", "BODY", "DIV", "P", "SPAN", "SPAN"]
 
 
 @pytest.fixture
-def browser():
-    instance = Browser(stub_logging="off")
+async def browser():
+    instance = (await Browser(stub_logging="off").__aenter__())
     try:
         yield instance
     finally:
-        instance.close()
+        (await instance.close())
 
 
 @pytest.fixture
-def page(browser):
+async def page(browser):
     instance = browser.new_profile().new_page()
-    instance.set_content(
+    (await instance.set_content(
         "<body><div id='root' class='  a\tb  a  '>"
         "<span id='first' name='named'></span>"
         "<span id='second'></span>"
         "</div></body>"
-    )
+    , wait_until="commit"))
     return instance
 
 
 @pytest.fixture
-def document_page(browser):
+async def document_page(browser):
     """A page that has finished parsing DOCUMENT."""
     instance = browser.new_profile().new_page()
-    instance.set_content(DOCUMENT)
-    instance.run_until_idle()
+    (await instance.set_content(DOCUMENT, wait_until="commit"))
+    (await instance.run_until_idle())
     return instance
 
 
-def test_node_list_has_live_readonly_indexed_properties(page):
+async def test_node_list_has_live_readonly_indexed_properties(page):
     result = page.evaluate("""
 (() => {
   const list = document.getElementById('root').childNodes;
@@ -86,7 +86,7 @@ def test_node_list_has_live_readonly_indexed_properties(page):
     assert result[11:] == [3, 3, [True, True, True]]
 
 
-def test_node_list_strict_mutations_use_chromium_error_context(page):
+async def test_node_list_strict_mutations_use_chromium_error_context(page):
     result = page.evaluate("""
 (() => {
   'use strict';
@@ -111,7 +111,7 @@ def test_node_list_strict_mutations_use_chromium_error_context(page):
     ]
 
 
-def test_legacy_readonly_property_reflect_set_reports_failure(page):
+async def test_legacy_readonly_property_reflect_set_reports_failure(page):
     assert page.evaluate("""(() => {
       const root = document.getElementById('root');
       return [Reflect.set(root.childNodes, '0', 1),
@@ -119,7 +119,7 @@ def test_legacy_readonly_property_reflect_set_reports_failure(page):
     })()""") == [False, False]
 
 
-def test_node_list_exposes_web_idl_iterable_helpers(page):
+async def test_node_list_exposes_web_idl_iterable_helpers(page):
     result = page.evaluate("""
 (() => {
   const list = document.getElementById('root').childNodes;
@@ -141,7 +141,7 @@ def test_node_list_exposes_web_idl_iterable_helpers(page):
     ]
 
 
-def test_a_query_repeated_after_a_mutation_sees_it(page):
+async def test_a_query_repeated_after_a_mutation_sees_it(page):
     """A cached tree walk must not hide a change made between two reads."""
     result = page.evaluate("""
 (() => {
@@ -159,7 +159,7 @@ def test_a_query_repeated_after_a_mutation_sees_it(page):
     assert result == [[2, 1, 2], 3, 2, 2, True, True]
 
 
-def test_html_collection_named_properties_match_web_idl(page):
+async def test_html_collection_named_properties_match_web_idl(page):
     result = page.evaluate("""
 (() => {
   const collection = document.getElementById('root').children;
@@ -186,7 +186,7 @@ def test_html_collection_named_properties_match_web_idl(page):
     }
 
 
-def test_html_collection_mutation_and_named_property_visibility(page):
+async def test_html_collection_mutation_and_named_property_visibility(page):
     result = page.evaluate("""
 (() => {
   const collection = document.getElementById('root').children;
@@ -222,7 +222,7 @@ def test_html_collection_mutation_and_named_property_visibility(page):
     ]
 
 
-def test_dom_token_list_preserves_value_and_exposes_tokens(page):
+async def test_dom_token_list_preserves_value_and_exposes_tokens(page):
     result = page.evaluate("""
 (() => {
   const tokens = document.getElementById('root').classList;
@@ -243,7 +243,7 @@ def test_dom_token_list_preserves_value_and_exposes_tokens(page):
     assert result[8:] == [0, 0]
 
 
-def test_dom_token_list_mutations_follow_ordered_set_algorithms(page):
+async def test_dom_token_list_mutations_follow_ordered_set_algorithms(page):
     result = page.evaluate("""
 (() => {
   const element = document.getElementById('root');
@@ -269,7 +269,7 @@ def test_dom_token_list_mutations_follow_ordered_set_algorithms(page):
     ]
 
 
-def test_dom_token_list_exposes_web_idl_iterable_helpers(page):
+async def test_dom_token_list_exposes_web_idl_iterable_helpers(page):
     result = page.evaluate("""
 (() => {
   const tokens = document.getElementById('root').classList;
@@ -285,7 +285,7 @@ def test_dom_token_list_exposes_web_idl_iterable_helpers(page):
     ]
 
 
-def test_dom_token_list_validation_is_atomic_and_uses_dom_exceptions(page):
+async def test_dom_token_list_validation_is_atomic_and_uses_dom_exceptions(page):
     result = page.evaluate("""
 (() => {
   const tokens = document.getElementById('root').classList;
@@ -320,22 +320,22 @@ def test_dom_token_list_validation_is_atomic_and_uses_dom_exceptions(page):
 # document.all: interface shape
 
 
-def test_document_all_typeof_is_undefined(document_page):
+async def test_document_all_typeof_is_undefined(document_page):
     # The interface is marked undetectable, the historical document.all quirk.
     assert document_page.evaluate("typeof document.all") == "undefined"
 
 
-def test_document_all_object_tag_is_html_all_collection(document_page):
+async def test_document_all_object_tag_is_html_all_collection(document_page):
     assert document_page.evaluate("Object.prototype.toString.call(document.all)") == "[object HTMLAllCollection]"
 
 
-def test_document_all_instance_of_html_all_collection(document_page):
+async def test_document_all_instance_of_html_all_collection(document_page):
     assert document_page.evaluate("document.all instanceof HTMLAllCollection") is True
     assert document_page.evaluate("Object.getPrototypeOf(document.all) === HTMLAllCollection.prototype") is True
     assert document_page.evaluate("HTMLAllCollection.prototype[Symbol.toStringTag]") == "HTMLAllCollection"
 
 
-def test_document_all_undetectable_object_is_falsy_and_loosely_null(document_page):
+async def test_document_all_undetectable_object_is_falsy_and_loosely_null(document_page):
     assert document_page.evaluate("Boolean(document.all)") is False
     assert document_page.evaluate("!document.all") is True
     assert document_page.evaluate("document.all == null") is True
@@ -345,14 +345,14 @@ def test_document_all_undetectable_object_is_falsy_and_loosely_null(document_pag
     assert document_page.evaluate("document.all ? 'truthy' : 'falsy'") == "falsy"
 
 
-def test_document_all_python_type_is_the_implementation_class(document_page):
+async def test_document_all_python_type_is_the_implementation_class(document_page):
     assert isinstance(document_page.evaluate("document.all"), HTMLAllCollection)
     assert isinstance(document_page.evaluate("document.all[0]"), Element)
     assert isinstance(document_page.evaluate("document.all.app"), HTML_CLASSES["HTMLDivElement"])
     assert isinstance(document_page.evaluate("document.all.dup"), HTMLCollection)
 
 
-def test_a_non_constructible_interface_object_is_its_prototypes_constructor(document_page):
+async def test_a_non_constructible_interface_object_is_its_prototypes_constructor(document_page):
     """Exposure comes from the baseline: the prototype must answer with the interface object.
 
     A class stating ``has_constructor=0`` used to lose that link, so the page read the chain
@@ -374,7 +374,7 @@ def test_a_non_constructible_interface_object_is_its_prototypes_constructor(docu
         "BeforeUnloadEvent", "RTCRtpReceiver", "CanvasRenderingContext2D", "Window")], answer
 
 
-def test_document_all_interface_constructor_is_exposed_but_not_constructible(document_page):
+async def test_document_all_interface_constructor_is_exposed_but_not_constructible(document_page):
     assert document_page.evaluate("typeof HTMLAllCollection") == "function"
     assert document_page.evaluate("HTMLAllCollection.name") == "HTMLAllCollection"
     assert document_page.evaluate("document.all.constructor === HTMLAllCollection") is True
@@ -384,7 +384,7 @@ def test_document_all_interface_constructor_is_exposed_but_not_constructible(doc
         assert "Illegal constructor" in str(caught.value)
 
 
-def test_document_all_document_owns_all_as_a_prototype_accessor(document_page):
+async def test_document_all_document_owns_all_as_a_prototype_accessor(document_page):
     descriptor = "Object.getOwnPropertyDescriptor(Document.prototype, 'all')"
     assert document_page.evaluate(f"typeof {descriptor}.get") == "function"
     assert document_page.evaluate(f"{descriptor}.set") is pyv8.Undefined
@@ -395,25 +395,25 @@ def test_document_all_document_owns_all_as_a_prototype_accessor(document_page):
 # document.all: indexed, named, and legacy operations
 
 
-def test_document_all_length_counts_every_element(document_page):
+async def test_document_all_length_counts_every_element(document_page):
     assert document_page.evaluate("document.all.length") == len(TAGS)
     assert document_page.evaluate("document.all.length") == document_page.evaluate("document.getElementsByTagName('*').length")
 
 
-def test_document_all_indexed_access_follows_tree_order(document_page):
+async def test_document_all_indexed_access_follows_tree_order(document_page):
     assert document_page.evaluate("[].slice.call(document.all).map(function(e){return e.tagName})") == TAGS
     assert document_page.evaluate("document.all[0].tagName") == "HTML"
     assert document_page.evaluate("document.all[4].id") == "app"
 
 
-def test_document_all_index_out_of_range_is_undefined(document_page):
+async def test_document_all_index_out_of_range_is_undefined(document_page):
     assert document_page.evaluate("document.all[document.all.length]") is pyv8.Undefined
     assert document_page.evaluate("document.all[99]") is pyv8.Undefined
     assert document_page.evaluate("document.all.item(99)") is pyv8.Null
     assert document_page.evaluate("99 in document.all") is False
 
 
-def test_document_all_item_matches_indexed_access(document_page):
+async def test_document_all_item_matches_indexed_access(document_page):
     assert document_page.evaluate("document.all.item(0) === document.all[0]") is True
     assert document_page.evaluate("document.all.item(4).id") == "app"
     assert document_page.evaluate("document.all.item()") is pyv8.Null
@@ -426,26 +426,26 @@ def test_document_all_item_matches_indexed_access(document_page):
     assert document_page.evaluate("document.all.item('missing')") is pyv8.Null
 
 
-def test_document_all_named_item_by_id_and_by_name(document_page):
+async def test_document_all_named_item_by_id_and_by_name(document_page):
     assert document_page.evaluate("document.all.namedItem('app').tagName") == "DIV"
     assert document_page.evaluate("document.all.namedItem('note')") is pyv8.Null
     assert document_page.evaluate("document.all.namedItem('missing')") is pyv8.Null
 
 
-def test_document_all_named_access_by_id_and_by_name(document_page):
+async def test_document_all_named_access_by_id_and_by_name(document_page):
     assert document_page.evaluate("document.all.app.tagName") == "DIV"
     assert document_page.evaluate("document.all.note") is pyv8.Undefined
     assert document_page.evaluate("document.all['app'] === document.all.app") is True
     assert document_page.evaluate("'app' in document.all") is True
 
 
-def test_document_all_unknown_name_is_undefined_but_lookup_is_null(document_page):
+async def test_document_all_unknown_name_is_undefined_but_lookup_is_null(document_page):
     assert document_page.evaluate("document.all.missing") is pyv8.Undefined
     assert document_page.evaluate("document.all.namedItem('missing')") is pyv8.Null
     assert document_page.evaluate("'missing' in document.all") is False
 
 
-def test_document_all_duplicate_names_return_a_live_html_collection(document_page):
+async def test_document_all_duplicate_names_return_a_live_html_collection(document_page):
     assert document_page.evaluate("typeof document.all.dup") == "object"
     assert document_page.evaluate("document.all.dup instanceof HTMLCollection") is True
     assert document_page.evaluate("document.all.dup.length") == 2
@@ -454,7 +454,7 @@ def test_document_all_duplicate_names_return_a_live_html_collection(document_pag
     assert document_page.evaluate("document.all.dup[1] === document.all[7]") is True
 
 
-def test_document_all_legacy_call_resolves_names_and_indices(document_page):
+async def test_document_all_legacy_call_resolves_names_and_indices(document_page):
     assert document_page.evaluate("document.all('app').tagName") == "DIV"
     assert document_page.evaluate("document.all('note')") is pyv8.Null
     assert document_page.evaluate("document.all(0) === document.all[0]") is True
@@ -464,20 +464,20 @@ def test_document_all_legacy_call_resolves_names_and_indices(document_page):
     assert document_page.evaluate("document.all()") is pyv8.Null
 
 
-def test_document_all_named_item_requires_an_argument(document_page):
+async def test_document_all_named_item_requires_an_argument(document_page):
     with pytest.raises(pyv8.JSException) as caught:
         document_page.evaluate("document.all.namedItem()")
     assert "namedItem" in str(caught.value)
     assert "argument" in str(caught.value)
 
 
-def test_document_all_identity_is_stable_across_reads(document_page):
+async def test_document_all_identity_is_stable_across_reads(document_page):
     assert document_page.evaluate("document.all === document.all") is True
     document_page.evaluate("window.__cached = document.all")
     assert document_page.evaluate("window.__cached === document.all") is True
 
 
-def test_document_all_named_properties_are_not_enumerable(document_page):
+async def test_document_all_named_properties_are_not_enumerable(document_page):
     keys = document_page.evaluate("Object.keys(document.all)")
     assert keys == [str(i) for i in range(len(TAGS))]
     assert document_page.evaluate("Object.getOwnPropertyNames(document.all)") == keys + ["app", "dup"]
@@ -486,7 +486,7 @@ def test_document_all_named_properties_are_not_enumerable(document_page):
     assert document_page.evaluate("Object.getOwnPropertyDescriptor(document.all, 'app').configurable") is True
 
 
-def test_document_all_legacy_named_properties_do_not_mask_the_prototype(document_page):
+async def test_document_all_legacy_named_properties_do_not_mask_the_prototype(document_page):
     document_page.evaluate(
         "document.body.innerHTML += '<div id=item></div><div id=length></div>"
         "<div id=constructor></div>'"
@@ -496,7 +496,7 @@ def test_document_all_legacy_named_properties_do_not_mask_the_prototype(document
     assert document_page.evaluate("document.all.constructor === HTMLAllCollection") is True
 
 
-def test_document_all_empty_names_and_forbidden_name_attributes_are_ignored(document_page):
+async def test_document_all_empty_names_and_forbidden_name_attributes_are_ignored(document_page):
     assert document_page.evaluate("document.all.namedItem('')") is pyv8.Null
     assert document_page.evaluate("document.all['']") is pyv8.Undefined
     assert document_page.evaluate("'' in document.all") is False
@@ -505,12 +505,12 @@ def test_document_all_empty_names_and_forbidden_name_attributes_are_ignored(docu
     assert document_page.evaluate("document.all.field.tagName") == "INPUT"
 
 
-def test_document_all_collection_is_iterable(document_page):
+async def test_document_all_collection_is_iterable(document_page):
     assert document_page.evaluate("typeof document.all[Symbol.iterator]") == "function"
     assert document_page.evaluate("Array.from(document.all).length") == len(TAGS)
 
 
-def test_document_all_legacy_mutations_follow_strictness_and_do_not_define_properties(document_page):
+async def test_document_all_legacy_mutations_follow_strictness_and_do_not_define_properties(document_page):
     assert document_page.evaluate("(document.all.app = 1, document.all.app.id)") == "app"
     assert document_page.evaluate("(delete document.all.app, document.all.app.id)") == "app"
     assert document_page.evaluate("(document.all.created = 1, document.all.created)") == 1
@@ -531,7 +531,7 @@ def test_document_all_legacy_mutations_follow_strictness_and_do_not_define_prope
         document_page.evaluate("'use strict'; delete document.all[0]")
 
 
-def test_document_all_strict_indexed_setter_uses_chromium_error_context(document_page):
+async def test_document_all_strict_indexed_setter_uses_chromium_error_context(document_page):
     result = document_page.evaluate(
         """(function () {
   "use strict";
@@ -551,13 +551,13 @@ def test_document_all_strict_indexed_setter_uses_chromium_error_context(document
     assert "at <anonymous>:4:" in result[2]
 
 
-def test_document_all_for_in_only_yields_indices_and_prototype_members(document_page):
+async def test_document_all_for_in_only_yields_indices_and_prototype_members(document_page):
     seen = document_page.evaluate("(function(){var out=[];for(var k in document.all){out.push(k)}return out})()")
     assert [key for key in seen if key.isdigit()] == [str(i) for i in range(len(TAGS))]
     assert ["length", "item", "namedItem"] == [key for key in seen if not key.isdigit()]
 
 
-def test_document_all_empty_document_has_an_empty_collection(browser):
+async def test_document_all_empty_document_has_an_empty_collection(browser):
     empty = browser.new_profile().new_page()
     empty.evaluate('document.documentElement.remove()')
     assert empty.evaluate("document.all.length") == 0
@@ -568,28 +568,28 @@ def test_document_all_empty_document_has_an_empty_collection(browser):
 # document.all: live updates and materialisation
 
 
-def test_document_all_settling_the_page_keeps_length_consistent(browser):
+async def test_document_all_settling_the_page_keeps_length_consistent(browser):
     instance = browser.new_profile().new_page()
-    instance.set_content(DOCUMENT)
-    instance.run_until_idle()
+    (await instance.set_content(DOCUMENT, wait_until="commit"))
+    (await instance.run_until_idle())
     assert instance.evaluate("document.readyState") == "complete"
     assert instance.evaluate("document.all.length") == len(TAGS)
     assert instance.evaluate("document.all.app.id") == "app"
 
 
-def test_document_all_length_updates_after_a_queued_task_appends(document_page):
+async def test_document_all_length_updates_after_a_queued_task_appends(document_page):
     before = document_page.evaluate("document.all.length")
     document_page.evaluate(
         "setTimeout(function(){ var s = document.createElement('section');"
         " s.id = 'late'; document.body.appendChild(s); }, 0)"
     )
-    document_page.run_until_idle()
+    (await document_page.run_until_idle())
     assert document_page.evaluate("document.all.length") == before + 1
     assert document_page.evaluate("document.all.late.tagName") == "SECTION"
     assert document_page.evaluate("document.all[document.all.length - 1].id") == "late"
 
 
-def test_document_all_cached_reference_tracks_later_insertions(document_page):
+async def test_document_all_cached_reference_tracks_later_insertions(document_page):
     document_page.evaluate("window.__cached = document.all")
     document_page.evaluate("document.body.appendChild(document.createElement('hr'))")
     assert document_page.evaluate("window.__cached.length") == len(TAGS) + 1
@@ -597,20 +597,20 @@ def test_document_all_cached_reference_tracks_later_insertions(document_page):
     assert document_page.evaluate("window.__cached[window.__cached.length - 1].tagName") == "HR"
 
 
-def test_document_all_removal_shortens_the_collection(document_page):
+async def test_document_all_removal_shortens_the_collection(document_page):
     document_page.evaluate("document.body.removeChild(document.getElementById('app'))")
     assert document_page.evaluate("document.all.length") == len(TAGS) - 1
     assert document_page.evaluate("document.all.app") is pyv8.Undefined
     assert document_page.evaluate("document.all.namedItem('app')") is pyv8.Null
 
 
-def test_document_all_new_element_without_id_is_only_reachable_by_index(document_page):
+async def test_document_all_new_element_without_id_is_only_reachable_by_index(document_page):
     document_page.evaluate("document.body.appendChild(document.createElement('b'))")
     assert document_page.evaluate("document.all.length") == len(TAGS) + 1
     assert document_page.evaluate("document.all[document.all.length - 1].tagName") == "B"
 
 
-def test_document_all_renaming_an_id_changes_the_named_lookup(document_page):
+async def test_document_all_renaming_an_id_changes_the_named_lookup(document_page):
     document_page.evaluate("document.getElementById('app').id = 'renamed'")
     assert document_page.evaluate("document.all.app") is pyv8.Undefined
     assert document_page.evaluate("document.all.renamed.tagName") == "DIV"
@@ -618,36 +618,36 @@ def test_document_all_renaming_an_id_changes_the_named_lookup(document_page):
     assert document_page.evaluate("'renamed' in document.all") is True
 
 
-def test_document_all_lazy_interface_is_materialised_on_first_use(browser):
+async def test_document_all_lazy_interface_is_materialised_on_first_use(browser):
     page = browser.new_profile().new_page()
     session = page.binding_session
     assert "HTMLAllCollection" not in session.materialized_interfaces
-    page.set_content(DOCUMENT)
-    page.run_until_idle()
+    (await page.set_content(DOCUMENT, wait_until="commit"))
+    (await page.run_until_idle())
     assert page.evaluate("document.all.length") == len(TAGS)
     assert "HTMLAllCollection" in session.materialized_interfaces
 
 
-def test_document_all_materialises_through_the_feature_runtime():
-    browser = Browser(stub_logging="off")
+async def test_document_all_materialises_through_the_feature_runtime():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(DOCUMENT)
-        page.run_until_idle()
+        (await page.set_content(DOCUMENT, wait_until="commit"))
+        (await page.run_until_idle())
         assert page.evaluate("typeof document.all") == "undefined"
         assert page.evaluate("document.all instanceof HTMLAllCollection") is True
         assert page.evaluate("document.all('app').id") == "app"
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_document_all_accepts_the_interface_after_catalog_validation():
-    browser = Browser(stub_logging="off")
+async def test_document_all_accepts_the_interface_after_catalog_validation():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         browser.bindings.validate()
         page = browser.new_profile().new_page()
-        page.set_content(DOCUMENT)
-        page.run_until_idle()
+        (await page.set_content(DOCUMENT, wait_until="commit"))
+        (await page.run_until_idle())
         assert page.evaluate("document.all.length") == len(TAGS)
     finally:
-        browser.close()
+        (await browser.close())

@@ -282,7 +282,7 @@ def test_a_page_the_declaration_does_not_name_cannot_read_it():
     environment = installed(**{TRANSLATE: [{"resources": ["popup_css_compiled.css"],
                                            "matches": ["https://elsewhere.test/*"]}]})
     target = f"chrome-extension://{TRANSLATE}/popup_css_compiled.css"
-    assert extension_resource(environment, target, source_url="https://elsewhere.test/app") == \
+    assert extension_resource(environment, target, source_url="https://elsewhere.test/app") ==\
         "popup_css_compiled.css"
     assert extension_resource(environment, target, source_url="https://example.test/") is None
     # Nothing named the source: a load with no page behind it still resolves.

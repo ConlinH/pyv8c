@@ -1,23 +1,23 @@
 import pytest
 from pyv8c import pyv8
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 PAGE_HTML = "<body><div id='root'></div></body>"
 
 
 @pytest.fixture
-def page():
-    browser = Browser(stub_logging="off")
+async def page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     instance = browser.new_profile().new_page()
-    instance.set_content(PAGE_HTML)
+    (await instance.set_content(PAGE_HTML, wait_until="commit"))
     try:
         yield instance
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_node_type_constants_and_constructor_identity(page):
+async def test_node_type_constants_and_constructor_identity(page):
     result = page.evaluate(
         "(() => { const div = document.createElement('div'); "
         "const text = document.createTextNode('x'); "
@@ -30,7 +30,7 @@ def test_node_type_constants_and_constructor_identity(page):
     assert result == [1, 3, 8, 9, 11, True, True, True, False, True]
 
 
-def test_node_type_and_name_identity(page):
+async def test_node_type_and_name_identity(page):
     result = page.evaluate(
         "(() => { const div = document.createElement('div'); "
         "const text = document.createTextNode('x'); "
@@ -46,7 +46,7 @@ def test_node_type_and_name_identity(page):
                       11, "#document-fragment", 9, "#document", "BODY"]
 
 
-def test_node_tree_navigation_and_mutation(page):
+async def test_node_tree_navigation_and_mutation(page):
     result = page.evaluate(
         "(() => { const root = document.getElementById('root'); "
         "const a = document.createElement('a'); "
@@ -67,7 +67,7 @@ def test_node_tree_navigation_and_mutation(page):
                       True, True, True, True]
 
 
-def test_moving_existing_children_repositions_them(page):
+async def test_moving_existing_children_repositions_them(page):
     # DOM permits relocating a node this parent already owns; only inserting
     # an inclusive ancestor of the parent must raise HierarchyRequestError.
     result = page.evaluate(
@@ -87,7 +87,7 @@ def test_moving_existing_children_repositions_them(page):
     assert result == [["c", "a"], True, True, 2]
 
 
-def test_inserting_inclusive_ancestor_raises(page):
+async def test_inserting_inclusive_ancestor_raises(page):
     result = page.evaluate(
         "(() => { const root = document.getElementById('root'); "
         "const child = document.createElement('i'); root.appendChild(child); "
@@ -103,7 +103,7 @@ def test_inserting_inclusive_ancestor_raises(page):
                       "HierarchyRequestError", "TypeError", "no-error"]
 
 
-def test_text_content_and_normalize(page):
+async def test_text_content_and_normalize(page):
     result = page.evaluate(
         "(() => { const root = document.getElementById('root'); "
         "root.append(document.createTextNode('a'), "
@@ -123,7 +123,7 @@ def test_text_content_and_normalize(page):
     assert result == [[3, "ab"], [1, "ab", 3], [1, "hello", 3], 0, ""]
 
 
-def test_clone_node_keeps_tree_shape(page):
+async def test_clone_node_keeps_tree_shape(page):
     result = page.evaluate(
         "(() => { const root = document.getElementById('root'); "
         "const span = document.createElement('span'); "
@@ -140,13 +140,13 @@ def test_clone_node_keeps_tree_shape(page):
     assert result == [0, 1, 1, "span", "x", "hi", False]
 
 
-def test_to_string_tag_follows_the_generated_interface(page):
+async def test_to_string_tag_follows_the_generated_interface(page):
     assert page.evaluate(
         "Object.prototype.toString.call(document.createElement('div'))"
     ) == "[object HTMLDivElement]"
 
 
-def test_node_identity_equality_and_document_position(page):
+async def test_node_identity_equality_and_document_position(page):
     result = page.evaluate(
         "(() => { const rootEl = document.createElement('div'); "
         "const leaf = document.createElement('span'); "

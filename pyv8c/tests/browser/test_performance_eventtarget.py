@@ -1,11 +1,11 @@
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_performance_can_register_and_dispatch_events():
-    browser = Browser(stub_logging='off')
+async def test_performance_can_register_and_dispatch_events():
+    browser = (await Browser(stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://example.test/')
+        (await page.set_content('<body></body>', url='https://example.test/', wait_until="commit"))
         assert page.evaluate("""
             (() => {
               let calls = 0;
@@ -15,14 +15,14 @@ def test_performance_can_register_and_dispatch_events():
             })()
         """) == 1
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_performance_resource_methods_accept_same_origin_frame_receiver():
-    browser = Browser(stub_logging='off')
+async def test_performance_resource_methods_accept_same_origin_frame_receiver():
+    browser = (await Browser(stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://example.test/')
+        (await page.set_content('<body></body>', url='https://example.test/', wait_until="commit"))
         assert page.evaluate("""
             (() => {
               const frame = document.createElement('iframe');
@@ -34,4 +34,4 @@ def test_performance_resource_methods_accept_same_origin_frame_receiver():
             })()
         """) is True
     finally:
-        browser.close()
+        (await browser.close())

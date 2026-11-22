@@ -2,13 +2,14 @@
 import pytest
 
 pytest.importorskip('pyv8c.pyv8')
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_disabling_gpu_keeps_cpu_canvas_and_native_interfaces():
-    browser=Browser(gpu_enabled=False,stub_logging='off')
+async def test_disabling_gpu_keeps_cpu_canvas_and_native_interfaces():
+    browser=await Browser(gpu_enabled=False,stub_logging='off').__aenter__()
     try:
-        page=browser.new_profile().new_page();page.set_content('<body></body>',url='https://gpu.test/')
+        page=browser.new_profile().new_page()
+        await page.set_content('<body></body>',url='https://gpu.test/')
         assert page.evaluate('''(() => {
           const c=document.createElement('canvas'),o=new OffscreenCanvas(2,2);
           return [c.getContext('webgl')===null,c.getContext('webgl2')===null,
@@ -17,15 +18,17 @@ def test_disabling_gpu_keeps_cpu_canvas_and_native_interfaces():
                   typeof WebGLRenderingContext,typeof navigator.gpu.requestAdapter];
         })()''') == [True]*6+['function','function']
         page.evaluate('window.answer=1;navigator.gpu.requestAdapter().then(a=>answer=a===null)')
-        page.wait_for('answer!==1',timeout=3)
+        await page.wait_for('answer!==1',timeout=3)
         assert page.evaluate('answer') is True
-    finally:browser.close()
+    finally:
+        await browser.close()
 
 
-def test_worker_inherits_disabled_gpu():
-    browser=Browser(gpu_enabled=False,stub_logging='off')
+async def test_worker_inherits_disabled_gpu():
+    browser=await Browser(gpu_enabled=False,stub_logging='off').__aenter__()
     try:
-        page=browser.new_profile().new_page();page.set_content('<body></body>',url='https://gpu.test/')
+        page=browser.new_profile().new_page()
+        await page.set_content('<body></body>',url='https://gpu.test/')
         page.evaluate('''window.answer=null;
           const worker=new Worker(URL.createObjectURL(new Blob([
             `Promise.resolve(navigator.gpu.requestAdapter()).then(a=>{
@@ -34,9 +37,10 @@ def test_worker_inherits_disabled_gpu():
             });`
           ],{type:'text/javascript'})));
           worker.onmessage=e=>{answer=e.data;worker.terminate()};''')
-        page.wait_for('answer!==null',timeout=3)
+        await page.wait_for('answer!==null',timeout=3)
         assert page.evaluate('answer') == [True]*3
-    finally:browser.close()
+    finally:
+        await browser.close()
 
 
 def test_gpu_option_requires_a_boolean():

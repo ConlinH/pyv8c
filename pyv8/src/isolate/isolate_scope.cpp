@@ -24,6 +24,22 @@ current_isolate_state()
     return active_isolate_state;
 }
 
+bool IsolateLockScope::has_thread_entry(IsolateState* state)
+{
+    auto* active = current_isolate_state();
+    if (active == nullptr) return false;
+    if (active == state) return true;
+    // A successful recursive acquisition can only see this thread's outer
+    // entry or an idle isolate. Never wait for another thread while nested.
+    std::unique_lock<std::recursive_mutex> lock(state->entry_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        PyErr_SetString(PyExc_RuntimeError,
+            "cannot wait for another V8 isolate during nested execution");
+        return false;
+    }
+    return state->entry_depth != 0;
+}
+
 IsolateLockScope::IsolateLockScope(IsolateState* state, bool try_only)
     : state_(state),
       previous_(current_isolate_state()),
@@ -36,6 +52,11 @@ IsolateLockScope::IsolateLockScope(IsolateState* state, bool try_only)
         isolate_ = state->isolate();
         nested_ = entered_ = true;
         ++state_->entry_depth;
+        return;
+    }
+    if (!state->on_owner_thread()) {
+        if (!try_only) PyErr_SetString(PyExc_RuntimeError,
+            "thread-bound V8 isolate requires its owner thread");
         return;
     }
     // Never block on a second isolate while holding another isolate's lock.
@@ -69,7 +90,10 @@ IsolateLockScope::IsolateLockScope(IsolateState* state, bool try_only)
         }
         else
         {
-            locker_.reset(new v8::Locker(isolate_));
+            // A bound isolate never migrates and has never used V8's Locker.
+            // Its thread state (including compiler interrupts) stays intact
+            // between owner turns. Migratable isolates still need the Locker.
+            if (!state_->thread_bound()) locker_.emplace(isolate_);
         }
     }
     catch (...)

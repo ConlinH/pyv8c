@@ -10,4 +10,4 @@
 加载计时属于一次 `Idl.load` 调用，不在 Browser 之间共享。接口实现覆盖情况可使用
 `python tools/idl_audit.py --coverage` 查看；添加 `--json report.json` 可保存完整列表。
 
-发行包使用的基线是 `CHROMIUM_VERSION` 对应的 `pyv8c/pyv8c/idl/idl.zip`。打包前会核对归档内版本。
+发行包默认携带的基线是 `CHROMIUM_VERSION` 对应的 `pyv8c/pyv8c/idl/idl.zip`。`CHROMIUM_VERSION` 供 IDL 提取工具记录基线来源，打包时不做版本一致性校验；`Idl.load(path=...)` 可加载任意版本的 IDL 文档，profile 按内容 digest 匹配而非版本字符串。

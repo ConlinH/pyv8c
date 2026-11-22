@@ -69,11 +69,20 @@ jobs:
           $gnOverride = if ($null -ne $env:PYV8_GN_ARGS) { $env:PYV8_GN_ARGS } else { '' }
           $gnArgs = [Text.Encoding]::UTF8.GetBytes($gnOverride)
           $gnHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($gnArgs)).ToLowerInvariant()
-          $cacheKey = "v8-v3-${{ runner.os }}-${{ env.PYV8_TARGET_CPU }}-$imageVersion-$($sdk.Name)-$gnHash-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}"
-          "cache-key=$cacheKey" >> $env:GITHUB_OUTPUT
+          $cachePrefix = "v8-v3-${{ runner.os }}-${{ env.PYV8_TARGET_CPU }}-$($sdk.Name)-$gnHash-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}"
+          $cacheKey = "$cachePrefix-$imageVersion"
+          # Caches saved before this change put the image before the SDK. Keep the
+          # old exact key as a fallback so the first run can still reuse them.
+          $legacyKey = "v8-v3-${{ runner.os }}-${{ env.PYV8_TARGET_CPU }}-$imageVersion-$($sdk.Name)-$gnHash-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}"
+          "validated-cache-prefix=$cacheKey-validated-" >> $env:GITHUB_OUTPUT
+          "cache-prefix=$cachePrefix" >> $env:GITHUB_OUTPUT
+          "legacy-key=$legacyKey" >> $env:GITHUB_OUTPUT
           Write-Host "Selected Windows SDK $($sdk.Name) on image $imageVersion"
-      # Restore only an exact match. The image and SDK are part of the key because
-      # V8's stamp records GN args and target, but not the Windows toolchain.
+      # The image version is a suffix so a runner image bump falls back to the
+      # last cache built with the same SDK, GN args and V8 sources instead of
+      # rebuilding V8. validate_v8_cache.py still checks the GN stamp before reuse.
+      # Prefer the newest validated generation for this image. A fresh generation
+      # supersedes a damaged entry without needing to overwrite or delete it.
       - name: Restore V8 build cache
         id: v8-cache
         continue-on-error: true
@@ -84,27 +93,14 @@ jobs:
             pyv8/.pyv8-build/versions/${{ steps.sdk.outputs.v8-version }}/v8/out/pyv8-*.release
             pyv8/.pyv8-build/versions/${{ steps.sdk.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin
             pyv8/.pyv8-build/versions/${{ steps.sdk.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/lib
-          key: ${{ steps.sdk.outputs.cache-key }}
+          key: ${{ steps.sdk.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.sdk.outputs.validated-cache-prefix }}
+            ${{ steps.sdk.outputs.cache-prefix }}-
+            ${{ steps.sdk.outputs.legacy-key }}
       - name: Validate restored V8 outputs
-        shell: pwsh
-        run: |
-          $versionsRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'pyv8/.pyv8-build/versions'))
-          $v8Home = [IO.Path]::GetFullPath((Join-Path $versionsRoot '${{ steps.sdk.outputs.v8-version }}/v8'))
-          if (-not $v8Home.StartsWith($versionsRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($v8Home) -ne 'v8') {
-            throw "Unexpected V8 cache path: $v8Home"
-          }
-          if (Test-Path -LiteralPath $v8Home) {
-            $item = Get-Item -LiteralPath $v8Home -Force
-            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "V8 cache directory is a reparse point: $v8Home" }
-            if (-not (Test-Path -LiteralPath (Join-Path $v8Home '.git'))) {
-              python pyv8/tools/validate_v8_cache.py
-              if ($LASTEXITCODE -ne 0) {
-                Write-Warning 'Discarding incomplete V8 cache; delete the matching GitHub cache entry if this repeats.'
-                Remove-Item -LiteralPath $v8Home -Recurse -Force
-                $global:LASTEXITCODE = 0
-              }
-            }
-          }
+        id: validate-v8-cache
+        run: python pyv8/tools/validate_v8_cache.py --restore
       - name: Build V8
         id: v8-build
         working-directory: pyv8
@@ -120,7 +116,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Save V8 build cache
-        if: ${{ steps.v8-cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.validate-v8-cache.outputs.reusable != 'true' || !startsWith(steps.v8-cache.outputs.cache-matched-key, steps.sdk.outputs.validated-cache-prefix) }}
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
@@ -129,7 +125,7 @@ jobs:
             pyv8/.pyv8-build/versions/${{ steps.sdk.outputs.v8-version }}/v8/out/pyv8-*.release
             pyv8/.pyv8-build/versions/${{ steps.sdk.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin
             pyv8/.pyv8-build/versions/${{ steps.sdk.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/lib
-          key: ${{ steps.sdk.outputs.cache-key }}
+          key: ${{ steps.sdk.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v4
         with:
           name: windows-wheels
@@ -160,15 +156,15 @@ jobs:
           python -m pip install --upgrade pip
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheels = Get-ChildItem dist/*.whl | ForEach-Object { $_.FullName }
-          python -m pip install $wheels pytest pytest-timeout
+          python -m pip install $wheels "pytest>=8.4" "pytest-asyncio>=1.4,<2" pytest-timeout
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip check
       - name: Verify installed wheels outside checkout
         working-directory: ${{ runner.temp }}
         run: python -I "${{ github.workspace }}/tools/smoke_wheels.py"
-      - name: Test installed wheel audio
+      - name: Test installed wheel native components
         working-directory: ${{ runner.temp }}
-        run: python -I "${{ github.workspace }}/tools/check_installed_audio.py"
+        run: python -I "${{ github.workspace }}/tools/check_installed_native.py"
       - name: Test native crash smoke on installed wheel
         working-directory: ${{ runner.temp }}
         run: python -m pytest "${{ github.workspace }}/pyv8c/tests/native/test_native_smoke.py" -q
@@ -180,7 +176,7 @@ jobs:
         shell: pwsh
         working-directory: ${{ runner.temp }}
         run: |
-          python -m pip install 'comfy-angle==0.1.1' pytest pytest-timeout
+          python -m pip install 'comfy-angle==0.1.1' "pytest>=8.4" "pytest-asyncio>=1.4,<2" pytest-timeout
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:PYV8C_ANGLE_DIR = python -c "import comfy_angle; print(comfy_angle.get_lib_dir())"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -209,6 +205,7 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
           test -n "${ImageVersion:-}"
           echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "validated-cache-prefix=linux-v8-v2-x64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-$ImageVersion-validated-" >> "$GITHUB_OUTPUT"
           echo "v8-version=$(tr -d '\r\n' < pyv8/V8_VERSION)" >> "$GITHUB_OUTPUT"
       - name: Create build environment
         shell: bash
@@ -217,7 +214,7 @@ jobs:
           venv_dir="$(mktemp -d "$RUNNER_TEMP/pyv8c-ci-venv.XXXXXX")"
           python -m venv "$venv_dir"
           echo "$venv_dir/bin" >> "$GITHUB_PATH"
-          "$venv_dir/bin/python" -m pip install --upgrade pip build twine 'setuptools>=77' 'setuptools-rust>=1.10,<2' wheel pytest pytest-timeout pytest-repeat pytest-xdist
+          "$venv_dir/bin/python" -m pip install --upgrade pip build twine 'setuptools>=77' 'setuptools-rust>=1.10,<2' wheel "pytest>=8.4" "pytest-asyncio>=1.4,<2" pytest-timeout pytest-repeat pytest-xdist
       - name: Restore V8 build cache
         id: linux-v8-cache
         continue-on-error: true
@@ -228,7 +225,14 @@ jobs:
             pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/out/pyv8-x64.release
             pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin/ld.lld
             pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin/lld
-          key: linux-v8-v2-x64-${{ steps.linux-environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
+          key: ${{ steps.linux-environment.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.linux-environment.outputs.validated-cache-prefix }}
+            linux-v8-v2-x64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-
+            linux-v8-v2-x64-${{ steps.linux-environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
+      - name: Validate restored V8 outputs
+        id: validate-v8-cache
+        run: python pyv8/tools/validate_v8_cache.py --restore
       - name: Prepare V8
         shell: bash
         working-directory: pyv8
@@ -240,17 +244,6 @@ jobs:
           linker="pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin/ld.lld"
           test -x "$linker"
           "$linker" --version
-      - name: Save V8 build cache
-        if: ${{ steps.linux-v8-cache.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/include
-            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/out/pyv8-x64.release
-            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin/ld.lld
-            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin/lld
-          key: linux-v8-v2-x64-${{ steps.linux-environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
       - name: Build and check Linux wheel
         shell: bash
         run: |
@@ -267,10 +260,10 @@ jobs:
         shell: bash
         working-directory: ${{ runner.temp }}
         run: python -I "$GITHUB_WORKSPACE/tools/smoke_wheels.py"
-      - name: Test installed wheel audio
+      - name: Test installed wheel native components
         shell: bash
         working-directory: ${{ runner.temp }}
-        run: python -I "$GITHUB_WORKSPACE/tools/check_installed_audio.py"
+        run: python -I "$GITHUB_WORKSPACE/tools/check_installed_native.py"
       - name: Test native crash smoke on installed wheel
         shell: bash
         working-directory: ${{ runner.temp }}
@@ -284,6 +277,17 @@ jobs:
           python -m pip install 'comfy-angle==0.1.1'
           export PYV8C_ANGLE_DIR="$(python -c 'import comfy_angle; print(comfy_angle.get_lib_dir())')"
           python -m pytest "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_angle_context.py" -q
+      - name: Save V8 build cache
+        if: ${{ steps.validate-v8-cache.outputs.reusable != 'true' || !startsWith(steps.linux-v8-cache.outputs.cache-matched-key, steps.linux-environment.outputs.validated-cache-prefix) }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/include
+            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/out/pyv8-x64.release
+            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin/ld.lld
+            pyv8/.pyv8-build/versions/${{ steps.linux-environment.outputs.v8-version }}/v8/third_party/llvm-build/Release+Asserts/bin/lld
+          key: ${{ steps.linux-environment.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v4
         with:
           name: linux-wheels
@@ -316,9 +320,10 @@ jobs:
           df -h .
           test -n "${ImageVersion:-}"
           echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "validated-cache-prefix=macos-v8-arm64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-$ImageVersion-validated-" >> "$GITHUB_OUTPUT"
           echo "v8-version=$(tr -d '\r\n' < pyv8/V8_VERSION)" >> "$GITHUB_OUTPUT"
       - name: Install build and test tools
-        run: python -m pip install --upgrade pip build twine 'setuptools>=77' 'setuptools-rust>=1.10,<2' wheel pytest pytest-timeout pytest-repeat pytest-xdist
+        run: python -m pip install --upgrade pip build twine 'setuptools>=77' 'setuptools-rust>=1.10,<2' wheel "pytest>=8.4" "pytest-asyncio>=1.4,<2" pytest-timeout pytest-repeat pytest-xdist
       - name: Restore V8 build cache
         id: v8-cache
         continue-on-error: true
@@ -327,19 +332,17 @@ jobs:
           path: |
             pyv8/.pyv8-build/versions/${{ steps.environment.outputs.v8-version }}/v8/include
             pyv8/.pyv8-build/versions/${{ steps.environment.outputs.v8-version }}/v8/out/pyv8-arm64.release
-          key: macos-v8-arm64-${{ steps.environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
+          key: ${{ steps.environment.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.environment.outputs.validated-cache-prefix }}
+            macos-v8-arm64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-
+            macos-v8-arm64-${{ steps.environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
+      - name: Validate restored V8 outputs
+        id: validate-v8-cache
+        run: python pyv8/tools/validate_v8_cache.py --restore
       - name: Prepare V8
         working-directory: pyv8
         run: python -c "from v8_build import V8BuildConfig; V8BuildConfig.from_environment('.', download_and_build=True).prepare()"
-      - name: Save V8 build cache
-        if: ${{ steps.v8-cache.outputs.cache-hit != 'true' }}
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            pyv8/.pyv8-build/versions/${{ steps.environment.outputs.v8-version }}/v8/include
-            pyv8/.pyv8-build/versions/${{ steps.environment.outputs.v8-version }}/v8/out/pyv8-arm64.release
-          key: macos-v8-arm64-${{ steps.environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
       - name: Build and install wheel
         shell: bash
         run: |
@@ -354,9 +357,9 @@ jobs:
       - name: Verify installed wheel outside checkout
         working-directory: ${{ runner.temp }}
         run: python -I "$GITHUB_WORKSPACE/tools/smoke_wheels.py"
-      - name: Test installed wheel audio
+      - name: Test installed wheel native components
         working-directory: ${{ runner.temp }}
-        run: python -I "$GITHUB_WORKSPACE/tools/check_installed_audio.py"
+        run: python -I "$GITHUB_WORKSPACE/tools/check_installed_native.py"
       - name: Test native crash smoke on installed wheel
         working-directory: ${{ runner.temp }}
         run: python -m pytest "$GITHUB_WORKSPACE/pyv8c/tests/native/test_native_smoke.py" -q
@@ -369,6 +372,15 @@ jobs:
           python -m pip install 'comfy-angle==0.1.1'
           export PYV8C_ANGLE_DIR="$(python -c 'import comfy_angle; print(comfy_angle.get_lib_dir())')"
           python -m pytest "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_angle_context.py" -q
+      - name: Save V8 build cache
+        if: ${{ steps.validate-v8-cache.outputs.reusable != 'true' || !startsWith(steps.v8-cache.outputs.cache-matched-key, steps.environment.outputs.validated-cache-prefix) }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            pyv8/.pyv8-build/versions/${{ steps.environment.outputs.v8-version }}/v8/include
+            pyv8/.pyv8-build/versions/${{ steps.environment.outputs.v8-version }}/v8/out/pyv8-arm64.release
+          key: ${{ steps.environment.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:

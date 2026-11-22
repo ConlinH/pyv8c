@@ -1,12 +1,14 @@
 """Event-loop completeness: a realm drives itself without manual pumping.
 
-The executor drains posted/timer/microtask sources on its owner thread, so
+The Runtime drains posted/timer/microtask sources on its owner thread, so
 network responses, worker messages and timers make progress while the test
 process only issues ordinary ``evaluate`` calls.  ``run_until_idle`` is a test
-driver that blocks until the realm is idle; it never has to be called for a
+driver that yields until the realm is idle; it never has to be called for a
 page to run.
 
 """
+
+import asyncio
 import statistics
 import time
 from urllib.parse import urlsplit
@@ -14,34 +16,34 @@ from urllib.parse import urlsplit
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.foundation.host_errors import RealmBusyError
 from pyv8c.platform.page import Page
 
 ORIGIN = "http://127.0.0.1:9"
 
 
-def test_wait_for_reports_its_deadline_when_the_owner_is_busy():
+async def test_wait_for_reports_its_deadline_when_the_owner_is_busy():
     from types import SimpleNamespace
 
     def busy(*args, **kwargs):
         time.sleep(0.02)
         raise RealmBusyError("owner did not answer")
 
-    page = SimpleNamespace(executor=SimpleNamespace(is_owner_thread=lambda: False), evaluate=busy)
+    page = SimpleNamespace(_check_wait=lambda: None, evaluate=busy)
     with pytest.raises(TimeoutError, match="condition did not become true"):
-        Page.wait_for(page, "false", timeout=0.01)
+        (await Page.wait_for(page, "false", timeout=0.01))
 
 
-def test_wait_for_preserves_an_early_owner_failure():
+async def test_wait_for_preserves_an_early_owner_failure():
     from types import SimpleNamespace
 
     def busy(*args, **kwargs):
         raise RealmBusyError("owner unavailable")
 
-    page = SimpleNamespace(executor=SimpleNamespace(is_owner_thread=lambda: False), evaluate=busy)
+    page = SimpleNamespace(_check_wait=lambda: None, evaluate=busy)
     with pytest.raises(RealmBusyError, match="owner unavailable"):
-        Page.wait_for(page, "false", timeout=1)
+        (await Page.wait_for(page, "false", timeout=1))
 
 #: A worker that exercises the scheduling surface its global scope shares with
 #: a window.  Each source posts separately so the order is observable.
@@ -86,18 +88,19 @@ def _loader(url, request):
 
 
 @pytest.fixture
-def page():
-    browser = Browser(resource_loader=_loader, stub_logging="off")
+async def page():
+    browser = (await Browser(resource_loader=_loader, stub_logging="off").__aenter__())
     context = browser.new_profile()
-    page = context.new_page(ORIGIN + "/")
+    page = context.new_page()
+    await page.goto(ORIGIN + "/")
     try:
         yield page
     finally:
-        page.close()
-        browser.close()
+        (await page.close())
+        (await browser.close())
 
 
-def wait_until(page, expression, until=True, timeout=8.0, interval=0.01):
+async def wait_until(page, expression, until=True, timeout=8.0, interval=0.01):
     """Poll ``expression`` until it evaluates equal to ``until``.
 
     JS ``null``/``undefined`` surface as their own pyv8 types (never ``None``)
@@ -110,21 +113,21 @@ def wait_until(page, expression, until=True, timeout=8.0, interval=0.01):
         last = page.evaluate(expression)
         if last == until:
             return last
-        time.sleep(interval)
+        await asyncio.sleep(interval)
     return last
 
 
-def test_fetch_resolves_without_manual_pump(page):
+async def test_fetch_resolves_without_manual_pump(page):
     page.evaluate("""
         window.__result = 'pending';
         fetch('/hello').then(function (r) { return r.text(); })
             .then(function (t) { window.__result = t; })
             .catch(function () { window.__result = 'rejected'; });
     """)
-    assert wait_until(page, "window.__result", until="hello from loader")
+    assert (await wait_until(page, "window.__result", until="hello from loader"))
 
 
-def test_xhr_completes_without_manual_pump(page):
+async def test_xhr_completes_without_manual_pump(page):
     page.evaluate("""
         window.__xhr = 'pending';
         var x = new XMLHttpRequest();
@@ -133,10 +136,10 @@ def test_xhr_completes_without_manual_pump(page):
         x.onerror = function () { window.__xhr = 'error'; };
         x.send();
     """)
-    assert wait_until(page, "window.__xhr", until="hello from loader")
+    assert (await wait_until(page, "window.__xhr", until="hello from loader"))
 
 
-def test_worker_postmessage_delivers_without_manual_pump(page):
+async def test_worker_postmessage_delivers_without_manual_pump(page):
     page.evaluate("""
         window.__worker = 'pending';
         var w = new Worker('/worker.js');
@@ -144,10 +147,10 @@ def test_worker_postmessage_delivers_without_manual_pump(page):
         w.onerror = function () { window.__worker = 'error'; };
         w.postMessage(21);
     """)
-    assert wait_until(page, "window.__worker", until=42, timeout=10.0)
+    assert (await wait_until(page, "window.__worker", until=42, timeout=10.0))
 
 
-def test_microtask_checkpoint_runs_between_sources(page):
+async def test_microtask_checkpoint_runs_between_sources(page):
     page.evaluate("""
         window.__log = [];
         setTimeout(function () {
@@ -157,16 +160,16 @@ def test_microtask_checkpoint_runs_between_sources(page):
         Promise.resolve().then(function () { window.__log.push('m'); });
         window.__log.push('sync');
     """)
-    assert wait_until(
+    assert (await wait_until(
         page,
         "window.__log.length === 4 && window.__log[window.__log.length - 1] === 'm-after-t'",
         until=True,
         interval=0.02,
-    )
+    ))
     assert page.evaluate("window.__log") == ["sync", "m", "t", "m-after-t"]
 
 
-def test_posted_response_runs_before_soon_timer(page):
+async def test_posted_response_runs_before_soon_timer(page):
     # The fetch delivery is a posted task, the zero timer is a timer task:
     # the turn order (posted -> microtask checkpoint -> timers) makes the
     # fetch resolution observable before the timer callback.
@@ -175,11 +178,11 @@ def test_posted_response_runs_before_soon_timer(page):
         fetch('/hello').then(function () { window.__order.push('fetch'); });
         setTimeout(function () { window.__order.push('timer'); }, 0);
     """)
-    assert wait_until(page, "window.__order.length === 2", until=True)
+    assert (await wait_until(page, "window.__order.length === 2", until=True))
     assert page.evaluate("window.__order") == ["fetch", "timer"]
 
 
-def test_a_short_timer_is_not_left_a_system_tick_late(page):
+async def test_a_short_timer_is_not_left_a_system_tick_late(page):
     """A timer fires close to the deadline it was armed with.
 
     Two platform details made this fail by a whole 64 Hz tick: Windows'
@@ -199,12 +202,13 @@ def test_a_short_timer_is_not_left_a_system_tick_late(page):
         while not page.evaluate("window.__fired"):
             if time.perf_counter() - started > 2:
                 pytest.fail("a 5 ms timer never ran")
+            await asyncio.sleep(0)
         lateness.append((time.perf_counter() - started) * 1000)
 
     assert statistics.median(lateness) < 12.0, lateness
 
 
-def test_queue_microtask_shares_the_promise_queue(page):
+async def test_queue_microtask_shares_the_promise_queue(page):
     """``queueMicrotask`` and promise reactions are one FIFO queue.
 
     The specification puts both on the microtask queue, so they interleave in
@@ -220,13 +224,13 @@ def test_queue_microtask_shares_the_promise_queue(page):
         setTimeout(function () { window.__order.push('timer'); }, 0);
         window.__order.push('sync');
     """)
-    assert wait_until(page, "window.__order.length === 6", until=True) is True
+    assert (await wait_until(page, "window.__order.length === 6", until=True)) is True
     assert page.evaluate("window.__order") == [
         "sync", "microtask-1", "promise-1", "microtask-2", "promise-2", "timer",
     ]
 
 
-def test_queue_microtask_ignores_a_replaced_promise(page):
+async def test_queue_microtask_ignores_a_replaced_promise(page):
     """The page must not be able to break ``queueMicrotask``.
 
     The specification defines it on the implementation's own microtask queue, so
@@ -241,11 +245,11 @@ def test_queue_microtask_ignores_a_replaced_promise(page):
         catch (error) { window.__log.push('threw: ' + error); }
         Promise = real;
     """)
-    assert wait_until(page, "window.__log.length === 1", until=True) is True
+    assert (await wait_until(page, "window.__log.length === 1", until=True)) is True
     assert page.evaluate("window.__log") == ["ran"]
 
 
-def test_queue_microtask_is_not_routed_through_a_patched_then(page):
+async def test_queue_microtask_is_not_routed_through_a_patched_then(page):
     """Wrapping ``Promise.prototype.then`` must not add observable steps.
 
     Instrumentation libraries patch exactly that method, and doing so must not
@@ -264,14 +268,14 @@ def test_queue_microtask_is_not_routed_through_a_patched_then(page):
         Promise.resolve().then(function () { window.__order.push('user-promise'); });
         window.__order.push('sync');
     """)
-    assert wait_until(page, "window.__order.length === 4", until=True) is True
+    assert (await wait_until(page, "window.__order.length === 4", until=True)) is True
     # Only the page's own .then reaches its wrapper.
     assert page.evaluate("window.__order") == [
         "sync", "microtask", "then-wrapper", "user-promise",
     ]
 
 
-def test_throwing_microtask_does_not_stop_the_checkpoint(page):
+async def test_throwing_microtask_does_not_stop_the_checkpoint(page):
     """A faulty microtask is reported, and the jobs behind it still run.
 
     The callback is queued on V8's own microtask queue, so an exception escaping
@@ -286,11 +290,11 @@ def test_throwing_microtask_does_not_stop_the_checkpoint(page):
         Promise.resolve().then(function () { window.__log.push('promise'); });
         window.__log.push('sync');
     """)
-    assert wait_until(page, "window.__log.length === 3", until=True) is True
+    assert (await wait_until(page, "window.__log.length === 3", until=True)) is True
     assert page.evaluate("window.__log") == ["sync", "after-throw", "promise"]
 
 
-def test_worker_runs_timers_and_microtasks(page):
+async def test_worker_runs_timers_and_microtasks(page):
     """A worker global schedules on its own task queue, not on stub calls."""
     page.evaluate("""
         window.__workerOrder = [];
@@ -299,7 +303,7 @@ def test_worker_runs_timers_and_microtasks(page):
         scheduling.onerror = function (event) { window.__workerOrder.push('error: ' + event.message); };
         scheduling.postMessage('go');
     """)
-    assert wait_until(page, "window.__workerOrder.length === 5", until=True) is True
+    assert (await wait_until(page, "window.__workerOrder.length === 5", until=True)) is True
     prefix, tail = page.evaluate(
         "[window.__workerOrder.slice(0, 3), window.__workerOrder.slice(3).sort()]"
     )
@@ -309,7 +313,7 @@ def test_worker_runs_timers_and_microtasks(page):
     assert tail == ["frame", "timeout"]
 
 
-def test_interval_repeats_and_can_be_cleared(page):
+async def test_interval_repeats_and_can_be_cleared(page):
     page.evaluate("""
         window.__count = 0;
         window.__id = setInterval(function () {
@@ -317,18 +321,18 @@ def test_interval_repeats_and_can_be_cleared(page):
             if (window.__count === 3) { clearInterval(window.__id); }
         }, 4);
     """)
-    assert wait_until(page, "window.__count", until=3, timeout=6.0) == 3
-    time.sleep(0.08)
+    assert (await wait_until(page, "window.__count", until=3, timeout=6.0)) == 3
+    (await asyncio.sleep(0.08))
     assert page.evaluate("window.__count") == 3
 
 
-def test_timer_fires_after_its_delay(page):
+async def test_timer_fires_after_its_delay(page):
     page.evaluate("""
         window.__t0 = Date.now();
         window.__t1 = null;
         setTimeout(function () { window.__t1 = Date.now(); }, 30);
     """)
-    assert wait_until(page, "window.__t1 !== null", until=True, timeout=6.0)
+    assert (await wait_until(page, "window.__t1 !== null", until=True, timeout=6.0))
     elapsed = page.evaluate("window.__t1 - window.__t0")
     # The lower bound tolerates wall-clock drift between the JS Date.now()
     # used here and the monotonic clock the scheduler fires on; it still

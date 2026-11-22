@@ -2,11 +2,11 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_internal_bridge_names_are_not_global_and_url_is_public():
-    browser = Browser()
+async def test_internal_bridge_names_are_not_global_and_url_is_public():
+    browser = (await Browser().__aenter__())
     page = browser.new_profile().new_page()
     values = page.evaluate("""
       [
@@ -22,12 +22,12 @@ def test_internal_bridge_names_are_not_global_and_url_is_public():
       ]
     """)
     assert values == ["function", "function", "function", "function", "function", "undefined", "undefined", "undefined", False]
-    page.close()
-    browser.close()
+    (await page.close())
+    (await browser.close())
 
 
-def test_window_aliases_come_from_the_global_template():
-    browser = Browser(stub_logging="off")
+async def test_window_aliases_come_from_the_global_template():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
     values = page.evaluate("""
       [
@@ -39,12 +39,12 @@ def test_window_aliases_come_from_the_global_template():
       ]
     """)
     assert values == [True, True, "object", "object", "object"]
-    page.close()
-    browser.close()
+    (await page.close())
+    (await browser.close())
 
 
-def test_url_components_and_static_operations():
-    browser = Browser()
+async def test_url_components_and_static_operations():
+    browser = (await Browser().__aenter__())
     page = browser.new_profile().new_page()
     values = page.evaluate("""
       (() => {
@@ -67,12 +67,12 @@ def test_url_components_and_static_operations():
         True, "https://user:pass@example.com:8443/a?x=2#h", "https://user:pass@example.com:8443/a?x=2#h",
         True, "https://user:pass@example.com:8443/a?x=2#h", True, True, "[object URL]",
     ]
-    page.close()
-    browser.close()
+    (await page.close())
+    (await browser.close())
 
 
-def test_url_search_params_delete_and_has_take_an_optional_value():
-    browser = Browser(stub_logging="off")
+async def test_url_search_params_delete_and_has_take_an_optional_value():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
     values = page.evaluate("""
       (() => {
@@ -84,12 +84,12 @@ def test_url_search_params_delete_and_has_take_an_optional_value():
       })()
     """)
     assert values == ["a=2", False, True, False, 1]
-    page.close()
-    browser.close()
+    (await page.close())
+    (await browser.close())
 
 
-def test_url_search_params_iterates_the_way_chromium_does():
-    browser = Browser(stub_logging="off")
+async def test_url_search_params_iterates_the_way_chromium_does():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
     values = page.evaluate("""
       (() => {
@@ -112,31 +112,31 @@ def test_url_search_params_iterates_the_way_chromium_does():
     assert values == ["function", True, ["a", "1"], True, 3,
                       [["a", "1", True, "tagged"], ["b", "2", True, "tagged"]],
                       "1", False, "[object URLSearchParams Iterator]", "function"]
-    page.close()
-    browser.close()
+    (await page.close())
+    (await browser.close())
 
 
-def test_a_worker_realm_iterates_url_search_params_too():
+async def test_a_worker_realm_iterates_url_search_params_too():
     source = ("const params = new URLSearchParams('a=1&a=2'); params.delete('a', 1);"
               "self.postMessage([params.toString(), Array.from(params),"
               " typeof params.entries().next, params.has('a', 2),"
               " URLSearchParams.prototype[Symbol.iterator] === URLSearchParams.prototype.entries]);")
-    browser = Browser(resource_loader=lambda url, request: {"body": source, "url": url})
+    browser = (await Browser(resource_loader=lambda url, request: {"body": source, "url": url}).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         page.evaluate("const worker = new Worker('https://example.test/worker.js');"
                       " worker.onmessage = event => globalThis.workerParams = event.data;")
-        page.wait_for("typeof workerParams !== 'undefined'", timeout=10)
+        (await page.wait_for("typeof workerParams !== 'undefined'", timeout=10))
         assert page.evaluate("workerParams") == ["a=2", [["a", "2"]], "function", True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_url_blob_methods_use_context_storage_without_global_bridge():
-    browser = Browser()
+async def test_url_blob_methods_use_context_storage_without_global_bridge():
+    browser = (await Browser().__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content("<body></body>", url="https://github.com/path/index.html")
+    (await page.set_content("<body></body>", url="https://github.com/path/index.html", wait_until="commit"))
     values = page.evaluate("""
       (() => {
         const blob = new Blob(['hello'], {type: 'text/plain'});
@@ -147,5 +147,5 @@ def test_url_blob_methods_use_context_storage_without_global_bridge():
       })()
     """)
     assert values == [True, "undefined"]
-    page.close()
-    browser.close()
+    (await page.close())
+    (await browser.close())

@@ -10,11 +10,13 @@ requests started coming back ``400`` where Chrome gets ``401`` and ``200``.  The
 still sends its referrer: the rule is about the initiator, not about referrers in general, and
 both halves are held here so a fix for one cannot quietly break the other.
 """
+
+import asyncio
 import json
 import threading
 import time
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 #: ``(url, request dict)`` in the order the loader was handed them.
 SEEN = []
@@ -38,29 +40,16 @@ fetch('/from-page.json').then(function (response) {
 PROBE_URL = "https://worker.test/"
 
 
-def _bounded(action, seconds=10.0):
-    done = threading.Event()
-
-    def run():
-        try:
-            action()
-        except BaseException:  # noqa: BLE001
-            pass
-        finally:
-            done.set()
-
-    threading.Thread(target=run, daemon=True).start()
-    done.wait(seconds)
 
 
-def _pump(page, seconds=0.8):
+async def _pump(page, seconds=0.8):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            page.run_until_idle(timeout=0)
+            (await page.run_until_idle(timeout=0))
         except BaseException:  # noqa: BLE001
             pass
-        time.sleep(0.01)
+        (await asyncio.sleep(0.01))
 
 
 def _load(url, request):
@@ -77,18 +66,18 @@ def _headers_of(url_suffix):
     raise AssertionError(f"no request to {url_suffix}; saw {[url for url, _ in SEEN]}")
 
 
-def test_a_workers_fetch_sends_no_referer_and_the_pages_own_fetch_does():
+async def test_a_workers_fetch_sends_no_referer_and_the_pages_own_fetch_does():
     del SEEN[:]
-    browser = Browser(stub_logging="off", threaded_loaders=True, real_network=False,
-                      resource_loader=_load)
+    browser = (await Browser(stub_logging="off", threaded_loaders=True, real_network=False,
+                      resource_loader=_load).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto(PROBE_URL)
-        _pump(page)
+        (await page.goto(PROBE_URL))
+        (await _pump(page))
         seen = json.loads(page.evaluate("JSON.stringify(window.__out.seen)"))
         assert "page:200" in seen and "worker:200" in seen, seen
     finally:
-        _bounded(browser.close)
+        await browser.close()
 
     worker = _headers_of("from-worker.json")
     page_headers = _headers_of("from-page.json")

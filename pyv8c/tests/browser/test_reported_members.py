@@ -3,22 +3,22 @@ import json
 
 from loguru import logger
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def _page(browser):
+async def _page(browser):
     page = browser.new_profile().new_page()
-    page.set_content(
+    (await page.set_content(
         "<body><textarea id=t></textarea><option id=o>one</option><div id=d></div>"
-        "<canvas id=c></canvas><canvas id=c2></canvas></body>", url="https://repro.test/index.html")
-    page.run_until_idle(timeout=2)
+        "<canvas id=c></canvas><canvas id=c2></canvas></body>", url="https://repro.test/index.html", wait_until="commit"))
+    (await page.run_until_idle(timeout=2))
     return page
 
 
-def test_the_reported_members_answer_like_chromium():
-    browser = Browser(stub_logging="off")
+async def test_the_reported_members_answer_like_chromium():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (await _page(browser))
         seen = json.loads(page.evaluate("""JSON.stringify((() => {
             const area = document.getElementById('t');
             const option = document.getElementById('o');
@@ -67,7 +67,7 @@ def test_the_reported_members_answer_like_chromium():
             };
         })())"""))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert seen == {
         "pixelFormat": "rgba-unorm8",
@@ -86,13 +86,13 @@ def test_the_reported_members_answer_like_chromium():
     }
 
 
-def test_no_reported_member_reports_itself_as_unimplemented():
+async def test_no_reported_member_reports_itself_as_unimplemented():
     messages = []
     token = logger.add(lambda message: messages.append(str(message)), format="{message}")
     try:
-        browser = Browser(stub_logging="on")
+        browser = (await Browser(stub_logging="on").__aenter__())
         try:
-            page = _page(browser)
+            page = (await _page(browser))
             page.evaluate("""(() => {
                 const area = document.getElementById('t');
                 area.maxLength = 10; area.dirName = 'rtl';
@@ -118,7 +118,7 @@ def test_no_reported_member_reports_itself_as_unimplemented():
                 Summarizer.availability();
             })()""")
         finally:
-            browser.close()
+            (await browser.close())
     finally:
         logger.remove(token)
 
@@ -130,11 +130,11 @@ def test_no_reported_member_reports_itself_as_unimplemented():
             if "待实现" in message and any(name in message for name in named)] == []
 
 
-def test_the_canvas_and_navigator_reports_answer_like_chromium():
+async def test_the_canvas_and_navigator_reports_answer_like_chromium():
     """The second batch: the canvas path/colour members, importNode, gamepads and the AI API."""
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        page = _page(browser)
+        page = (await _page(browser))
         seen = json.loads(page.evaluate("""JSON.stringify((() => {
             const attempt = (action) => {
                 try { return 'ok:' + String(action()); }
@@ -182,12 +182,12 @@ def test_the_canvas_and_navigator_reports_answer_like_chromium():
             Summarizer.availability().then((value) => { window.__availability = value; });
             return out;
         })())"""))
-        page.run_until_idle(timeout=2)
+        (await page.run_until_idle(timeout=2))
         seen["bitmap"] = json.loads(page.evaluate("JSON.stringify(window.__bitmap)"))
         seen["closed"] = json.loads(page.evaluate("JSON.stringify(window.__closed)"))
         seen["availability"] = page.evaluate("String(window.__availability)")
     finally:
-        browser.close()
+        (await browser.close())
 
     assert seen == {
         "shadowDefault": "rgba(0, 0, 0, 0)",

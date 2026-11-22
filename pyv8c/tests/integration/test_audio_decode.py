@@ -1,5 +1,5 @@
 """decodeAudioData: the samples Chrome reads out of a WAV file, and what it refuses."""
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 RATE = 8000
 
@@ -36,11 +36,11 @@ WAV = """
 """
 
 
-def _open():
-    browser = Browser(stub_logging="off")
+async def _open():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content("<body></body>", url="https://repro.test/index.html")
-    page.run_until_idle(timeout=2)
+    (await page.set_content("<body></body>", url="https://repro.test/index.html", wait_until="commit"))
+    (await page.run_until_idle(timeout=2))
     return browser, page
 
 
@@ -49,25 +49,25 @@ def _six(samples):
     return [round(sample, 6) for sample in samples]
 
 
-def _render(page, body):
+async def _render(page, body):
     page.evaluate("window.__rendered = null;")
     page.evaluate("(async () => {" + WAV + body + "})()")
-    page.run_until_idle(timeout=30)
+    (await page.run_until_idle(timeout=30))
     return page.evaluate("window.__rendered")
 
 
-def test_a_wav_at_the_context_rate_keeps_its_samples():
-    browser, page = _open()
+async def test_a_wav_at_the_context_rate_keeps_its_samples():
+    browser, page = (await _open())
     try:
-        rendered = _render(page, f"""
+        rendered = (await _render(page, f"""
             const context = new AudioContext({{sampleRate: {RATE}}});
             const buffer = await context.decodeAudioData(wav({RATE}, 1, ramp, 16, false));
             window.__rendered = [buffer.sampleRate, buffer.length, buffer.numberOfChannels,
                                  Array.from(buffer.getChannelData(0))];
             await context.close();
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     rate, length, channels, samples = rendered
     assert [rate, length, channels] == [RATE, 8, 1]
@@ -76,10 +76,10 @@ def test_a_wav_at_the_context_rate_keeps_its_samples():
                              -0.499969, -0.999969]
 
 
-def test_each_width_comes_back_with_chrome_s_conversion():
-    browser, page = _open()
+async def test_each_width_comes_back_with_chrome_s_conversion():
+    browser, page = (await _open())
     try:
-        rendered = _render(page, f"""
+        rendered = (await _render(page, f"""
             const read = async (bits, isFloat) => {{
                 const context = new AudioContext({{sampleRate: {RATE}}});
                 const buffer = await context.decodeAudioData(
@@ -89,9 +89,9 @@ def test_each_width_comes_back_with_chrome_s_conversion():
                 return data;
             }};
             window.__rendered = [await read(8, false), await read(32, true)];
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     eight, floats = rendered
     assert _six(eight) == [0.0, 0.251969, 0.503937, 0.748031, 1.0, 0.503937, -0.492188,
@@ -99,39 +99,39 @@ def test_each_width_comes_back_with_chrome_s_conversion():
     assert _six(floats) == [0.0, 0.25, 0.5, 0.75, 1.0, 0.5, -0.5, -1.0]
 
 
-def test_a_stereo_file_keeps_its_channels_apart():
-    browser, page = _open()
+async def test_a_stereo_file_keeps_its_channels_apart():
+    browser, page = (await _open())
     try:
-        rendered = _render(page, f"""
+        rendered = (await _render(page, f"""
             const context = new AudioContext({{sampleRate: {RATE}}});
             const buffer = await context.decodeAudioData(
                 wav({RATE}, 2, [0.5, -0.5, 0.25, -0.25, 1, -1, 0, 0], 16, false));
             window.__rendered = [buffer.numberOfChannels, buffer.length,
                                  Array.from(buffer.getChannelData(1))];
             await context.close();
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     channels, length, second = rendered
     assert [channels, length] == [2, 4]
     assert _six(second) == [-0.499969, -0.25, -0.999969, 0.0]
 
 
-def test_a_file_at_another_rate_arrives_at_the_context_rate():
+async def test_a_file_at_another_rate_arrives_at_the_context_rate():
     """Chrome resamples onto the context's rate; its own resampler is a filtered one,
     so the length and rate are pinned here and the samples only roughly."""
-    browser, page = _open()
+    browser, page = (await _open())
     try:
-        rendered = _render(page, f"""
+        rendered = (await _render(page, f"""
             const context = new AudioContext({{sampleRate: 44100}});
             const buffer = await context.decodeAudioData(wav({RATE}, 1, ramp, 16, false));
             window.__rendered = [buffer.sampleRate, buffer.length,
                                  Array.from(buffer.getChannelData(0))];
             await context.close();
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     rate, length, samples = rendered
     assert [rate, length] == [44100, 44]
@@ -139,10 +139,10 @@ def test_a_file_at_another_rate_arrives_at_the_context_rate():
     assert samples[4] < samples[5] < samples[8]  # a ramp, read between its samples
 
 
-def test_bytes_that_are_not_audio_are_refused():
-    browser, page = _open()
+async def test_bytes_that_are_not_audio_are_refused():
+    browser, page = (await _open())
     try:
-        rendered = _render(page, """
+        rendered = (await _render(page, """
             const context = new AudioContext();
             const attempt = async (value) => {
                 try { await context.decodeAudioData(value); return 'resolved'; }
@@ -158,9 +158,9 @@ def test_bytes_that_are_not_audio_are_refused():
                                  await attempt(),
                                  throws(new ArrayBuffer(8)), throws(new Uint8Array(8))];
             await context.close();
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     empty, garbage, view, missing, plain_throw, view_throw = rendered
     assert empty == "EncodingError: Unable to decode audio data"
@@ -171,10 +171,10 @@ def test_bytes_that_are_not_audio_are_refused():
     assert [plain_throw, view_throw] == ["no", "no"], rendered
 
 
-def test_the_older_callback_form_is_called_too():
-    browser, page = _open()
+async def test_the_older_callback_form_is_called_too():
+    browser, page = (await _open())
     try:
-        rendered = _render(page, f"""
+        rendered = (await _render(page, f"""
             const context = new AudioContext({{sampleRate: {RATE}}});
             const seen = [];
             context.decodeAudioData(wav({RATE}, 1, ramp, 16, false),
@@ -185,8 +185,8 @@ def test_the_older_callback_form_is_called_too():
                 (error) => seen.push('err:' + error.name));
             window.__rendered = seen;
             await context.close();
-        """)
+        """))
     finally:
-        browser.close()
+        (await browser.close())
 
     assert rendered == ["ok:8", "err:EncodingError"]

@@ -1,20 +1,20 @@
 """Moving or cloning an executed script must not execute its source again."""
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 import pytest
 
 
 @pytest.fixture
-def browser():
-    instance = Browser(real_network=False)
+async def browser():
+    instance = (await Browser(real_network=False).__aenter__())
     try:
         yield instance
     finally:
-        instance.close()
+        (await instance.close())
 
 
-def test_executed_script_move_clone_and_text_update_are_inert(browser):
+async def test_executed_script_move_clone_and_text_update_are_inert(browser):
     page = browser.new_profile().new_page()
-    page.set_content('<body><script id="x">window.calls=(window.calls||0)+1</script></body>')
+    (await page.set_content('<body><script id="x">window.calls=(window.calls||0)+1</script></body>', wait_until="commit"))
     result = page.evaluate('''(()=>{
         const script=document.getElementById('x');
         document.body.appendChild(script);
@@ -25,9 +25,9 @@ def test_executed_script_move_clone_and_text_update_are_inert(browser):
     assert result == 1
 
 
-def test_clone_of_unexecuted_script_still_executes_once(browser):
+async def test_clone_of_unexecuted_script_still_executes_once(browser):
     page = browser.new_profile().new_page()
-    page.set_content('<body></body>')
+    (await page.set_content('<body></body>', wait_until="commit"))
     result = page.evaluate('''(()=>{
         window.calls=0;
         const script=document.createElement('script');

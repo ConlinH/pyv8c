@@ -139,6 +139,24 @@ def client_hint_headers(client_hints, accepted=()) -> dict:
     return headers
 
 
+def request_destination(options):
+    if explicit := options.get("destination"):
+        return str(explicit)
+    resource_type = str(options.get("resource_type") or "")
+    if resource_type in ("document", "iframe", "script", "style", "image"):
+        return resource_type
+    return "video" if resource_type == "media" else "empty"
+
+
+def resource_mode(destination, options):
+    if destination in NAVIGATION_DESTINATIONS:
+        return "navigate"
+    stated = options.get("mode")
+    if stated is not None:
+        return str(stated)
+    return "no-cors" if destination in ("script", "style", "image", "audio", "video") else "cors"
+
+
 def fetch_mode(destination, request_mode=None) -> str:
     """``Sec-Fetch-Mode``: a navigation navigates, CORS fetches fetch, the rest no-cors."""
     if destination in NAVIGATION_DESTINATIONS:

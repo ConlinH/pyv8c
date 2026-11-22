@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.engine.idl import Idl, Profile, build_plan
 
 
@@ -22,14 +22,14 @@ def _swap(order, a, b):
     return result
 
 
-def test_observation_controls_constructor_and_member_order(monkeypatch):
+async def test_observation_controls_constructor_and_member_order(monkeypatch):
     base = Idl.load()
     reference = list(base.observed_window_order)
     reference = _swap(reference, "XPathResult", "XPathExpression")
     reference = _swap(reference, "locationbar", "menubar")
     table = _table(reference)
     monkeypatch.setattr("pyv8c.platform.browser.Idl.load", lambda *args, **kwargs: table)
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         names = page.evaluate("Object.getOwnPropertyNames(window)")
@@ -37,30 +37,30 @@ def test_observation_controls_constructor_and_member_order(monkeypatch):
         assert names.index("menubar") < names.index("locationbar")
         assert page.evaluate("Object.getOwnPropertyDescriptor(window, 'locationbar').enumerable")
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_environment_can_interleave_original_installation_phases(monkeypatch):
+async def test_environment_can_interleave_original_installation_phases(monkeypatch):
     base = Idl.load()
     order = _swap(base.observed_window_order, "XPathResult", "alert")
     table = _table(order)
     monkeypatch.setattr("pyv8c.platform.browser.Idl.load", lambda *args, **kwargs: table)
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         names = page.evaluate("Object.getOwnPropertyNames(window)")
         assert names.index("alert") < names.index("XPathExpression")
         assert names.index("XPathResult") > names.index("window")
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_environment_can_order_builtin_among_host_members(monkeypatch):
+async def test_environment_can_order_builtin_among_host_members(monkeypatch):
     base = Idl.load()
     order = _swap(base.observed_window_order, "Temporal", "alert")
     table = _table(order)
     monkeypatch.setattr("pyv8c.platform.browser.Idl.load", lambda *args, **kwargs: table)
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         names = page.evaluate("Object.getOwnPropertyNames(window)")
@@ -68,17 +68,17 @@ def test_environment_can_order_builtin_among_host_members(monkeypatch):
         assert [name for name in names if name in selected] == [name for name in order if name in selected]
         assert page.evaluate("typeof Temporal === 'object' && typeof WebAssembly.compile === 'function'")
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_warn_reports_even_when_stub_logging_is_off(monkeypatch):
+async def test_warn_reports_even_when_stub_logging_is_off(monkeypatch):
     from loguru import logger
     base = Idl.load()
     table = _table(base.observed_window_order, browser="Chrome/156.0.0.0")
     monkeypatch.setattr("pyv8c.platform.browser.Idl.load", lambda *args, **kwargs: table)
     messages = []
     token = logger.add(lambda message: messages.append(str(message)), format="{message}")
-    browser = Browser(real_network=False, stub_logging="off")
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         browser.new_profile().new_page()
         browser.new_profile().new_page()
@@ -86,11 +86,11 @@ def test_warn_reports_even_when_stub_logging_is_off(monkeypatch):
         assert len(warnings) == 1
         assert "environment=156.0.0.0" in warnings[0]
     finally:
-        browser.close()
+        (await browser.close())
         logger.remove(token)
 
 
-def test_one_moved_builtin_is_not_reported_as_hundreds_of_differences(monkeypatch):
+async def test_one_moved_builtin_is_not_reported_as_hundreds_of_differences(monkeypatch):
     from loguru import logger
     base = Idl.load()
     table = _table(base.observed_window_order)
@@ -100,16 +100,16 @@ def test_one_moved_builtin_is_not_reported_as_hundreds_of_differences(monkeypatc
     actual.insert(actual.index("Option"), "Temporal")
     messages = []
     token = logger.add(lambda message: messages.append(str(message)), format="{message}")
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         browser.bindings.check_window_order(actual)
         assert any("order differences (1)" in item and "Temporal" in item for item in messages)
     finally:
-        browser.close()
+        (await browser.close())
         logger.remove(token)
 
 
-def test_missing_environment_order_uses_stable_fallback():
+async def test_missing_environment_order_uses_stable_fallback():
     base = Idl.load(profile=None)
     table = Idl(base.path, base.digest, base.metadata, base.interfaces)
     plan = build_plan(table, "Window")
@@ -117,7 +117,7 @@ def test_missing_environment_order_uses_stable_fallback():
     assert plan.installs == tuple(sorted(plan.installs))
 
 
-def test_stale_surface_does_not_discard_observation():
+async def test_stale_surface_does_not_discard_observation():
     base = Idl.load()
     order = _swap(base.observed_window_order, "XPathResult", "XPathExpression")
     table = _table(order, against="different-digest")
@@ -126,7 +126,7 @@ def test_stale_surface_does_not_discard_observation():
     assert "XPathExpression" in build_plan(table, "Window").installs
 
 
-def test_order_is_part_of_the_binding_cache_identity():
+async def test_order_is_part_of_the_binding_cache_identity():
     base = Idl.load()
     original = _table(base.observed_window_order)
     changed = _table(_swap(base.observed_window_order, "XPathResult", "XPathExpression"))
@@ -134,11 +134,11 @@ def test_order_is_part_of_the_binding_cache_identity():
     assert build_plan(original, "Worker") == build_plan(changed, "Worker")
 
 
-def test_iframe_uses_same_order(monkeypatch):
+async def test_iframe_uses_same_order(monkeypatch):
     base = Idl.load()
     table = _table(_swap(base.observed_window_order, "XPathResult", "XPathExpression"))
     monkeypatch.setattr("pyv8c.platform.browser.Idl.load", lambda *args, **kwargs: table)
-    browser = Browser(real_network=False)
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate("""(() => {
@@ -147,10 +147,10 @@ def test_iframe_uses_same_order(monkeypatch):
             return names.indexOf('XPathExpression') < names.indexOf('XPathResult');
         })()""") is True
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize("value", [["a", "a"], [""], [1], "abc", None])
-def test_invalid_observation_is_rejected(value):
+async def test_invalid_observation_is_rejected(value):
     with pytest.raises(ValueError, match="own_order"):
         Profile("test", own_order=value)

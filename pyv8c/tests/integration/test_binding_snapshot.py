@@ -5,50 +5,39 @@ V8Context as the lazy factory's answer.  The Python class for a given interface 
 be one shared object across every realm (so the native registry stays consistent), while
 each realm's config view and materialized set stay isolated from its neighbours.
 """
+
+import asyncio
 import threading
 
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 LAZY_NAME = "XPathEvaluator"
 SECOND_LAZY = "GPUBufferUsage"
 
 
 @pytest.fixture
-def browser():
-    browser = Browser(stub_logging="off")
+async def browser():
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         yield browser
     finally:
-        browser.close()
+        (await browser.close())
 
 
 def _fresh_page(browser):
     return browser.new_profile().new_page()
 
 
-def test_concurrent_first_access_yields_one_class_object(browser):
+async def test_concurrent_first_access_yields_one_class_object(browser):
     pages = [_fresh_page(browser) for _ in range(6)]
     try:
-        barrier = threading.Barrier(len(pages))
-        errors = []
-
-        def trigger(page):
-            try:
-                barrier.wait(timeout=10)
-                assert page.evaluate("typeof " + LAZY_NAME) == "function"
-            except BaseException as exc:  # collected for the test
-                errors.append(exc)
-
-        threads = [threading.Thread(target=trigger, args=(p,)) for p in pages]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(30)
-        assert not any(t.is_alive() for t in threads), "materialization wedged"
-        assert errors == []
+        async def trigger(page):
+            await asyncio.sleep(0)
+            assert page.evaluate("typeof " + LAZY_NAME) == "function"
+        await asyncio.gather(*(trigger(page) for page in pages))
 
         expected = browser.bindings.class_for(LAZY_NAME)
         assert expected is not None
@@ -57,10 +46,10 @@ def test_concurrent_first_access_yields_one_class_object(browser):
             assert page.binding_session.class_for(LAZY_NAME) is expected
     finally:
         for page in pages:
-            page.close()
+            (await page.close())
 
 
-def test_realm_configs_stay_isolated_across_commits(browser):
+async def test_realm_configs_stay_isolated_across_commits(browser):
     first = _fresh_page(browser)
     second = _fresh_page(browser)
     try:
@@ -78,11 +67,11 @@ def test_realm_configs_stay_isolated_across_commits(browser):
         assert dict(first.binding_session.configs) == first_configs
         assert second_cls not in dict(first.binding_session.configs)
     finally:
-        first.close()
-        second.close()
+        await first.close()
+        await second.close()
 
 
-def test_commits_keep_existing_templates_stable(browser):
+async def test_commits_keep_existing_templates_stable(browser):
     page = _fresh_page(browser)
     try:
         page.evaluate("""
@@ -97,10 +86,10 @@ def test_commits_keep_existing_templates_stable(browser):
         assert page.evaluate("window.__proto === XPathEvaluator.prototype")
         assert page.evaluate("Object.prototype.toString.call(new XPathEvaluator())") == "[object XPathEvaluator]"
     finally:
-        page.close()
+        (await page.close())
 
 
-def test_configs_view_is_read_only(browser):
+async def test_configs_view_is_read_only(browser):
     page = _fresh_page(browser)
     try:
         page.evaluate("typeof " + LAZY_NAME)
@@ -109,32 +98,19 @@ def test_configs_view_is_read_only(browser):
         with pytest.raises(TypeError):
             view[key] = {}
     finally:
-        page.close()
+        (await page.close())
 
 
-def test_repeated_concurrent_materialization_within_one_realm(browser):
+async def test_repeated_concurrent_materialization_within_one_realm(browser):
     page = _fresh_page(browser)
     try:
-        barrier = threading.Barrier(4)
-        errors = []
-
-        def touch():
-            try:
-                barrier.wait(timeout=10)
-                assert page.evaluate("typeof " + LAZY_NAME) == "function"
-            except BaseException as exc:  # collected for the test
-                errors.append(exc)
-
-        threads = [threading.Thread(target=touch) for _ in range(4)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(20)
-        assert not any(t.is_alive() for t in threads), "evaluate wedged"
-        assert errors == []
+        async def touch():
+            await asyncio.sleep(0)
+            assert page.evaluate("typeof " + LAZY_NAME) == "function"
+        await asyncio.gather(*(touch() for _ in range(4)))
 
         cls = page.binding_session.class_for(LAZY_NAME)
         assert page.binding_session.materialize(LAZY_NAME) is cls
         assert len([n for n in page.binding_session.materialized_interfaces if n == LAZY_NAME]) == 1
     finally:
-        page.close()
+        (await page.close())

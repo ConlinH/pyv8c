@@ -3,16 +3,18 @@
 Synchronous execution, coercion and thrown script errors belong to corpus
 worker_import_scripts_execute_synchronously_and_stop_on_exception.
 """
+
+import asyncio
 import json
 import time
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.mark.parametrize('kind', ['classic', 'module'])
-def test_import_scripts_resolves_against_entry_and_attributes_the_request(kind):
+async def test_import_scripts_resolves_against_entry_and_attributes_the_request(kind):
     seen = []
     sources = {
         'https://worker.test/dir/entry.js': '''
@@ -27,10 +29,10 @@ def test_import_scripts_resolves_against_entry_and_attributes_the_request(kind):
         seen.append((url, request))
         return {'body': sources[url], 'headers': {'content-type': 'text/javascript'}}
 
-    browser = Browser(real_network=False, resource_loader=load)
+    browser = (await Browser(real_network=False, resource_loader=load).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://worker.test/')
+        (await page.set_content('<body></body>', url='https://worker.test/', wait_until="commit"))
         page.evaluate('''const worker = new Worker('/dir/entry.js', {type: %s});
             worker.onmessage = event => window.result = event.data;''' % json.dumps(kind))
         deadline = time.monotonic() + 3
@@ -38,7 +40,7 @@ def test_import_scripts_resolves_against_entry_and_attributes_the_request(kind):
             result = page.evaluate('window.result')
             if isinstance(result, str):
                 break
-            time.sleep(.01)
+            (await asyncio.sleep(.01))
         assert result == ('imported' if kind == 'classic' else 'TypeError')
         if kind == 'classic':
             assert [url for url, _ in seen] == list(sources)
@@ -48,18 +50,18 @@ def test_import_scripts_resolves_against_entry_and_attributes_the_request(kind):
         else:
             assert len(seen) == 1
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_import_scripts_reports_a_failed_http_status_without_executing_its_body():
+async def test_import_scripts_reports_a_failed_http_status_without_executing_its_body():
     def load(url, request):
         return {'status': 404, 'body': "self.ran = true;",
                 'headers': {'content-type': 'text/javascript'}}
 
-    browser = Browser(real_network=False, resource_loader=load)
+    browser = (await Browser(real_network=False, resource_loader=load).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://worker.test/')
+        (await page.set_content('<body></body>', url='https://worker.test/', wait_until="commit"))
         source = '''try { importScripts('https://worker.test/missing.js'); }
             catch(e) { postMessage([e.name, !!self.ran]); }'''
         page.evaluate('''const worker = new Worker(URL.createObjectURL(new Blob([%s],
@@ -70,13 +72,13 @@ def test_import_scripts_reports_a_failed_http_status_without_executing_its_body(
             result = page.evaluate('window.result')
             if isinstance(result, list):
                 break
-            time.sleep(.01)
+            (await asyncio.sleep(.01))
         assert result == ['NetworkError', False]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_import_scripts_uses_final_entry_url_after_redirect():
+async def test_import_scripts_uses_final_entry_url_after_redirect():
     def loader(url, request):
         if url.endswith('/start.js'):
             return {'status': 302, 'headers': {'location': '/dir/entry.js'}}
@@ -85,36 +87,36 @@ def test_import_scripts_uses_final_entry_url_after_redirect():
         if url.endswith('/dir/dependency.js'):
             return 'self.answer=42'
         return {'status': 404, 'body': ''}
-    browser = Browser(real_network=False, resource_loader=loader)
+    browser = (await Browser(real_network=False, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://worker.test/')
+        (await page.set_content('<body></body>', url='https://worker.test/', wait_until="commit"))
         page.evaluate("globalThis.result=null;globalThis.worker=new Worker('/start.js');worker.onmessage=e=>result=e.data")
-        page.wait_for('result!==null', timeout=3)
+        (await page.wait_for('result!==null', timeout=3))
         assert page.evaluate('result') == 42
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_imported_script_stack_uses_final_response_url():
+async def test_imported_script_stack_uses_final_response_url():
     def loader(url, request):
         if url.endswith('/entry.js'):
             return "try{importScripts('/redirect.js')}catch(e){postMessage(e.stack.includes('/dir/dependency.js'))}"
         if url.endswith('/redirect.js'):
             return {'status': 302, 'headers': {'location': '/dir/dependency.js'}}
         return "throw new Error('dependency failure')"
-    browser = Browser(real_network=False, resource_loader=loader)
+    browser = (await Browser(real_network=False, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://worker.test/')
+        (await page.set_content('<body></body>', url='https://worker.test/', wait_until="commit"))
         page.evaluate("globalThis.result=null;globalThis.worker=new Worker('/entry.js');worker.onmessage=e=>result=e.data")
-        page.wait_for('result!==null', timeout=3)
+        (await page.wait_for('result!==null', timeout=3))
         assert page.evaluate('result') is True
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_import_scripts_does_not_wait_for_busy_creator_owner(monkeypatch):
+async def test_import_scripts_does_not_wait_for_busy_creator_owner(monkeypatch):
     import threading
     from pyv8c.web.workers.runtime import WorkerRuntime
     started, blocked, release = threading.Event(), threading.Event(), threading.Event()
@@ -125,28 +127,28 @@ def test_import_scripts_does_not_wait_for_busy_creator_owner(monkeypatch):
     monkeypatch.setattr(WorkerRuntime, '_started', ready)
     def loader(url, request):
         return 'self.imported=42;' if url.endswith('dependency.js') else '0'
-    browser = Browser(real_network=False, resource_loader=loader)
+    browser = (await Browser(real_network=False, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>',url='https://worker.test/')
+        (await page.set_content('<body></body>',url='https://worker.test/', wait_until="commit"))
         page.evaluate("globalThis.worker=new Worker('/entry.js')")
-        assert started.wait(2)
+        assert (await asyncio.to_thread(started.wait, 2))
         def hold_creator():
             blocked.set()
             assert release.wait(5)
         page.tasks.post_task(hold_creator)
-        assert blocked.wait(2)
+        assert (await asyncio.to_thread(blocked.wait, 2))
         runtime = runtimes[0]
         assert runtime.executor.call(runtime._invoke, runtime._context.exec_js,
             "importScripts('dependency.js');imported", timeout=2) == 42
     finally:
         release.set()
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.race
 @pytest.mark.parametrize('action', ['terminate', 'close'])
-def test_sync_import_wait_is_cancelled_without_running_late_source(monkeypatch, action):
+async def test_sync_import_wait_is_cancelled_without_running_late_source(monkeypatch, action):
     import threading
     from pyv8c.web.workers.runtime import WorkerRuntime
     ready, entered, release = threading.Event(), threading.Event(), threading.Event()
@@ -161,23 +163,23 @@ def test_sync_import_wait_is_cancelled_without_running_late_source(monkeypatch, 
         entered.set()
         assert release.wait(5)
         return "postMessage('dependency-ran')"
-    browser = Browser(real_network=False, resource_loader=loader)
+    browser = (await Browser(real_network=False, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>',url='https://worker.test/')
+        (await page.set_content('<body></body>',url='https://worker.test/', wait_until="commit"))
         page.evaluate("globalThis.worker=new Worker('/entry.js');worker.onmessage=e=>{}")
-        assert ready.wait(2)
+        assert (await asyncio.to_thread(ready.wait, 2))
         runtime = runtimes[0]
         ownership = runtime._realm.resource_ownership
         page.evaluate("worker.postMessage('start')")
-        assert entered.wait(2)
+        assert (await asyncio.to_thread(entered.wait, 2))
         if action == 'terminate':
             page.evaluate('worker.terminate()')
         else:
-            page.close()
-        runtime.executor._thread.join(2)
+            (await page.close())
+        (await asyncio.to_thread(runtime.executor._thread.join, 2))
         assert not runtime.executor._thread.is_alive()
         assert ownership.active_count == 0
     finally:
         release.set()
-        browser.close()
+        (await browser.close())

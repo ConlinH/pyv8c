@@ -1,13 +1,13 @@
 """The Event Timing map has Chrome's fixed keys and counts trusted input."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_event_counts_map_and_trusted_click():
-    browser = Browser(real_network=False, stub_logging="off")
+async def test_event_counts_map_and_trusted_click():
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<button id="b">x</button>', url="https://example.test/")
+        (await page.set_content('<button id="b">x</button>', url="https://example.test/", wait_until="commit"))
         assert page.evaluate("""(() => {
             const counts = performance.eventCounts;
             const callback = [];
@@ -26,10 +26,10 @@ def test_event_counts_map_and_trusted_click():
         page.evaluate("document.querySelector('#b').dispatchEvent(new MouseEvent('click'))")
         assert page.evaluate("performance.eventCounts.get('click')") == 0
         page.evaluate("window.__eventCountIterator = performance.eventCounts.entries()")
-        page.click('#b')
+        (await page.click('#b'))
         assert page.evaluate("""['click', 'pointerdown', 'pointerup', 'mousedown', 'mouseup']
             .map(name => performance.eventCounts.get(name))""") == [1, 1, 1, 1, 1]
         assert page.evaluate("""[...window.__eventCountIterator]
             .find(([name]) => name === 'click')""") == ["click", 1]
     finally:
-        browser.close()
+        (await browser.close())

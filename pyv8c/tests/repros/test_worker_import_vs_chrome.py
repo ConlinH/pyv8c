@@ -1,24 +1,26 @@
 """Classic Worker synchronous imports use plain transport data and entry URLs."""
+
+import asyncio
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from harness import chrome_reference
 
 pytestmark = pytest.mark.slow
 
 
 @pytest.fixture(scope='module')
-def reference():
-    with chrome_reference() as session:
+async def reference():
+    async with chrome_reference() as session:
         yield session
 
 
 @pytest.mark.parametrize('source_kind', ['http', 'blob', 'data', 'redirect-entry'])
-def test_worker_sync_imports_match_chrome(reference, source_kind):
+async def test_worker_sync_imports_match_chrome(reference, source_kind):
     seen = []
     source = ''
     class Handler(BaseHTTPRequestHandler):
@@ -67,23 +69,23 @@ def test_worker_sync_imports_match_chrome(reference, source_kind):
     else:
         worker = f'new Worker("data:text/javascript,"+encodeURIComponent({json.dumps(source)}))'
     setup = f'globalThis.result=null;globalThis.w={worker};w.onmessage=e=>result=e.data;void 0'
-    browser = Browser(real_network=True, stub_logging='off')
-    chrome = reference.browser.new_page()
+    browser = (await Browser(real_network=True, stub_logging='off').__aenter__())
+    chrome = (await reference.browser.new_page())
     try:
         page = browser.new_profile().new_page()
-        page.goto(url)
+        (await page.goto(url))
         page.evaluate(setup)
-        page.wait_for('result!==null', timeout=5)
+        (await page.wait_for('result!==null', timeout=5))
         observed = page.evaluate('result')
-        chrome.goto(url)
-        chrome.evaluate(setup)
-        chrome.wait_for_function('result!==null', timeout=5000)
-        expected = chrome.evaluate('result')
+        (await chrome.goto(url))
+        (await chrome.evaluate(setup))
+        (await chrome.wait_for_function('result!==null', timeout=5000))
+        expected = (await chrome.evaluate('result'))
         assert observed == expected == ['first', 'second', 'NetworkError', 'after']
         assert '/redirect.js' in seen and '/dir/second.js' in seen
     finally:
-        chrome.close()
-        browser.close()
+        (await chrome.close())
+        (await browser.close())
         server.shutdown()
         server.server_close()
-        thread.join(2)
+        (await asyncio.to_thread(thread.join, 2))

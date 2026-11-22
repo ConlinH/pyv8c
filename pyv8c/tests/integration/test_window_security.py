@@ -2,24 +2,24 @@
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.bom.window import Window
 
 
 @pytest.fixture
-def windows():
+async def windows():
     def loader(url, request):
         body = '<iframe src="http://a.test/nested"></iframe>' if url.endswith('/outer') else '<body>child</body>'
         return {"body": body, "url": url}
-    browser = Browser(resource_loader=loader, cache=False)
+    browser = (await Browser(resource_loader=loader, cache=False).__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content('<iframe src="http://b.test/child"></iframe>', url='http://a.test/main')
-    page.wait_for_load_state('load')
+    (await page.set_content('<iframe src="http://b.test/child"></iframe>', url='http://a.test/main', wait_until="commit"))
+    (await page.wait_for_load_state('load'))
     child = next(iter(page._owned.frames))
     try:
         yield page, child
     finally:
-        browser.close()
+        (await browser.close())
 
 
 def caught(page, expression):
@@ -41,12 +41,12 @@ def caught(page, expression):
     'Object.freeze(w)', 'Object.seal(w)', 'Object.setPrototypeOf(w, null)',
     'Object.getOwnPropertyDescriptor(w, "document")',
 ])
-def test_cross_origin_rejects_sensitive_access(windows, expression):
+async def test_cross_origin_rejects_sensitive_access(windows, expression):
     page, _ = windows
     assert caught(page, expression) == ['SecurityError', 18, True]
 
 
-def test_cross_origin_safe_members_and_identity(windows):
+async def test_cross_origin_safe_members_and_identity(windows):
     page, child = windows
     assert page.evaluate('''(() => { const w = window[0]; return [
         w === document.querySelector('iframe').contentWindow,
@@ -62,9 +62,9 @@ def test_cross_origin_safe_members_and_identity(windows):
     assert child.evaluate('try { parent.document; } catch(e) { [e.name, e.code]; }') == ['SecurityError', 18]
 
 
-def test_same_origin_reads_real_child_and_custom_properties(windows):
+async def test_same_origin_reads_real_child_and_custom_properties(windows):
     page, child = windows
-    child.set_content('<body id="child">hello</body>', url='http://a.test:80/child?x=1#part')
+    (await child.set_content('<body id="child">hello</body>', url='http://a.test:80/child?x=1#part', wait_until="commit"))
     child.evaluate('window.answer = 42')
     assert page.evaluate('''(() => { const w = window[0]; return [
         w.document.body.id, w.document.URL, w.location.href, w.answer,
@@ -77,10 +77,10 @@ def test_same_origin_reads_real_child_and_custom_properties(windows):
     assert child.evaluate('parent.document.URL') == 'http://a.test/main'
 
 
-def test_nested_frame_top_and_numeric_index_identity(windows):
+async def test_nested_frame_top_and_numeric_index_identity(windows):
     page, child = windows
-    child.set_content('<iframe src="http://a.test/nested"></iframe>', url='http://a.test/outer')
-    child.wait_for_load_state('load', timeout=1)
+    (await child.set_content('<iframe src="http://a.test/nested"></iframe>', url='http://a.test/outer', wait_until="commit"))
+    (await child.wait_for_load_state('load', timeout=1))
     nested = next(iter(child._owned.frames))
     assert page.evaluate('''[window.length, window[0].length,
         window[0][0].top === window,
@@ -90,21 +90,21 @@ def test_nested_frame_top_and_numeric_index_identity(windows):
     assert nested.top_page is page
 
 
-def test_proxy_rechecks_origin_after_navigation(windows):
+async def test_proxy_rechecks_origin_after_navigation(windows):
     page, child = windows
-    child.set_content('<body>same</body>', url='http://a.test/same')
+    (await child.set_content('<body>same</body>', url='http://a.test/same', wait_until="commit"))
     page.evaluate('window.savedFrame = window[0]')
     assert page.evaluate('savedFrame.document.URL') == 'http://a.test/same'
-    child.set_content('<body>other</body>', url='http://a.test:8080/other')
+    (await child.set_content('<body>other</body>', url='http://a.test:8080/other', wait_until="commit"))
     assert page.evaluate('savedFrame === window[0]') is True
     assert page.evaluate('try { savedFrame.document; } catch(e) { [e.name,e.code]; }') == ['SecurityError', 18]
 
 
 @pytest.mark.parametrize('assignment', ['w.location = "http://b.test/next"', 'w.location.href = "http://b.test/next"'])
-def test_cross_origin_location_write_queues_navigation(windows, assignment):
+async def test_cross_origin_location_write_queues_navigation(windows, assignment):
     page, child = windows
     assert caught(page, assignment) == ['allowed']
-    child.wait_for("location.href === 'http://b.test/next' && document.readyState === 'complete'", timeout=1)
+    (await child.wait_for("location.href === 'http://b.test/next' && document.readyState === 'complete'", timeout=1))
     assert child.url == 'http://b.test/next'
     assert caught(page, 'w.location.href') == ['SecurityError', 18, True]
 
@@ -113,7 +113,7 @@ def test_cross_origin_location_write_queues_navigation(windows, assignment):
     'w.location.assign("http://b.test/next")',
     'w.location.reload()',
 ])
-def test_cross_origin_location_operations_are_refused(windows, call):
+async def test_cross_origin_location_operations_are_refused(windows, call):
     """A cross-origin operation is refused when invoked, not when named.
 
     The baseline checks ``assign`` and ``reload`` and leaves only ``replace`` free.
@@ -123,16 +123,16 @@ def test_cross_origin_location_operations_are_refused(windows, call):
         typeof window[0].location.reload,
         typeof window[0].location.replace]''') == ['function'] * 3
     assert caught(page, call) == ['SecurityError', 18, True]
-    page.run_until_idle(timeout=1)
+    (await page.run_until_idle(timeout=1))
     assert child.url == 'http://b.test/child'
     assert caught(page, 'w.location.replace("http://a.test/next")') == ['allowed']
 
 
-def test_post_message_delivery_origin_source_and_target_filter(windows):
+async def test_post_message_delivery_origin_source_and_target_filter(windows):
     page, child = windows
     child.evaluate('window.messages = []; addEventListener("message", e => messages.push([e.data.value,e.origin,e.source===parent]))')
     page.evaluate('window[0].postMessage({value: 1}, "http://b.test"); window[0].postMessage({value: 2}, "http://wrong.test")')
-    child.run_until_idle(timeout=1)
+    (await child.run_until_idle(timeout=1))
     assert child.evaluate('messages') == [[1, 'http://a.test', True]]
 
 
@@ -141,52 +141,52 @@ def test_post_message_delivery_origin_source_and_target_filter(windows):
     ('http://A.TEST:80/other', True), ('http://a.test:8080/other', False),
     ('https://a.test/other', False), ('data:text/html,hello', False),
 ])
-def test_origin_variants(windows, url, allowed):
+async def test_origin_variants(windows, url, allowed):
     page, child = windows
-    child.set_content('<body>hello</body>', url=url)
+    (await child.set_content('<body>hello</body>', url=url, wait_until="commit"))
     expected = ['allowed'] if allowed else ['SecurityError', 18, True]
     assert caught(page, 'w.document') == expected
 
 
-def test_native_window_access_handler_is_automatically_installed(windows):
+async def test_native_window_access_handler_is_automatically_installed(windows):
     page, child = windows
     page.executor.call(lambda: page.v8_context.expose(nativeChild=child.v8_context.js_obj(child.window)))
     assert page.evaluate('try { nativeChild.document; } catch(e) { [e.name,e.code,e instanceof DOMException]; }') == ['SecurityError', 18, True]
     assert page.evaluate('[nativeChild.closed,nativeChild.top===window,nativeChild.self===window[0]]') == [False, True, True]
 
 
-def test_context_entries_are_released_on_close():
+async def test_context_entries_are_released_on_close():
     before = set(Window._context_origins)
-    browser = Browser()
+    browser = (await Browser().__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert id(page.v8_context) in Window._context_origins
     finally:
-        browser.close()
+        (await browser.close())
     assert set(Window._context_origins) == before
 
 
-def test_iframe_src_navigation_retains_proxy(windows):
+async def test_iframe_src_navigation_retains_proxy(windows):
     page, child = windows
     page.evaluate('window.savedFrame = window[0]; document.querySelector("iframe").src = "http://a.test/new"')
-    child.wait_for("document.URL === 'http://a.test/new' && document.readyState === 'complete'")
+    (await child.wait_for("document.URL === 'http://a.test/new' && document.readyState === 'complete'"))
     assert page.evaluate('[savedFrame === window[0], savedFrame.document.URL]') == [True, 'http://a.test/new']
     assert len(page._owned.frames) == 1
     assert child.url == 'http://a.test/new'
 
 
-def test_initial_about_blank_iframe_does_not_need_network():
-    browser = Browser(cache=False)
+async def test_initial_about_blank_iframe_does_not_need_network():
+    browser = (await Browser(cache=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<iframe></iframe>', url='http://a.test/main')
-        page.run_until_idle(timeout=1)
+        (await page.set_content('<iframe></iframe>', url='http://a.test/main', wait_until="commit"))
+        (await page.run_until_idle(timeout=1))
         assert page.evaluate('[window.length, window[0].document.URL, window[0].parent === window]') == [1, 'about:blank', True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_saved_location_is_restricted_after_origin_changes(windows):
+async def test_saved_location_is_restricted_after_origin_changes(windows):
     """A saved location belongs to the document it was made with, and keeps answering.
 
     A frame that navigates leaves that document behind; the reference a page saved goes
@@ -207,31 +207,31 @@ def test_saved_location_is_restricted_after_origin_changes(windows):
     assert caught(page, 'window.savedView = window[0].location') == ['allowed']
     assert caught(page, 'savedView.href') == ['SecurityError', 18, True]
     #: Reachable: this is the window's own Location, and the page may keep it.
-    child.set_content('<body/>', url='http://a.test/child')
+    (await child.set_content('<body/>', url='http://a.test/child', wait_until="commit"))
     assert page.evaluate('''(() => { window.savedLocation = window[0].location;
-        return [savedLocation.pathname, savedLocation === window[0].location]; })()''') \
+        return [savedLocation.pathname, savedLocation === window[0].location]; })()''')\
         == ['/child', True]
     #: The frame goes on: the location still answers for the document it was made with,
     #: while a fresh read of the frame's location is a cross-origin one and is refused.
-    child.set_content('<body/>', url='http://b.test/secret')
+    (await child.set_content('<body/>', url='http://b.test/secret', wait_until="commit"))
     assert page.evaluate('savedLocation.href') == 'http://a.test/child'
     assert caught(page, 'window[0].location.pathname') == ['SecurityError', 18, True]
 
 
-def test_blob_origin_comes_from_creator_page(windows):
+async def test_blob_origin_comes_from_creator_page(windows):
     page, child = windows
     creator = page.profile.new_page()
-    creator.set_content('<body/>', url='data:text/html,creator')
+    (await creator.set_content('<body/>', url='data:text/html,creator', wait_until="commit"))
     blob_url = creator.evaluate('URL.createObjectURL(new Blob(["hello"]))')
-    child.set_content('<body/>', url=blob_url)
+    (await child.set_content('<body/>', url=blob_url, wait_until="commit"))
     assert child.origin == creator.origin
     assert child.origin != page.origin
     assert caught(page, 'w.document') == ['SecurityError', 18, True]
 
 
-def test_onmessage_receives_cross_origin_message(windows):
+async def test_onmessage_receives_cross_origin_message(windows):
     page, child = windows
     child.evaluate('window.onmessage = e => window.received = e.data')
     page.evaluate('window[0].postMessage("received", "*")')
-    child.run_until_idle(timeout=1)
+    (await child.run_until_idle(timeout=1))
     assert child.evaluate('received') == 'received'

@@ -943,7 +943,7 @@ context_run(context_c *self, PyObject *args, PyObject *kwargs)
     assert(PyObject_TypeCheck(program, script_type));
     script_c *py_script = (script_c *) program;
 
-    IN_CONTEXT(self->js_context.Get(isolate));
+    Local<Context> context = execution.context();
     JS_TRY
 
     Local<UnboundScript> unbound_script = py_script->script.Get(isolate);

@@ -1,84 +1,689 @@
 {
-  "recorded": "2026-10-01",
-  "python": "3.12.10",
+  "recorded": "2026-11-17",
+  "python": "3.15.0",
   "cases": {
     "startup": {
-      "median": 702.4,
-      "min": 639.4,
+      "median": 716.4,
+      "min": 692.1,
       "unit": "ms",
-      "detail": "398 modules imported",
+      "detail": "567 modules imported",
+      "runs": 3
+    },
+    "cold_compile": {
+      "median": 250.43019999793614,
+      "min": 240.42779999945196,
+      "unit": "ms",
+      "detail": "1254 interfaces compiled in a fresh process",
+      "workload": "fresh-all-interfaces-v1",
       "runs": 3
     },
     "page_cycle": {
-      "median": 15.996086666806756,
-      "min": 15.922906666673953,
+      "median": 10.271546666626818,
+      "min": 10.077026666598007,
       "unit": "ms/op",
       "detail": "open then close, 15 cycles",
       "runs": 3
     },
     "evaluate": {
-      "median": 0.05202540000027511,
-      "min": 0.0515730999999505,
+      "median": 0.007613380000111646,
+      "min": 0.007560660000308417,
       "unit": "ms/op",
       "detail": "evaluate('1')",
       "runs": 3
     },
     "host_call": {
-      "median": 91.4693000013358,
-      "min": 88.61610000167275,
+      "median": 35.306300000229385,
+      "min": 34.822199999325676,
       "unit": "ms",
       "detail": "20000 setAttribute calls",
       "runs": 3
     },
     "js_loop": {
-      "median": 2.1178999995754566,
-      "min": 1.8616000015754253,
+      "median": 0.33149999944726005,
+      "min": 0.3283000005467329,
       "unit": "ms",
       "detail": "20000 additions, no host call",
       "runs": 3
     },
+    "stub_call": {
+      "median": 84.14930000071763,
+      "min": 70.54269999935059,
+      "unit": "ms",
+      "detail": "20000 stub member calls",
+      "workload": "stub-abort-v2",
+      "runs": 3
+    },
+    "hook_call": {
+      "median": 76.02849999966566,
+      "min": 73.39030000002822,
+      "unit": "ms",
+      "detail": "20000 hooked member calls",
+      "runs": 3
+    },
+    "abort_call": {
+      "median": 192.35489999846322,
+      "min": 174.40210000131628,
+      "unit": "ms",
+      "detail": "20000 implemented AbortController calls",
+      "runs": 3
+    },
     "dom_build": {
-      "median": 332.20520000031684,
-      "min": 331.44259999971837,
+      "median": 224.82769999987795,
+      "min": 220.2409000019543,
       "unit": "ms",
       "detail": "4000 divs with a span each",
       "runs": 3
     },
     "dom_parse": {
-      "median": 886.8390999996336,
-      "min": 799.6095000016794,
+      "median": 137.1715999994194,
+      "min": 133.91559999945457,
       "unit": "ms",
       "detail": "4000 rows",
       "runs": 3
     },
+    "html_fragment": {
+      "median": 351.6124000016134,
+      "min": 346.5305999998236,
+      "unit": "ms",
+      "detail": "4000 rows through innerHTML, consumed query",
+      "workload": "html-fragment-v1:4000",
+      "runs": 3
+    },
+    "html_attributes": {
+      "median": 177.21159999928204,
+      "min": 175.2178000024287,
+      "unit": "ms",
+      "detail": "4000 attribute-heavy rows, decoded values checked",
+      "workload": "html-attributes-v1:4000",
+      "runs": 3
+    },
+    "dom_python_build": {
+      "median": 173.6181000014767,
+      "min": 155.40879999753088,
+      "unit": "ms",
+      "detail": "4000 div/span pairs built directly on owner",
+      "workload": "dom-python-build-v1:4000",
+      "runs": 3
+    },
     "dom_query": {
-      "median": 3470.607100000052,
-      "min": 3441.093000001274,
+      "median": 943.5572000002139,
+      "min": 757.7439999986382,
       "unit": "ms",
       "detail": "200 scans of a 4000-row tree",
+      "workload": "consumed-dom-query-v2",
       "runs": 3
     },
     "event_dispatch": {
-      "median": 2299.5814999994764,
-      "min": 2290.483900000254,
+      "median": 1415.9924999985378,
+      "min": 1397.597000002861,
       "unit": "ms",
       "detail": "20000 dispatches through one listener",
       "runs": 3
     },
     "resource_batch": {
-      "median": 144.5114999987709,
-      "min": 133.65390000035404,
+      "median": 66.29270000121323,
+      "min": 65.46970000272267,
       "unit": "ms",
       "detail": "200 images",
+      "workload": "document-load-resource-batch-v2",
       "runs": 3
     },
     "resident_pages": {
-      "median": 1.40869140625,
-      "min": 1.23193359375,
+      "median": 4.91650390625,
+      "min": 4.8935546875,
       "unit": "MB/page",
-      "detail": "8 live pages, 1 python handles each",
+      "detail": "8 live pages, 2 python handles each",
+      "workload": "isolated-resident-pages-v2",
+      "runs": 3
+    },
+    "execution_dispatch": {
+      "median": 20.327599999999997,
+      "min": 17.481900000000003,
+      "unit": "us/op",
+      "detail": "execution dispatch; 12000 operations; GC=default",
+      "workload": "execution-dispatch-v2:12000:default",
+      "runs": 3
+    },
+    "execution_routed": {
+      "median": 4.784683333333334,
+      "min": 4.5122583333333335,
+      "unit": "us/op",
+      "detail": "execution routed; 12000 operations; GC=default",
+      "workload": "execution-routed-v2:12000:default",
+      "runs": 3
+    },
+    "execution_evaluate": {
+      "median": 8.929666666666666,
+      "min": 8.472183333333332,
+      "unit": "us/op",
+      "detail": "execution evaluate; 12000 operations; GC=default",
+      "workload": "execution-evaluate-v2:12000:default",
+      "runs": 3
+    },
+    "execution_result": {
+      "median": 25.029258333333335,
+      "min": 23.618299999999998,
+      "unit": "us/op",
+      "detail": "execution result; 12000 operations; GC=default",
+      "workload": "execution-result-v2:12000:default",
+      "runs": 3
+    },
+    "execution_native": {
+      "median": 1.5813583333333334,
+      "min": 1.5423583333333333,
+      "unit": "us/op",
+      "detail": "execution native; 12000 operations; GC=default",
+      "workload": "execution-native-v2:12000:default",
+      "runs": 3
+    },
+    "execution_script": {
+      "median": 4.115841666666666,
+      "min": 3.7727416666666667,
+      "unit": "us/op",
+      "detail": "execution script; 12000 operations; GC=default",
+      "workload": "execution-script-v2:12000:default",
+      "runs": 3
+    },
+    "execution_idle": {
+      "median": 0.0,
+      "min": 0.0,
+      "unit": "cpu-ms",
+      "detail": "execution idle; 12000 operations; GC=default",
+      "workload": "execution-idle-v2:12000:default",
+      "runs": 3
+    },
+    "execution_ua": {
+      "median": 14.072783333333334,
+      "min": 14.014708333333333,
+      "unit": "us/op",
+      "detail": "execution ua; 12000 operations; GC=default",
+      "workload": "execution-ua-v2:12000:default",
+      "runs": 3
+    },
+    "execution_dom": {
+      "median": 22.292133333333336,
+      "min": 21.460941666666667,
+      "unit": "us/op",
+      "detail": "execution dom; 12000 operations; GC=default",
+      "workload": "execution-dom-v2:12000:default",
+      "runs": 3
+    },
+    "execution_concurrent": {
+      "median": 11.242691666666667,
+      "min": 11.022641666666667,
+      "unit": "us/op",
+      "detail": "execution concurrent; 12000 operations; GC=default",
+      "workload": "execution-concurrent-v2:12000:default:workers=8",
+      "runs": 3
+    },
+    "execution_timer_load": {
+      "median": 13.146925,
+      "min": 12.900516666666666,
+      "unit": "us/op",
+      "detail": "execution timer_load; 12000 operations; GC=default",
+      "workload": "execution-timer_load-v2:12000:default",
+      "runs": 3
+    },
+    "bridge_callback": {
+      "median": 0.23129583333333334,
+      "min": 0.22327000000000002,
+      "unit": "us/crossing",
+      "detail": "native callback; 60 batches of 2000; GC=default",
+      "workload": "bridge-callback-v1:60:2000",
+      "runs": 3
+    },
+    "bridge_method": {
+      "median": 0.4420333333333333,
+      "min": 0.43013083333333335,
+      "unit": "us/crossing",
+      "detail": "native method; 60 batches of 2000; GC=default",
+      "workload": "bridge-method-v1:60:2000",
+      "runs": 3
+    },
+    "bridge_getter_number": {
+      "median": 0.7823566666666667,
+      "min": 0.7676433333333333,
+      "unit": "us/crossing",
+      "detail": "native getter_number; 60 batches of 2000; GC=default",
+      "workload": "bridge-getter_number-v1:60:2000",
+      "runs": 3
+    },
+    "bridge_getter_text": {
+      "median": 0.9008166666666666,
+      "min": 0.8904441666666667,
+      "unit": "us/crossing",
+      "detail": "native getter_text; 60 batches of 2000; GC=default",
+      "workload": "bridge-getter_text-v1:60:2000",
+      "runs": 3
+    },
+    "bridge_setter": {
+      "median": 0.3723341666666667,
+      "min": 0.36882,
+      "unit": "us/crossing",
+      "detail": "native setter; 60 batches of 2000; GC=default",
+      "workload": "bridge-setter-v1:60:2000",
+      "runs": 3
+    },
+    "bridge_object_argument": {
+      "median": 0.664205,
+      "min": 0.645145,
+      "unit": "us/crossing",
+      "detail": "native object_argument; 60 batches of 2000; GC=default",
+      "workload": "bridge-object_argument-v1:60:2000",
+      "runs": 3
+    },
+    "bridge_string_argument": {
+      "median": 0.36605,
+      "min": 0.34285083333333327,
+      "unit": "us/crossing",
+      "detail": "native string_argument; 60 batches of 2000; GC=default",
+      "workload": "bridge-string_argument-v1:60:2000",
+      "runs": 3
+    },
+    "bridge_python_call": {
+      "median": 1.7695666666666665,
+      "min": 1.6193916666666666,
+      "unit": "us/crossing",
+      "detail": "native python_call; 12000 batches of 1; GC=default",
+      "workload": "bridge-python_call-v1:12000:1",
+      "runs": 3
+    },
+    "bridge_exec_cached": {
+      "median": 2.139525,
+      "min": 2.0240083333333336,
+      "unit": "us/crossing",
+      "detail": "native exec_cached; 12000 batches of 1; GC=default",
+      "workload": "bridge-exec_cached-v1:12000:1",
+      "runs": 3
+    },
+    "bridge_snapshot": {
+      "median": 4.311025,
+      "min": 4.250008333333334,
+      "unit": "us/crossing",
+      "detail": "native snapshot; 12000 batches of 1; GC=default",
+      "workload": "bridge-snapshot-v1:12000:1",
+      "runs": 3
+    },
+    "bridge_snapshot_graph": {
+      "median": 6.426725,
+      "min": 6.125208333333333,
+      "unit": "us/crossing",
+      "detail": "native snapshot_graph; 12000 batches of 1; GC=default",
+      "workload": "bridge-snapshot_graph-v1:12000:1",
+      "runs": 3
+    },
+    "bridge_snapshot_large": {
+      "median": 206.48666666666665,
+      "min": 192.20666666666665,
+      "unit": "us/crossing",
+      "detail": "native snapshot_large; 60 batches of 1; GC=default",
+      "workload": "bridge-snapshot_large-v1:60:1",
+      "runs": 3
+    },
+    "web_window_getter": {
+      "median": 2.3787325,
+      "min": 2.3763375,
+      "unit": "us/iteration",
+      "detail": "Web API window_getter; 20 batches of 2000",
+      "workload": "web-window_getter-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_navigator_getter": {
+      "median": 0.74558,
+      "min": 0.73311,
+      "unit": "us/iteration",
+      "detail": "Web API navigator_getter; 20 batches of 2000",
+      "workload": "web-navigator_getter-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_attribute_read": {
+      "median": 0.9955750000000001,
+      "min": 0.8403275,
+      "unit": "us/iteration",
+      "detail": "Web API attribute_read; 20 batches of 2000",
+      "workload": "web-attribute_read-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_attribute_write": {
+      "median": 3.752125,
+      "min": 3.4846475,
+      "unit": "us/iteration",
+      "detail": "Web API attribute_write; 20 batches of 2000",
+      "workload": "web-attribute_write-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_attribute_same": {
+      "median": 1.9637275,
+      "min": 1.82867,
+      "unit": "us/iteration",
+      "detail": "Web API attribute_same; 20 batches of 2000",
+      "workload": "web-attribute_same-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_attribute_coercion": {
+      "median": 2.3726374999999997,
+      "min": 2.3309475,
+      "unit": "us/iteration",
+      "detail": "Web API attribute_coercion; 20 batches of 2000",
+      "workload": "web-attribute_coercion-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_observed_write": {
+      "median": 9.004809999999999,
+      "min": 7.2240874999999996,
+      "unit": "us/iteration",
+      "detail": "Web API observed_write; 20 batches of 2000",
+      "workload": "web-observed_write-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_id_lookup": {
+      "median": 3.495065,
+      "min": 3.4833675,
+      "unit": "us/iteration",
+      "detail": "Web API id_lookup; 20 batches of 2000",
+      "workload": "web-id_lookup-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_selector": {
+      "median": 214.2028,
+      "min": 210.9257,
+      "unit": "us/iteration",
+      "detail": "Web API selector; 20 batches of 50",
+      "workload": "web-selector-v1:20:50:128:default",
+      "runs": 3
+    },
+    "web_selector_classes": {
+      "median": 303.9376,
+      "min": 292.6224,
+      "unit": "us/iteration",
+      "detail": "Web API selector_classes; 20 batches of 50",
+      "workload": "web-selector_classes-v1:20:50:128:default",
+      "runs": 3
+    },
+    "web_selector_groups": {
+      "median": 374.5564,
+      "min": 358.1832,
+      "unit": "us/iteration",
+      "detail": "Web API selector_groups; 20 batches of 50",
+      "workload": "web-selector_groups-v1:20:50:128:default",
+      "runs": 3
+    },
+    "web_selector_class_groups": {
+      "median": 404.01300000000003,
+      "min": 401.88309999999996,
+      "unit": "us/iteration",
+      "detail": "Web API selector_class_groups; 20 batches of 50",
+      "workload": "web-selector_class_groups-v1:20:50:128:default",
+      "runs": 3
+    },
+    "web_selector_first": {
+      "median": 10.3451,
+      "min": 9.4649,
+      "unit": "us/iteration",
+      "detail": "Web API selector_first; 20 batches of 50",
+      "workload": "web-selector_first-v1:20:50:128:default",
+      "runs": 3
+    },
+    "web_mixed": {
+      "median": 306.3415,
+      "min": 293.543,
+      "unit": "us/iteration",
+      "detail": "Web API mixed; 20 batches of 50",
+      "workload": "web-mixed-v1:20:50:128:default",
+      "runs": 3
+    },
+    "web_matches": {
+      "median": 3.2632849999999998,
+      "min": 2.9943025,
+      "unit": "us/iteration",
+      "detail": "Web API matches; 20 batches of 2000",
+      "workload": "web-matches-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "web_event": {
+      "median": 12.9534925,
+      "min": 11.505090000000001,
+      "unit": "us/iteration",
+      "detail": "Web API event; 20 batches of 2000",
+      "workload": "web-event-v1:20:2000:128:default",
+      "runs": 3
+    },
+    "startup_offline": {
+      "median": 593.0166999969515,
+      "min": 581.9028000005346,
+      "unit": "ms",
+      "detail": "fresh Browser import through ready local page; offline network",
+      "workload": "fresh-startup-offline-v1",
+      "runs": 3
+    },
+    "startup_default": {
+      "median": 764.4344000000274,
+      "min": 704.7921999983373,
+      "unit": "ms",
+      "detail": "fresh Browser import through ready local page; default network",
+      "workload": "fresh-startup-default-v1",
+      "runs": 3
+    },
+    "style_layout": {
+      "median": 17636.95,
+      "min": 17462.266666666666,
+      "unit": "us/batch",
+      "detail": "layout; 128 elements, 300 rules; checked widths",
+      "workload": "style-layout-v1:12:128:300",
+      "runs": 3
+    },
+    "style_computed": {
+      "median": 21475.166666666668,
+      "min": 21317.666666666668,
+      "unit": "us/batch",
+      "detail": "computed; 128 elements, 300 rules; checked widths",
+      "workload": "style-computed-v1:12:128:300",
+      "runs": 3
+    },
+    "style_cached": {
+      "median": 1753.8333333333333,
+      "min": 1682.6916666666668,
+      "unit": "us/batch",
+      "detail": "cached; 128 elements, 300 rules; checked widths",
+      "workload": "style-cached-v1:12:128:300",
+      "runs": 3
+    },
+    "style_universal": {
+      "median": 113646.39166666668,
+      "min": 113000.74166666667,
+      "unit": "us/batch",
+      "detail": "universal; 128 elements, 300 rules; checked widths",
+      "workload": "style-universal-v1:12:128:300",
+      "runs": 3
+    },
+    "style_cold": {
+      "median": 25151.81666666667,
+      "min": 24665.65,
+      "unit": "us/batch",
+      "detail": "cold; 128 elements, 300 rules; checked widths",
+      "workload": "style-cold-v1:12:128:300",
+      "runs": 3
+    },
+    "style_shadow": {
+      "median": 18836.05833333333,
+      "min": 18145.8,
+      "unit": "us/batch",
+      "detail": "shadow; 128 elements, 300 rules; checked widths",
+      "workload": "style-shadow-v1:12:128:300",
+      "runs": 3
+    },
+    "javascript_trig_fresh": {
+      "median": 10.94665,
+      "min": 10.5651,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; trig_fresh; pyv8c",
+      "workload": "js-compute-trig_fresh-v1:200000:20:10",
+      "runs": 3
+    },
+    "javascript_trig_retained": {
+      "median": 10.90035,
+      "min": 10.3784,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; trig_retained; pyv8c",
+      "workload": "js-compute-trig_retained-v1:200000:20:10",
+      "runs": 3
+    },
+    "javascript_hoisted_trig_fresh": {
+      "median": 10.77795,
+      "min": 10.4575,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; hoisted_trig_fresh; pyv8c",
+      "workload": "js-compute-hoisted_trig_fresh-v1:200000:20:10",
+      "runs": 3
+    },
+    "javascript_hoisted_trig_retained": {
+      "median": 10.6395,
+      "min": 10.3571,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; hoisted_trig_retained; pyv8c",
+      "workload": "js-compute-hoisted_trig_retained-v1:200000:20:10",
+      "runs": 3
+    },
+    "javascript_integer_fresh": {
+      "median": 1.0306,
+      "min": 0.9387,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; integer_fresh; pyv8c",
+      "workload": "js-compute-integer_fresh-v1:200000:20:10",
+      "runs": 3
+    },
+    "javascript_integer_retained": {
+      "median": 0.1724,
+      "min": 0.1684,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; integer_retained; pyv8c",
+      "workload": "js-compute-integer_retained-v1:200000:20:10",
+      "runs": 3
+    },
+    "javascript_float_fresh": {
+      "median": 0.6452,
+      "min": 0.5504,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; float_fresh; pyv8c",
+      "workload": "js-compute-float_fresh-v1:200000:20:10",
+      "runs": 3
+    },
+    "javascript_float_retained": {
+      "median": 0.37315,
+      "min": 0.329,
+      "unit": "ms",
+      "detail": "200000 JS loop iterations; float_retained; pyv8c",
+      "workload": "js-compute-float_retained-v1:200000:20:10",
+      "runs": 3
+    },
+    "entrypoint_sync_evaluate": {
+      "median": 8.860641666666666,
+      "min": 8.728825,
+      "unit": "us/op",
+      "detail": "entrypoint sync evaluate; 12000 operations",
+      "workload": "entrypoints-evaluate-v2:12000:sync",
+      "runs": 3
+    },
+    "entrypoint_sync_result": {
+      "median": 24.056716666666667,
+      "min": 23.826883333333335,
+      "unit": "us/op",
+      "detail": "entrypoint sync result; 12000 operations",
+      "workload": "entrypoints-result-v2:12000:sync",
+      "runs": 3
+    },
+    "entrypoint_sync_ua": {
+      "median": 15.128491666666667,
+      "min": 14.972325000000001,
+      "unit": "us/op",
+      "detail": "entrypoint sync ua; 12000 operations",
+      "workload": "entrypoints-ua-v2:12000:sync",
+      "runs": 3
+    },
+    "entrypoint_sync_dom": {
+      "median": 21.892616666666665,
+      "min": 21.8785,
+      "unit": "us/op",
+      "detail": "entrypoint sync dom; 12000 operations",
+      "workload": "entrypoints-dom-v2:12000:sync",
+      "runs": 3
+    },
+    "entrypoint_sync_wait": {
+      "median": 50.34638333333333,
+      "min": 50.238775000000004,
+      "unit": "us/op",
+      "detail": "entrypoint sync wait; 12000 operations",
+      "workload": "entrypoints-wait-v2:12000:sync",
+      "runs": 3
+    },
+    "entrypoint_async_evaluate": {
+      "median": 7.998891666666666,
+      "min": 7.949274999999999,
+      "unit": "us/op",
+      "detail": "entrypoint async evaluate; 12000 operations",
+      "workload": "entrypoints-evaluate-v2:12000:async",
+      "runs": 3
+    },
+    "entrypoint_async_result": {
+      "median": 22.89604166666667,
+      "min": 22.771883333333335,
+      "unit": "us/op",
+      "detail": "entrypoint async result; 12000 operations",
+      "workload": "entrypoints-result-v2:12000:async",
+      "runs": 3
+    },
+    "entrypoint_async_ua": {
+      "median": 14.250916666666667,
+      "min": 14.120966666666668,
+      "unit": "us/op",
+      "detail": "entrypoint async ua; 12000 operations",
+      "workload": "entrypoints-ua-v2:12000:async",
+      "runs": 3
+    },
+    "entrypoint_async_dom": {
+      "median": 21.350508333333334,
+      "min": 21.280549999999998,
+      "unit": "us/op",
+      "detail": "entrypoint async dom; 12000 operations",
+      "workload": "entrypoints-dom-v2:12000:async",
+      "runs": 3
+    },
+    "entrypoint_async_wait": {
+      "median": 10.068458333333334,
+      "min": 9.779933333333332,
+      "unit": "us/op",
+      "detail": "entrypoint async wait; 12000 operations",
+      "workload": "entrypoints-wait-v2:12000:async",
+      "runs": 3
+    },
+    "lifecycle_pages": {
+      "median": 214.3701171875,
+      "min": 214.3427734375,
+      "unit": "KiB",
+      "detail": "page create/close lifecycle, 1000 cycles, 0 retained",
+      "workload": "lifecycle-pages-v1:1000",
       "runs": 3
     }
   },
-  "unavailable": {}
+  "unavailable": {},
+  "python_full": "3.15.0 (tags/v3.15.0:d220409, Oct  9 2026, 11:55:56) [MSC v.1951 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "processor": "Intel64 Family 6 Model 167 Stepping 1, GenuineIntel",
+  "binary_path": "D:\\src\\pyv8env\\pyv8c\\pyv8c\\pyv8c\\pyv8\\_pyv8.pyd",
+  "v8_version": "15.4.68",
+  "binary_sha256": "62803998bf7cec3f880bea75cb1843ee4b977c99df9b0f80e710c5ffaeb2a763",
+  "dom_binary_path": "D:\\src\\pyv8env\\pyv8c\\pyv8c\\pyv8c\\_dom_native.pyd",
+  "dom_binary_sha256": "abce648880278095569c91866f0770fd7b3210b44953e9335010cd05b993cc43",
+  "dom_source_sha256": "4ad78c8678fdc96def2b7d665fae16b34e62941d5dd18710f44f2b468c0d0e7c",
+  "dom_build_source_matches": true,
+  "native_build_binary_matches": true,
+  "source_tree_sha256": "a410d79f832b388dd96b1dd7176e08209512133f08ea2bca2a2fdb4746961bc6",
+  "native_build": {
+    "bridge_sources_sha256": "6eb371b860d3bb819595d5a0eb99fec5a95d5163924aeacf9aa1e4365db635f3",
+    "v8_library_sha256": "d2c3d4fa90e04d104631994f750ece9119d4dcafedd28624865e058a105d04e1",
+    "gn_args": "is_component_build=false is_debug=false symbol_level=0 target_cpu=\"x64\" treat_warnings_as_errors=false use_custom_libcxx=false v8_enable_i18n_support=true v8_enable_pointer_compression=false v8_enable_sandbox=false v8_enable_temporal_support=true v8_monolithic=true v8_use_external_startup_data=false",
+    "version": "15.4.68"
+  },
+  "revision": "b55b73698f45dd746466194d83cf32d1f5680bdb",
+  "worktree_sha256": "c546b267af64009c9d7835c4e9fab6a7b2de8828dea6745ac318a8366384bed1"
 }

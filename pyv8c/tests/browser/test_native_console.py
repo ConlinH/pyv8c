@@ -18,3 +18,21 @@ def test_console_does_not_eagerly_read_object_accessors(page):
       let reads=0;const object={get id(){reads++;return 'x'},get length(){reads++;return 1}};
       console.log(object);console.dir(object);console.table(object);return reads;
     })()''') == 0
+
+
+def test_console_memory_matches_chrome_shape(page):
+    assert page.evaluate('''(() => {
+      const memory = console.memory;
+      const keys = ['jsHeapSizeLimit', 'totalJSHeapSize', 'usedJSHeapSize'];
+      const proto = Object.getPrototypeOf(memory);
+      return typeof memory === 'object' && memory !== null &&
+             Object.keys(memory).length === 0 &&
+             keys.every(key => typeof memory[key] === 'number' && memory[key] > 0) &&
+             String(memory) === '[object MemoryInfo]' &&
+             proto[Symbol.toStringTag] === 'MemoryInfo' &&
+             !Object.prototype.hasOwnProperty.call(proto, 'constructor') &&
+             keys.every(key => {
+               const d = Object.getOwnPropertyDescriptor(proto, key);
+               return d && typeof d.get === 'function' && d.set === undefined;
+             });
+    })()''') is True

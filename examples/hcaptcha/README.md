@@ -25,7 +25,7 @@ assert token.startswith("P1_")
 
 默认代理为 `http://127.0.0.1:6696`；`proxy=None` 表示直连。下文最终验收均使用该代理，不应将结果直接套用于直连。`timeout` 是页面结果等待时限，HTTP 单次请求超时为 20 秒，并非整个函数的硬退出时限。
 
-依赖为当前仓库的 pyv8c、匹配的 `_pyv8` 和 `_audio_native` 原生扩展，以及 PyCryptodome。当前本机已补齐音频扩展；迁移环境时参考[音频构建说明](../../pyv8c/audio_native/README.md)。
+依赖为当前仓库的 pyv8c 及匹配的 `_pyv8` 和 `_native` 原生扩展。安装 pyv8c 时会安装 AES-GCM 所需的 PyCryptodome。迁移环境时参考[原生组件构建说明](../../pyv8c/native/README.md)。
 
 成功时标准输出只打印完整 Token，退出码为 0；失败时退出码为 1。过程日志写到标准错误，格式为 `HH:mm:ss | LEVEL | message`：
 
@@ -106,8 +106,8 @@ HAR 中 getcaptcha 的请求体和响应均为二进制内容。交付让原始 
 | 阶段 | 实际现象 | 处理及结论 |
 | --- | --- | --- |
 | 初始探针 | Python 序列化 `pyv8.Null` 报错 | 改用 JS `JSON.stringify`；这是诊断程序问题 |
-| 第二次探针 | AES-GCM encrypt 返回 `NotSupportedError` | 确认该框架操作尚未实现，增加真实运算适配 |
-| 第三次探针 | 创建音频压缩节点时缺少 `_audio_native` | 构建现有音频扩展 |
+| 第二次探针 | 当时的 AES-GCM encrypt 返回 `NotSupportedError` | 定位到框架缺少 AES-GCM；现由 pyv8c 实现 |
+| 第三次探针 | 创建音频压缩节点时缺少原生音频组件 | 构建现有音频扩展 |
 | 第四次探针 | api.js 连接超时、加载失败 | 单独记录网络失败，分析探针对 GET 做有限重试 |
 | 第五次探针 | FontFace.load 错误接收者触发宿主 `AttributeError` | 与浏览器最小用例对照后修正 Promise 拒绝行为 |
 | 第六次探针 | 直连存在 GET 重试，结束时没有 Token | 不作为通过样本，也不据此判定算法一定错误 |
@@ -117,30 +117,30 @@ HAR 中 getcaptcha 的请求体和响应均为二进制内容。交付让原始 
 
 ## 适配与框架修复
 
-### AES GCM 案例适配
+### AES-GCM
 
-原框架的 `SubtleCrypto.encrypt` 和 `decrypt` 尚未实现 AES-GCM。案例通过 `interface_overrides` 在本 Browser 范围内提供 PyCryptodome 运算，保留当次密钥、IV、可选 additionalData 和 tagLength，认证失败以 `OperationError` 拒绝 Promise；其他算法仍交给框架原入口。
+案例直接使用 pyv8c 的 `SubtleCrypto.encrypt` 和 `decrypt`。框架通过 PyCryptodome 执行 AES-GCM，接收 IV 以及可选的 `additionalData` 和 `tagLength`，认证失败时以 `OperationError` 拒绝 Promise。
 
 排查中曾看到 `_options(algorithm).keys()` 为空。该对象是惰性 Dictionary，成员通过 `.get()` 等操作从 JS 读取；Python 键集合为空并不意味着 SDK 没有传入 IV，不能据此添加固定参数。
 
 已用 128 位全零密钥、12 字节全零 IV 和 16 字节全零明文检查已知答案，期望密文及认证标签为：
 
 ```text
-0388dace60b6a392f328c2b971b2fe78a
+0388dace60b6a392f328c2b971b2fe78
 ab6e47d42cec13bdf53a67b21257bddf
 ```
 
-另检查了真实本地 JS 调用中的 ArrayBuffer 返回类型、带偏移的 DataView、加解密往返，以及篡改密文后的拒绝。接口语义参考 [Web Crypto AES-GCM 操作](https://www.w3.org/TR/webcrypto/#aes-gcm-operations)。这是案例内适配，不是完整 Web Crypto 实现，也没有修改原始 SDK、时间、随机数或环境采集值。
+框架的[浏览器测试](../../pyv8c/tests/browser/test_subtle_aes_gcm.py)覆盖已知答案、`ArrayBuffer` 返回类型、带偏移的视图和篡改后的拒绝。接口语义参考 [Web Crypto AES-GCM 操作](https://www.w3.org/TR/webcrypto/#aes-gcm-operations)。
 
-### 音频扩展构建
+### 原生组件构建
 
-本机缺少 `_audio_native` 时，SDK 创建动态压缩节点会发生宿主导入错误。使用仓库 `pyv8c/audio_native/Cargo.toml`、`Cargo.lock` 和本机已有 Rust 工具链进行 release 构建：
+动态压缩节点由 `_native` 的 Rust 音频组件提供。使用 CPython 3.12、Rust 和 C++17 编译器在仓库根目录构建：
 
 ```powershell
-cargo build --release --locked --manifest-path pyv8c/audio_native/Cargo.toml
+python312 setup.py build_rust --release --inplace
 ```
 
-当次设置 `PYO3_PYTHON` 指向当前虚拟环境解释器，构建结果放入分析工作区，再将 `_audio_native.dll` 作为 `_audio_native.pyd` 放入源码包。导入及 `CompressorDSP(44100)` 创建成功，相关 30 项回归通过。没有修改 Rust 音频源码或以常量替代计算，二进制不随案例提交。
+构建在 `pyv8c._native` 包内生成 `_native.pyd`。项目代码通过 `from pyv8c._native import audio` 导入音频组件。
 
 ### FontFace 接收者修复
 

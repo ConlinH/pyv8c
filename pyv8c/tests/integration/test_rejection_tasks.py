@@ -1,41 +1,43 @@
+
+import asyncio
 import threading
 import pytest
 pytest.importorskip('pyv8c.pyv8')
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def page():
-    browser = Browser(real_network=False, stub_logging='off')
+async def page():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_sibling_frame_rejection_progresses_without_a_child_host_command(page):
-    page.set_content('<iframe></iframe>')
-    page.wait_for_load_state()
+async def test_sibling_frame_rejection_progresses_without_a_child_host_command(page):
+    (await page.set_content('<iframe></iframe>', wait_until="commit"))
+    (await page.wait_for_load_state())
     page.evaluate("""window.seen=[];frames[0].onunhandledrejection=e=>{
       seen.push(e.reason);e.preventDefault()};frames[0].eval("Promise.reject('child')");'queued' """)
-    page.wait_for('seen.length === 1', timeout=0.5)
+    (await page.wait_for('seen.length === 1', timeout=0.5))
     assert page.evaluate('seen') == ['child']
 
 
-def test_late_catch_schedules_handled_without_host_polling(page):
+async def test_late_catch_schedules_handled_without_host_polling(page):
     delivered = threading.Event()
     page.executor.call(page.v8_context.expose, handled=delivered.set)
     page.evaluate("""window.seen=[];const reason={label:'reason'};
       onrejectionhandled=e=>{seen.push([e.reason===reason,e.promise===p]);handled()};
       onunhandledrejection=e=>{e.preventDefault();setTimeout(()=>e.promise.catch(()=>{}),0)};
       const p=Promise.reject(reason);'queued' """)
-    assert delivered.wait(0.5)
+    assert (await asyncio.to_thread(delivered.wait, 0.5))
     assert page.evaluate('seen') == [[True, True]]
 
 
-def test_navigation_drops_old_rejection_candidates_without_clearing_agent_jobs(page):
-    page.set_content('<body>old</body>', url='https://same.test/old')
+async def test_navigation_drops_old_rejection_candidates_without_clearing_agent_jobs(page):
+    (await page.set_content('<body>old</body>', url='https://same.test/old', wait_until="commit"))
     previous = page.realm
     previous_tracker = previous.rejections
     def replace():
@@ -43,7 +45,7 @@ def test_navigation_drops_old_rejection_candidates_without_clearing_agent_jobs(p
         page.navigation.set_content("<script>window.seen=[];onunhandledrejection=e=>seen.push(e.reason)</script>",
                                     url='https://same.test/new')
     page.executor.call(replace)
-    page.run_until_idle(1)
+    (await page.run_until_idle(1))
     assert page.evaluate('seen') == []
     assert previous is not page.realm
     assert previous_tracker is not page.realm.rejections
@@ -52,14 +54,14 @@ def test_navigation_drops_old_rejection_candidates_without_clearing_agent_jobs(p
     assert page.evaluate('Promise.resolve(1);42') == 42
 
 
-def test_notified_promises_are_weakly_held_even_with_a_cyclic_reason(page):
+async def test_notified_promises_are_weakly_held_even_with_a_cyclic_reason(page):
     page.evaluate("""window.refs=[];window.count=0;
       onunhandledrejection=e=>{count++;e.preventDefault()};
       for(let i=0;i<100;i++){
         const reason={index:i};const promise=Promise.reject(reason);reason.promise=promise;
         refs.push(new WeakRef(promise));
       }'queued' """)
-    page.wait_for('count === 100')
+    (await page.wait_for('count === 100'))
     page.executor.call(page.isolate.gc)
     page.executor.call(page.isolate.gc)
     assert page.evaluate('refs.every(ref=>ref.deref()===undefined)') is True
@@ -67,7 +69,7 @@ def test_notified_promises_are_weakly_held_even_with_a_cyclic_reason(page):
     assert not tracker._pending and not tracker._queued and not tracker._handled
 
 
-def test_rejection_state_uses_pristine_intrinsics_and_does_not_read_reason_getters(page):
+async def test_rejection_state_uses_pristine_intrinsics_and_does_not_read_reason_getters(page):
     page.evaluate("""window.seen=[];window.reads=0;
       const reason={get value(){reads++;throw new Error('must not read')}};
       const NativeWeakMap=WeakMap;
@@ -77,39 +79,21 @@ def test_rejection_state_uses_pristine_intrinsics_and_does_not_read_reason_gette
       onunhandledrejection=e=>{e.preventDefault();seen.push(e.reason===reason);setTimeout(()=>e.promise.catch(()=>{}),0)};
       onrejectionhandled=e=>seen.push(e.reason===reason);
       Promise.reject(reason);'queued' """)
-    page.wait_for('seen.length === 2')
+    (await page.wait_for('seen.length === 2'))
     assert page.evaluate('[seen,reads]') == [[True,True],0]
 
 
-def test_rejection_flood_times_out_without_unraisable_hook_errors():
+async def test_rejection_flood_times_out_without_unraisable_hook_errors():
     import subprocess
     import sys
-    program = r"""
-import sys
-from pyv8c import pyv8
-from pyv8c import Browser
-from pyv8c.foundation.host_errors import RealmBusyError
-from loguru import logger
-logger.disable('pyv8c')
-errors=[]
-sys.unraisablehook=lambda error:errors.append(str(error.exc_value))
-browser=Browser(real_network=False,stub_logging='off')
-try:
-    page=browser.new_profile().new_page()
-    try:page.evaluate("while(true){Promise.reject('flood')}",timeout=0.03)
-    except (pyv8.JavaScriptTerminated, RealmBusyError):pass
-    else:raise AssertionError('execution was not interrupted')
-    assert page.evaluate('42',timeout=2)==42
-    assert errors==[], errors
-finally:browser.close()
-"""
-    result = subprocess.run([sys.executable,'-c',program],capture_output=True,text=True,timeout=10)
+    program = '\nfrom pyv8c.async_api import Browser, run\nasync def _program():\n\n    import sys\n    from pyv8c import pyv8\n    from pyv8c.async_api import Browser, run\n    from pyv8c.foundation.host_errors import RealmBusyError\n    from loguru import logger\n    logger.disable(\'pyv8c\')\n    errors=[]\n    sys.unraisablehook=lambda error:errors.append(str(error.exc_value))\n    browser=(await Browser(real_network=False,stub_logging=\'off\').__aenter__())\n    try:\n        page=browser.new_profile().new_page()\n        try:page.evaluate("while(true){Promise.reject(\'flood\')}",timeout=0.03)\n        except (pyv8.JavaScriptTerminated, RealmBusyError):pass\n        else:raise AssertionError(\'execution was not interrupted\')\n        assert page.evaluate(\'42\',timeout=2)==42\n        assert errors==[], errors\n    finally:(await browser.close())\nrun(_program())\n'
+    result = (await asyncio.to_thread(subprocess.run, [sys.executable,'-c',program],capture_output=True,text=True,timeout=10))
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_checkpoint_only_flushes_pending_realms_and_releases_candidates(page, monkeypatch):
-    page.set_content('<iframe></iframe><iframe></iframe>')
-    page.wait_for_load_state()
+async def test_checkpoint_only_flushes_pending_realms_and_releases_candidates(page, monkeypatch):
+    (await page.set_content('<iframe></iframe><iframe></iframe>', wait_until="commit"))
+    (await page.wait_for_load_state())
     calls = []
     def observe_idle():
         for lane in page.execution_group.members:
@@ -117,13 +101,13 @@ def test_checkpoint_only_flushes_pending_realms_and_releases_candidates(page, mo
                 monkeypatch.setattr(lane.rejections, 'flush', lambda: calls.append('idle'))
     page.executor.call(observe_idle)
     page.evaluate("window.seen=[];onunhandledrejection=e=>{seen.push(e.reason);e.preventDefault()};Promise.reject('parent');0")
-    page.wait_for("seen.length===1")
+    (await page.wait_for("seen.length===1"))
     assert page.evaluate('seen') == ['parent']
     assert calls == []
     assert page.executor.call(lambda: not page.execution_group._pending_rejections)
 
 
-def test_close_before_checkpoint_releases_candidate_subscription(page):
+async def test_close_before_checkpoint_releases_candidate_subscription(page):
     def close_pending():
         group = page.execution_group
         assert group._pending_rejections

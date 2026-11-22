@@ -1,4 +1,6 @@
 """Worker fetch wire values, opaque origin and abort checkpoints against Chrome."""
+
+import asyncio
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
@@ -6,18 +8,18 @@ from urllib.parse import quote
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from harness import chrome_reference
 
 
 @pytest.fixture(scope='module')
-def reference():
-    with chrome_reference() as result:
+async def reference():
+    async with chrome_reference() as result:
         yield result
 
 
 @pytest.mark.parametrize('case', ['same-origin','data-allow','data-deny','preaborted','abort-order'])
-def test_worker_fetch_matches_chrome(reference, case):
+async def test_worker_fetch_matches_chrome(reference, case):
     hits = []
     if case == 'preaborted':
         source = ("onmessage=()=>{const c=new AbortController(),reason={tag:42},order=[];"
@@ -72,28 +74,29 @@ def test_worker_fetch_matches_chrome(reference, case):
     try:
         for kind in ('chrome','pyv8c'):
             hits.clear()
-            browser = Browser(stub_logging='off') if kind == 'pyv8c' else None
-            page = browser.new_profile().new_page() if browser else reference.browser.new_page()
+            browser = (await Browser(stub_logging='off').__aenter__()) if kind == 'pyv8c' else None
+            page = browser.new_profile().new_page() if browser else (await reference.browser.new_page())
             runtimes = ()
             try:
-                page.goto(url)
+                (await page.goto(url))
                 worker_url = 'data:text/javascript,'+quote(source,safe='') if case.startswith('data-') else url+'worker.js'
-                page.evaluate("globalThis.messages=[];globalThis.worker=new Worker("+json.dumps(worker_url)+");"
-                              "worker.onmessage=e=>messages.push(e.data);worker.postMessage('start')")
+                ((await page.evaluate("globalThis.messages=[];globalThis.worker=new Worker("+json.dumps(worker_url)+");"
+                              "worker.onmessage=e=>messages.push(e.data);worker.postMessage('start')")) if not browser else page.evaluate("globalThis.messages=[];globalThis.worker=new Worker("+json.dumps(worker_url)+");"
+                              "worker.onmessage=e=>messages.push(e.data);worker.postMessage('start')"))
                 if browser:
                     runtimes = page.executor.call(lambda: tuple(w._runtime for w in page._owned.workers))
-                    page.wait_for('messages.length===1', timeout=3)
+                    (await page.wait_for('messages.length===1', timeout=3))
                 else:
-                    page.wait_for_function('messages.length===1', timeout=3000)
-                results.append(page.evaluate('messages'))
+                    (await page.wait_for_function('messages.length===1', timeout=3000))
+                results.append(((await page.evaluate('messages')) if not browser else page.evaluate('messages')))
                 if case == 'abort-order':
                     assert len(hits) <= 1  # An in-flight abort can race with transmission.
                 else:
                     assert len(hits) == (0 if case == 'preaborted' else 1)
             finally:
-                browser.close() if browser else page.close()
+                (await browser.close()) if browser else (await page.close())
                 for runtime in runtimes:
-                    runtime.executor._thread.join(2)
+                    (await asyncio.to_thread(runtime.executor._thread.join, 2))
                     assert not runtime.executor._thread.is_alive()
         assert results[0] == results[1]
         if case == 'preaborted':
@@ -108,5 +111,5 @@ def test_worker_fetch_matches_chrome(reference, case):
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(2)
+        (await asyncio.to_thread(thread.join, 2))
         assert not thread.is_alive()

@@ -1,4 +1,4 @@
-def test_transfer_validation_precedes_getters_and_preserves_other_ports(page):
+async def test_transfer_validation_precedes_getters_and_preserves_other_ports(page):
     assert page.evaluate('''(()=>{
       const b=new ArrayBuffer(8),channel=new MessageChannel();let reads=0,error;
       const value={get x(){reads++;return 1}};
@@ -7,7 +7,7 @@ def test_transfer_validation_precedes_getters_and_preserves_other_ports(page):
     })()''') == ['DataCloneError',0,8]
 
 
-def test_transfer_does_not_call_page_array_buffer_hooks(page):
+async def test_transfer_does_not_call_page_array_buffer_hooks(page):
     assert page.evaluate('''(()=>{
       let calls=0;const b=new ArrayBuffer(4);
       b.transfer=()=>{calls++;throw 1};
@@ -16,7 +16,7 @@ def test_transfer_does_not_call_page_array_buffer_hooks(page):
       return [calls,c.byteLength,Object.getOwnPropertyDescriptor(ArrayBuffer.prototype,'byteLength').get.call(b)];
     })()''') == [0,4,0]
 
-def test_clone_port_prepares_result_before_moving_ownership(page):
+async def test_clone_port_prepares_result_before_moving_ownership(page):
     assert page.evaluate("""(()=>{
       const channel=new MessageChannel(), b=new ArrayBuffer(4); let reads=0;
       try { structuredClone({port:channel.port1,get bad(){reads++;throw new Error('stop')}},
@@ -26,10 +26,10 @@ def test_clone_port_prepares_result_before_moving_ownership(page):
       channel.port2.postMessage('ok');
       return [reads,b.byteLength,clone.port instanceof MessagePort,clone.port!==channel.port1];
     })()""") == [1,4,True,True]
-    page.wait_for("globalThis.portResult==='ok'", timeout=2)
+    (await page.wait_for("globalThis.portResult==='ok'", timeout=2))
 
 
-def test_clone_classification_does_not_read_constructor(page):
+async def test_clone_classification_does_not_read_constructor(page):
     assert page.evaluate("""(()=>{
       let reads=0;const v={a:1};Object.defineProperty(v,'constructor',{get(){reads++;throw 1}});
       return [structuredClone(v).a,reads];

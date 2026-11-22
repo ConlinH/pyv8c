@@ -1,5 +1,5 @@
-def test_id_changes_duplicates_and_moves(page):
-    page.set_content('<body><div id="x" data-order="first"></div><div id="x" data-order="second"></div></body>')
+async def test_id_changes_duplicates_and_moves(page):
+    (await page.set_content('<body><div id="x" data-order="first"></div><div id="x" data-order="second"></div></body>', wait_until="commit"))
     assert page.evaluate('''(() => {
         let a=document.getElementById('x'), b=a.nextSibling;
         document.body.insertBefore(b,a);
@@ -13,8 +13,8 @@ def test_id_changes_duplicates_and_moves(page):
     })()''') == [True]*7
 
 
-def test_fragment_shadow_and_attribute_map_mutations(page):
-    page.set_content('<body><div id="host"></div></body>')
+async def test_fragment_shadow_and_attribute_map_mutations(page):
+    (await page.set_content('<body><div id="host"></div></body>', wait_until="commit"))
     assert page.evaluate('''(() => {
         let f=document.createDocumentFragment(), el=document.createElement('span');
         el.id='x'; f.appendChild(el);
@@ -43,9 +43,9 @@ def test_fragment_shadow_and_attribute_map_mutations(page):
     page.realm.executor.call(change)
 
 
-def test_other_page_and_detached_tree_do_not_invalidate_snapshot(browser):
+async def test_other_page_and_detached_tree_do_not_invalidate_snapshot(browser):
     profile=browser.new_profile(); a=profile.new_page(); b=profile.new_page()
-    a.set_content('<body><div id="x"></div></body>'); b.set_content('<body></body>')
+    (await a.set_content('<body><div id="x"></div></body>', wait_until="commit")); (await b.set_content('<body></body>', wait_until="commit"))
     snapshot=a.realm.executor.call(a.document._descendant_snapshot)
     b.evaluate('document.body.appendChild(document.createElement("div"))')
     assert a.realm.executor.call(a.document._descendant_snapshot) is snapshot
@@ -56,8 +56,8 @@ def test_other_page_and_detached_tree_do_not_invalidate_snapshot(browser):
     assert a.evaluate('document.getElementById("x")===null')
 
 
-def test_collection_prototype_names_do_not_scan_supported_names(page):
-    page.set_content('<body><div id="length"></div><div id="item"></div></body>')
+async def test_collection_prototype_names_do_not_scan_supported_names(page):
+    (await page.set_content('<body><div id="length"></div><div id="item"></div></body>', wait_until="commit"))
     def verify():
         collection=page.document.fn_getElementsByTagName('div')
         def fail(): raise AssertionError('prototype member enumerated names')
@@ -69,8 +69,8 @@ def test_collection_prototype_names_do_not_scan_supported_names(page):
     page.realm.executor.call(verify)
 
 
-def test_attribute_node_and_subtree_root_queries(page):
-    page.set_content('<body><section id="root"><i id="x"></i></section></body>')
+async def test_attribute_node_and_subtree_root_queries(page):
+    (await page.set_content('<body><section id="root"><i id="x"></i></section></body>', wait_until="commit"))
     assert page.evaluate('''(() => {
         let root=document.getElementById('root'), el=document.getElementById('x');
         el.attributes.getNamedItem('id').value='y';
@@ -79,8 +79,8 @@ def test_attribute_node_and_subtree_root_queries(page):
     })()''') == [True]*3
 
 
-def test_removed_attribute_node_cannot_restore_an_id(page):
-    page.set_content('<body><div id="x"></div></body>')
+async def test_removed_attribute_node_cannot_restore_an_id(page):
+    (await page.set_content('<body><div id="x"></div></body>', wait_until="commit"))
     assert page.evaluate('''(() => {
         let el=document.getElementById('x'), a=el.attributes.getNamedItem('id');
         el.setAttribute('id','y');let updated=a.value==='y';
@@ -92,8 +92,8 @@ def test_removed_attribute_node_cannot_restore_an_id(page):
     })()''') == [True]*6
 
 
-def test_repeated_attribute_value_still_records_each_mutation(page):
-    page.set_content('<body><div></div></body>')
+async def test_repeated_attribute_value_still_records_each_mutation(page):
+    (await page.set_content('<body><div></div></body>', wait_until="commit"))
     assert page.evaluate('''(() => {
         let el=document.body.firstChild, o=new MutationObserver(()=>{});
         o.observe(el,{attributes:true,attributeOldValue:true});
@@ -102,8 +102,8 @@ def test_repeated_attribute_value_still_records_each_mutation(page):
     })()''') == '[null,"1"]'
 
 
-def test_caches_release_removed_nodes_and_internal_mutations(page):
-    page.set_content('<body><div id="x"></div></body>')
+async def test_caches_release_removed_nodes_and_internal_mutations(page):
+    (await page.set_content('<body><div id="x"></div></body>', wait_until="commit"))
     def verify():
         doc=page.document; doc.fn_getElementById('x'); doc._descendant_snapshot()
         body=doc.get_body()
@@ -123,14 +123,14 @@ def test_caches_release_removed_nodes_and_internal_mutations(page):
     page.realm.executor.call(verify)
 
 
-def test_navigation_and_close_discard_document_query_caches(page):
-    page.set_content('<body><div id="x"></div></body>')
+async def test_navigation_and_close_discard_document_query_caches(page):
+    (await page.set_content('<body><div id="x"></div></body>', wait_until="commit"))
     old=page.document
     page.evaluate('document.getElementById("x");document.getElementsByTagName("div").length')
-    page.set_content('<body><div id="y"></div></body>')
+    (await page.set_content('<body><div id="y"></div></body>', wait_until="commit"))
     assert '_id_index' not in old.__dict__
     assert '_descendants_cache' not in old.__dict__
     page.evaluate('document.getElementById("y")')
     current=page.document
-    page.close()
+    (await page.close())
     assert '_id_index' not in current.__dict__

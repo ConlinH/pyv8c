@@ -1,13 +1,13 @@
 """Chrome-observed media aliases and destination node defaults."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_audio_aliases_and_destination_channel_count_mode():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_audio_aliases_and_destination_channel_count_mode():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://media.test/')
+        (await page.set_content('<body></body>', url='https://media.test/', wait_until="commit"))
         assert page.evaluate('''(() => {
           const media = document.createElement('audio');
           const names = ['audio/x-m4a;', 'audio/x-m4a; codecs="mp4a.40.2"',
@@ -23,4 +23,4 @@ def test_audio_aliases_and_destination_channel_count_mode():
             'defaults': ['explicit', 'explicit'], 'changed': 'max',
         }
     finally:
-        browser.close()
+        (await browser.close())

@@ -7,6 +7,7 @@ from ..dom.element import Element
 from ..dom.nodes import _bump_style_version
 from ..dom.utils import MATHML_NAMESPACE, SVG_NAMESPACE
 from .document_elements import HTMLTemplateElement
+from .construction import build_batch
 
 
 class _TreeBuilderMixin:
@@ -158,22 +159,29 @@ class DOMParser(_TreeBuilderMixin, HTMLParser):
             self._append(DocumentType(name=name, services=self.services))
 
 
+_DOCTYPE_START = re.compile(r"<!doctype\b", re.I)
+_END_TAG = re.compile(r"</\s*([A-Za-z][\w:-]*)[^>]*>")
+_START_TAG = re.compile(r"<([A-Za-z][\w:-]*)")
+_RAW_END = {tag: re.compile(r"</\s*" + re.escape(tag) + r"\s*>", re.I)
+            for tag in _TreeBuilderMixin.raw_text_tags}
+
+
 def _iter_tokens(source):
-    """Yield coarse HTML tokens while preserving script/style raw text."""
+    """Yield tokens with start-tag attributes decoded once, without suffix copies."""
     pos, size, raw = 0, len(source), None
-    # Use the same tolerant attribute tokenizer as _StartTagParser. A quote
+    # Use HTMLParser's tolerant attribute tokenizer. A quote
     # inside an attribute name or an unquoted value does not open a quoted
     # value; toggling on every quote can swallow subsequent scripts and tags.
-    tag_tokenizer = HTMLParser(convert_charrefs=False)
+    tag_tokenizer = _StartTagTokenizer()
     tag_tokenizer.rawdata = source
     while pos < size:
         if raw:
-            match = re.search(r"</\s*" + re.escape(raw) + r"\s*>", source[pos:], re.I)
+            match = _RAW_END[raw].search(source, pos)
             if not match:
                 yield ("data", source[pos:]); return
-            end = pos + match.start()
+            end = match.start()
             if end > pos: yield ("data", source[pos:end])
-            yield ("end", raw); pos += match.end(); raw = None; continue
+            yield ("end", raw); pos = match.end(); raw = None; continue
         if source.startswith("<!--", pos):
             end = source.find("-->", pos + 4)
             if end < 0: yield ("comment", source[pos + 4:]); return
@@ -182,25 +190,27 @@ def _iter_tokens(source):
             end = source.find("<", pos)
             end = size if end < 0 else end
             yield ("data", source[pos:end]); pos = end; continue
-        if re.match(r"<!doctype\b", source[pos:], re.I):
+        if _DOCTYPE_START.match(source, pos):
             end = source.find(">", pos + 2)
             if end < 0: yield ("data", source[pos:]); return
             yield ("decl", source[pos + 2:end]); pos = end + 1; continue
-        close = re.match(r"</\s*([A-Za-z][\w:-]*)[^>]*>", source[pos:])
+        close = _END_TAG.match(source, pos)
         if close:
-            yield ("end", close.group(1)); pos += close.end(); continue
-        opening = re.match(r"<([A-Za-z][\w:-]*)", source[pos:])
+            yield ("end", close.group(1)); pos = close.end(); continue
+        opening = _START_TAG.match(source, pos)
         if not opening:
             yield ("data", "<"); pos += 1; continue
-        end = tag_tokenizer.check_for_whole_start_tag(pos)
+        tag_tokenizer.tag = None
+        tag_tokenizer.attrs = []
+        end = tag_tokenizer.parse_starttag(pos)
         if end < 0: yield ("data", source[pos:]); return
-        token = source[pos:end]
+        closed = source[end - 2:end] == '/>'
         tag = opening.group(1).lower()
-        yield ("start", token); pos = end
-        if tag in _TreeBuilderMixin.raw_text_tags and not token.rstrip().endswith("/>"): raw = tag
+        yield ("start", (tag_tokenizer.tag, tag_tokenizer.attrs, closed)); pos = end
+        if tag in _TreeBuilderMixin.raw_text_tags and not closed: raw = tag
 
 
-class _StartTagParser(HTMLParser):
+class _StartTagTokenizer(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=False); self.tag = None; self.attrs = []
     def handle_starttag(self, tag, attrs): self.tag, self.attrs = tag.lower(), attrs
@@ -326,9 +336,8 @@ class IncrementalDOMParser(_TreeBuilderMixin):
             self.body = self._make(self.html, "body")
         self.mode = "in-body"
 
-    def _start(self, raw):
-        helper = _StartTagParser(); helper.feed(raw); helper.close()
-        tag, attrs = helper.tag, helper.attrs
+    def _start(self, token):
+        tag, attrs, closed = token
         if not tag: return
         self._pop_auto_closing(tag)
         node = self._create_element(tag, attrs)
@@ -340,7 +349,7 @@ class IncrementalDOMParser(_TreeBuilderMixin):
             if tag == "script": self.services.document_services.parser_script_start(node)
             elif tag not in self.raw_text_tags: self.services.resource_services.discover_element_resource(node)
         # An ignored duplicate (a second html/head/body) never reached the tree.
-        if tag not in self.void and not raw.rstrip().endswith("/>") and node.parentNode is not None:
+        if tag not in self.void and not closed and node.parentNode is not None:
             self.stack.append(node)
 
     def _end(self, tag):
@@ -367,8 +376,18 @@ class IncrementalDOMParser(_TreeBuilderMixin):
         return True
 
     def run(self):
+        if self.done:
+            return True
         while self.index < len(self.tokens):
-            kind, value = self.tokens[self.index]; self.index += 1
+            start = self.index
+            end = build_batch(self)
+            if end != start:
+                self.index = end
+                if self.services.document_services.parser_is_blocked(): return False
+                continue
+            kind, value = self.tokens[self.index]
+            self.tokens[self.index] = None
+            self.index += 1
             if self.building:
                 self._enter()
             if kind == "start": self._start(value)
@@ -387,6 +406,8 @@ class IncrementalDOMParser(_TreeBuilderMixin):
             # A document whose markup placed nothing still gets the skeleton, as the last step.
             self._open_body()
         self.done = True
+        self.tokens.clear()
+        self.index = 0
         return True
 
 

@@ -20,13 +20,15 @@ class TestHeapLimits(unittest.TestCase):
     """验证有界堆增长与外部内存记账；上限用 16MB，默认上限撞不到。"""
 
     def test_the_context_reports_its_isolate_heap_statistics(self):
-        """堆统计：三个字段都是字节，上限与提交量大于 0，使用量不超过提交量。"""
+        """堆统计：字段都是字节，上限与提交量大于 0，使用量不超过提交量。"""
         context = pyv8.Context(object)
         statistics = context.heap_statistics()
-        self.assertEqual(sorted(statistics), ["limit", "total", "used"])
+        self.assertEqual(sorted(statistics), ["external", "limit", "physical", "total", "used"])
         self.assertGreater(statistics["limit"], 0)
         self.assertGreater(statistics["total"], 0)
         self.assertGreaterEqual(statistics["total"], statistics["used"])
+        self.assertGreaterEqual(statistics["physical"], 0)
+        self.assertGreaterEqual(statistics["external"], 0)
 
     def run_code(self, code, timeout=120):
         return subprocess.run(

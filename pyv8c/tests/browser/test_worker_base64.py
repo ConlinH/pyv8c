@@ -1,8 +1,10 @@
 """A worker decodes binary strings, rather than returning an unimplemented undefined."""
+
+import asyncio
 import json
 import time
 import pytest
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 SOURCE = r'''const errors=[];
 for (const fn of [()=>atob('%'),()=>btoa('\u2028'),()=>atob()]) {
@@ -12,11 +14,11 @@ postMessage([atob(' YQ =='),btoa('\x00\xff'),atob('/w==').charCodeAt(0),errors])
 
 
 @pytest.mark.parametrize('kind', ['dedicated', 'shared'])
-def test_worker_base64_roundtrip_and_invalid_arguments(kind):
-    browser = Browser(real_network=False)
+async def test_worker_base64_roundtrip_and_invalid_arguments(kind):
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://probe.test/')
+        (await page.set_content('<body></body>', url='https://probe.test/', wait_until="commit"))
         if kind == 'dedicated':
             source, constructor, receiver = SOURCE, 'Worker', 'w'
         else:
@@ -31,7 +33,7 @@ def test_worker_base64_roundtrip_and_invalid_arguments(kind):
         while time.monotonic()<deadline:
             result=page.evaluate('window.result')
             if isinstance(result,list):break
-            time.sleep(.01)
+            (await asyncio.sleep(.01))
         assert result == ['a','AP8=',255,['InvalidCharacterError','InvalidCharacterError','TypeError']]
     finally:
-        browser.close()
+        (await browser.close())

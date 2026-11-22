@@ -1,12 +1,6 @@
-"""Transport-neutral request and response values shared by every backend.
-
-A backend owns how bytes travel, never what they mean, so a context can swap
-cycronet for curl_cffi (or for a host-supplied backend) without the resource
-loader noticing.  ``request.options`` carries settings only some transports
-understand; a backend ignores the ones it has no equivalent for.
-"""
+"""Transport-neutral request and response values."""
 import json as json_module
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import RLock
 
 from ..foundation.urls import same_origin
@@ -18,36 +12,52 @@ class NetworkUnavailableError(RuntimeError):
 
 
 class RequestHandle:
-    """Thread-safe cancellation handle for a network future.
-
-    The lock covers the future swap: a completion landing between the read of
-    :attr:`cancelled` and the swap must not cancel the wrong work.
-    """
+    """Thread-safe cancellation signal for one transport submission."""
 
     def __init__(self):
         self._cancelled = False
         self._lock = RLock()
-        self.future = None
+        self._abort = None
 
     @property
     def cancelled(self):
         with self._lock:
             return self._cancelled
 
+    def attach_abort(self, callback):
+        """Register the interrupt, invoking it immediately after an early cancel."""
+        with self._lock:
+            if not self._cancelled:
+                self._abort = callback
+                return
+        self._interrupt(callback)
+
+    def detach_abort(self):
+        """The transport has returned and its interrupt is no longer valid."""
+        with self._lock:
+            self._abort = None
+
     def cancel(self):
+        """Interrupt transport once, leaving completion owned by the transport."""
         with self._lock:
             self._cancelled = True
-            future = self.future
-        if future is not None:
-            future.cancel()
+            callback = self._abort
+            self._abort = None
+        return self._interrupt(callback)
+
+    @staticmethod
+    def _interrupt(callback):
+        if callback is None:
+            return False
+        try:
+            return callback() is not False
+        except Exception:
+            return False
 
 
-@dataclass
+@dataclass(frozen=True)
 class NetworkRequest:
-    """One transport-level request.
-
-    Resource loading constructs these by keyword, independently of field order.
-    """
+    """One transport-level request, finalised before a transport sees it."""
 
     url: str
     method: str = "GET"
@@ -56,15 +66,15 @@ class NetworkRequest:
     timeout: float | None = None
     credentials: str = "same-origin"
     mode: str = "cors"
-    #: ``"follow"`` lets the engine run the chain; any other mode asks for one hop,
-    #: because the caller inspects the hops itself.
     redirect: str = "follow"
+    allow_redirects: bool | None = None
     origin: str | None = None
-    #: The schemeful site of the initiating document and its ancestors.
     site_for_cookies: str | None = None
     top_level_navigation: bool = False
-    #: Transport extensions (impersonate, proxies, verify, ...); unknown keys are ignored.
     options: dict[str, object] = field(default_factory=dict)
+    generated_cookie: bool = False
+    cookie_override: tuple[tuple[str, str], ...] = ()
+    blocking_io: bool = False
 
 
 def permits_credentials(request):
@@ -74,17 +84,33 @@ def permits_credentials(request):
 
 
 def cookie_header(jar, request) -> str:
-    """The ``Cookie`` header *request* may carry from *jar*, if any.
-
-    The rule every engine applies: ``"omit"`` sends none, ``"include"`` anywhere,
-    ``"same-origin"`` (the default) only where the origins match.  A host-level
-    request has no origin, so nothing about it can be cross-origin.
-    """
+    """The ``Cookie`` header *request* may carry from *jar*, if any."""
     if jar is None or not permits_credentials(request):
         return ""
     site = request.site_for_cookies if request.site_for_cookies is not None else request.origin
     return jar.header_for(request.url, site_for_cookies=site,
                           top_level_navigation=request.top_level_navigation, method=request.method)
+
+
+def with_cookie_header(request, jar):
+    """Return *request* with its ``Cookie`` header decided once, at build time.
+
+    *override* pairs lead and replace same-named entries from the jar.
+    """
+    headers = dict(request.headers)
+    if any(str(name).lower() == "cookie" for name in headers):
+        return request
+    value = cookie_header(jar, request)
+    override = dict(request.cookie_override)
+    if override:
+        kept = [part for part in value.split("; ")
+                if part and part.split("=", 1)[0] not in override]
+        explicit = [f"{name}={item}" for name, item in override.items()]
+        value = "; ".join(explicit + kept)
+    if not value:
+        return request
+    headers["Cookie"] = value
+    return replace(request, headers=headers, generated_cookie=True)
 
 
 @dataclass
@@ -98,10 +124,10 @@ class NetworkResponse:
     body: object = ""
     redirected: bool = False
     type: str = "basic"
-    #: Wall-clock seconds spent, when the transport reports it.
     elapsed: float | None = None
-    #: Whether an inspected redirect chain crossed an origin.
     redirect_crossed: bool = False
+    redirect_hops: int = 0
+    redirect_span: float = 0.0
 
     @property
     def ok(self): return 200 <= int(self.status) < 300
@@ -141,10 +167,7 @@ class NetworkResponse:
 
     @property
     def cookies(self):
-        """The cookies the response set, as ``name -> value``.
-
-        Split the way the jar splits its own, not with a naive ``split(",")``.
-        """
+        """The cookies the response set, as ``name -> value``."""
         header = self.headers.get("set-cookie") if isinstance(self.headers, dict) else None
         if not header:
             return {}

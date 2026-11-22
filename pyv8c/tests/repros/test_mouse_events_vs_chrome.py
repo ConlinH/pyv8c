@@ -108,10 +108,10 @@ COMPARED_TO_THE_PIXEL = frozenset({
 
 
 @pytest.fixture(scope="module")
-def reference():
+async def reference():
     """One local Chrome for the module, or a skip saying what is missing."""
     try:
-        with chrome_reference() as session:
+        async with chrome_reference() as session:
             yield session
     except ReferenceUnavailable as unavailable:
         pytest.skip(str(unavailable))
@@ -128,71 +128,72 @@ def _scenario_ids():
     return sorted(SCENARIOS)
 
 
-def _centre(page, selector, dx=0, dy=0):
+async def _centre(page, selector, dx=0, dy=0, *, reference=False):
     """The centre of the element's box on *page*, offset by ``(dx, dy)``."""
-    values = page.evaluate(
+    source = (
         """(() => { const r = document.querySelector('%s').getBoundingClientRect();
              return [r.x + r.width / 2 + %d, r.y + r.height / 2 + %d]; })()"""
         % (selector, int(dx), int(dy))
     )
+    values = await page.evaluate(source) if reference else page.evaluate(source)
     return float(values[0]), float(values[1])
 
 
-def _drive(page, steps):
+async def _drive(page, steps, *, reference=False):
     """Run the steps against a Playwright-style page: ``mouse`` plus ``evaluate``."""
     for step in steps:
         action = step[0]
         if action == "script":
-            page.evaluate(step[1])
+            (await page.evaluate(step[1])) if reference else page.evaluate(step[1])
             continue
         if action == "down":
-            page.mouse.down()
+            (await page.mouse.down()) if reference else (await page.mouse.down())
             continue
         if action == "up":
-            page.mouse.up()
+            (await page.mouse.up()) if reference else (await page.mouse.up())
             continue
         selector = step[1]
         button = step[2] if len(step) > 2 and step[2] else "left"
         dx = step[3] if len(step) > 3 else 0
         dy = step[4] if len(step) > 4 else 0
-        point = _centre(page, selector, dx, dy)
+        point = await _centre(page, selector, dx, dy, reference=reference)
         if action == "move":
-            page.mouse.move(*point)
+            (await page.mouse.move(*point)) if reference else (await page.mouse.move(*point))
         elif action == "click":
-            page.mouse.click(*point, button=button)
+            (await page.mouse.click(*point, button=button)) if reference else (await page.mouse.click(*point, button=button))
         elif action == "dblclick":
-            page.mouse.dblclick(*point, button=button)
+            (await page.mouse.dblclick(*point, button=button)) if reference else (await page.mouse.dblclick(*point, button=button))
         else:  # pragma: no cover - a typo in SCENARIOS
             raise AssertionError(f"unknown step {action!r}")
 
 
-def _chrome_log(reference, steps):
-    page = reference.browser.new_page(viewport={"width": 1280, "height": 720})
+async def _chrome_log(reference, steps):
+    page = (await reference.browser.new_page(viewport={"width": 1280, "height": 720}))
     try:
-        page.route("**/*", lambda route: route.fulfill(
-            status=200, content_type="text/html", body=PAGE.replace("__RECORDER__", RECORDER)))
-        page.goto(URL)
-        _drive(page, steps)
-        return page.evaluate("log")
+        (await page.route("**/*", lambda route: route.fulfill(
+            status=200, content_type="text/html", body=PAGE.replace("__RECORDER__", RECORDER))))
+        (await page.goto(URL))
+        await _drive(page, steps, reference=True)
+        return (await page.evaluate("log"))
     finally:
-        page.close()
+        (await page.close())
 
 
-def _here_log(steps):
-    from pyv8c import Browser
+async def _here_log(steps):
+    from pyv8c.async_api import Browser
 
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE.replace("__RECORDER__", RECORDER), url=URL)
-        _drive(page, steps)
+        (await page.set_content(PAGE.replace("__RECORDER__", RECORDER), url=URL, wait_until="commit"))
+        await _drive(page, steps)
         return page.evaluate("log")
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.fixture(scope="module")
-def compared(request, reference):
+async def compared(request, reference):
     """Both browsers' logs for one scenario, or a skip when Chrome cannot run.
 
     Move events are dropped for every scenario that is not only about moving:
@@ -202,7 +203,7 @@ def compared(request, reference):
     """
     name = request.param
     steps = SCENARIOS[name]
-    chrome, here = _chrome_log(reference, steps), _here_log(steps)
+    chrome, here = (await _chrome_log(reference, steps)), (await _here_log(steps))
     if name in MOVE_SCENARIOS:
         return chrome, here
     return ([row for row in chrome if row[0] not in COALESCED_MOVES],
@@ -210,33 +211,33 @@ def compared(request, reference):
 
 
 @pytest.mark.parametrize("compared", _scenario_ids(), indirect=True)
-def test_the_two_browsers_dispatch_the_same_sequence(compared):
+async def test_the_two_browsers_dispatch_the_same_sequence(compared):
     chrome, here = compared
     assert [row[:6] for row in here] == [row[:6] for row in chrome]
 
 
 @pytest.mark.parametrize("compared",
                          sorted(COMPARED_TO_THE_PIXEL & set(SCENARIOS)), indirect=True)
-def test_the_same_scenarios_agree_on_the_coordinates_too(compared):
+async def test_the_same_scenarios_agree_on_the_coordinates_too(compared):
     chrome, here = compared
     assert here == chrome
 
 
 @pytest.fixture(scope="module")
-def timestamped(reference):
+async def timestamped(reference):
     """One scenario's logs, for the question the sequence comparison does not ask."""
     steps = SCENARIOS["click-a-button"]
-    return _chrome_log(reference, steps), _here_log(steps)
+    return (await _chrome_log(reference, steps)), (await _here_log(steps))
 
 
-def test_both_browsers_stamp_events_on_the_documents_own_clock(timestamped):
+async def test_both_browsers_stamp_events_on_the_documents_own_clock(timestamped):
     """A page can compare an event's timeStamp with performance.now() on either side."""
     chrome, here = timestamped
     assert here and {row[12] for row in here} == {"true"}
     assert {row[12] for row in chrome} == {"true"}
 
 
-def test_both_browsers_report_the_same_shape_of_merged_samples(timestamped):
+async def test_both_browsers_report_the_same_shape_of_merged_samples(timestamped):
     """A pointer event's merged samples read as a non-empty list of pointer events.
 
     Only that much is compared: Chrome hands back a copy with coordinates of its own

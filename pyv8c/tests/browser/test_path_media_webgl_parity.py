@@ -4,20 +4,20 @@ import sys
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def evaluate(script):
-    browser = Browser(real_network=False, stub_logging="off")
+async def evaluate(script):
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
         return json.loads(page.evaluate("JSON.stringify(" + script + ")"))
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_current_path_fill_rules_boundaries_and_creation_transform():
-    assert evaluate("""(() => {
+async def test_current_path_fill_rules_boundaries_and_creation_transform():
+    assert (await evaluate("""(() => {
         const c=document.createElement('canvas').getContext('2d');
         c.rect(0,0,10,10);c.rect(2,2,6,6);
         const nested=[c.isPointInPath(5,5),c.isPointInPath(5,5,'evenodd'),
@@ -37,7 +37,7 @@ def test_current_path_fill_rules_boundaries_and_creation_transform():
             try{f();errors.push('accepted')}catch(e){errors.push(e.name)}
         }
         return {nested,transformed,pixel,triangle,opposite,errors};
-    })()""") == {
+    })()""")) == {
         "nested": [True, False, True, True, False, False],
         "transformed": [True, False], "pixel": [255, 0, 0, 255],
         "triangle": [True, False], "opposite": False,
@@ -45,18 +45,18 @@ def test_current_path_fill_rules_boundaries_and_creation_transform():
     }
 
 
-def test_monochrome_integer_ranges_on_a_color_display():
-    assert evaluate("""[
+async def test_monochrome_integer_ranges_on_a_color_display():
+    assert (await evaluate("""[
         '(monochrome)','(monochrome:0)','(monochrome:1)',
         '(min-monochrome:0)','(max-monochrome:0)',
         '(max-monochrome:-1)','(monochrome:-1)','(monochrome:0.5)'
-    ].map(q=>matchMedia(q).matches)""") == [
+    ].map(q=>matchMedia(q).matches)""")) == [
         False, True, False, True, True, False, False, False,
     ]
 
 
-def test_anisotropy_limit_is_enabled_per_webgl_context():
-    assert evaluate("""['webgl','webgl2'].map(kind=>{
+async def test_anisotropy_limit_is_enabled_per_webgl_context():
+    assert (await evaluate("""['webgl','webgl2'].map(kind=>{
         const gl=document.createElement('canvas').getContext(kind);
         gl.getSupportedExtensions();
         const before=[gl.getParameter(34047),gl.getError()];
@@ -65,15 +65,15 @@ def test_anisotropy_limit_is_enabled_per_webgl_context():
         const other=document.createElement('canvas').getContext(kind);
         const isolated=[other.getParameter(34047),other.getError()];
         return {before,after,isolated,same:gl.getExtension('EXT_texture_filter_anisotropic')===ext};
-    })""") == [
+    })""")) == [
         {"before": [None, 1280], "after": [16, 0], "isolated": [None, 1280], "same": True},
     ] * 2
 
 
 @pytest.mark.parametrize('offscreen', [False, True])
-def test_path_coercion_order_defaults_and_exception_short_circuit(offscreen):
+async def test_path_coercion_order_defaults_and_exception_short_circuit(offscreen):
     canvas = "new OffscreenCanvas(32,32)" if offscreen else "document.createElement('canvas')"
-    assert evaluate("""(() => {
+    assert (await evaluate("""(() => {
         const c=CANVAS.getContext('2d');c.rect(0,0,10,10);
         const log=[],n=name=>({valueOf(){log.push(name);return 5}});
         const rule={toString(){log.push('rule');return 'nonzero'}};
@@ -83,16 +83,16 @@ def test_path_coercion_order_defaults_and_exception_short_circuit(offscreen):
         try{c.isPointInPath({valueOf(){log.push('throw');throw new RangeError('stop')}},n('y'),rule)}
         catch(e){log.push(e.name)}
         return {inside,defaultRule,log,before};
-    })()""".replace('CANVAS', canvas)) == {
+    })()""".replace('CANVAS', canvas))) == {
         'inside': True, 'defaultRule': True, 'before': 3,
         'log': ['x', 'y', 'rule', 'throw', 'RangeError'],
     }
 
 
 @pytest.mark.parametrize('offscreen', [False, True])
-def test_path_degeneracy_tiny_geometry_and_curved_boundary(offscreen):
+async def test_path_degeneracy_tiny_geometry_and_curved_boundary(offscreen):
     canvas = "new OffscreenCanvas(32,32)" if offscreen else "document.createElement('canvas')"
-    assert evaluate("""(() => {
+    assert (await evaluate("""(() => {
         const c=CANVAS.getContext('2d'),out=[];
         c.rect(0,0,0,10);out.push(c.isPointInPath(0,5));
         c.beginPath();c.moveTo(0,0);c.lineTo(10,10);out.push(c.isPointInPath(5,5));
@@ -107,13 +107,13 @@ def test_path_degeneracy_tiny_geometry_and_curved_boundary(offscreen):
         c.bezierCurveTo(0,10,10,10,10,0);c.resetTransform();
         out.push(c.isPointInPath(30,36),c.isPointInPath(10,6));
         return out;
-    })()""".replace('CANVAS', canvas)) == [
+    })()""".replace('CANVAS', canvas))) == [
         False, False, False, False, True, True, False, True, False,
     ]
 
 
-def test_self_intersections_retracing_and_closed_path_continuation():
-    assert evaluate("""(() => {
+async def test_self_intersections_retracing_and_closed_path_continuation():
+    assert (await evaluate("""(() => {
         const c=document.createElement('canvas').getContext('2d'),out=[];
         const hit=()=>[c.isPointInPath(0,0),c.isPointInPath(0,0,'evenodd')];
         c.moveTo(-10,-10);c.lineTo(10,10);c.lineTo(-10,10);c.lineTo(10,-10);out.push(hit());
@@ -123,12 +123,12 @@ def test_self_intersections_retracing_and_closed_path_continuation():
         c.beginPath();c.rect(0,0,10,10);c.lineTo(-10,0);c.lineTo(0,-10);out.push(hit());
         out.push([c.isPointInPath(5,5),c.isPointInPath(-2,-2)]);
         return out;
-    })()""") == [[True, False], [True, False], [False, False],
+    })()""")) == [[True, False], [True, False], [False, False],
                 [False, False], [False, False], [True, True]]
 
 
-def test_collapsed_path_endpoints_and_oppositely_traced_ellipse_boundaries():
-    assert evaluate("""(() => {
+async def test_collapsed_path_endpoints_and_oppositely_traced_ellipse_boundaries():
+    assert (await evaluate("""(() => {
         const c=document.createElement('canvas').getContext('2d'),out=[];
         const hit=(x,y)=>[c.isPointInPath(x,y),c.isPointInPath(x,y,'evenodd')];
         c.moveTo(0,-6);c.lineTo(0,6);out.push(hit(0,0),hit(0,-6),hit(0,6));
@@ -140,7 +140,7 @@ def test_collapsed_path_endpoints_and_oppositely_traced_ellipse_boundaries():
         c.beginPath();c.scale(0,1);c.arc(0,0,10,0,2*Math.PI);c.resetTransform();
         out.push(hit(0,0),hit(0,10));
         return out;
-    })()""") == [[False, False], [True, True], [True, True],
+    })()""")) == [[False, False], [True, True], [True, True],
                 [True, True], [False, False], [True, True],
                 [False, False], [False, False], [False, False],
                 [False, False], [False, False]]
@@ -150,14 +150,14 @@ def test_collapsed_path_endpoints_and_oppositely_traced_ellipse_boundaries():
     ('moveTo', 2), ('lineTo', 2), ('arc', 5), ('ellipse', 7),
     ('quadraticCurveTo', 4), ('bezierCurveTo', 6),
 ])
-def test_path_methods_require_and_convert_all_arguments(method, required):
+async def test_path_methods_require_and_convert_all_arguments(method, required):
     script = """(() => {
         const c=document.createElement('canvas').getContext('2d'),log=[],errors=[];
         try{c.METHOD()}catch(e){errors.push([e.name,e.message])}
         c.METHOD(...Array.from({length:REQUIRED},(_,i)=>({valueOf(){log.push(i);return NaN}})));
         return {log,errors};
     })()""".replace('METHOD', method).replace('REQUIRED', str(required))
-    assert evaluate(script) == {
+    assert (await evaluate(script)) == {
         'log': list(range(required)),
         'errors': [['TypeError', f"Failed to execute '{method}' on 'CanvasRenderingContext2D': "
                     f'{required} arguments required, but only 0 present.']],
@@ -184,15 +184,15 @@ def test_path_methods_require_and_convert_all_arguments(method, required):
     ('calc(1/**/+/**/-1)', [False, False, False]),
     ('calc(1/**/ + /**/-1)', [True, True, True]), ('calc(0 + 0)junk', [False, False, False]),
 ])
-def test_monochrome_css_integer_math_observed_in_chrome(value, expected):
+async def test_monochrome_css_integer_math_observed_in_chrome(value, expected):
     queries = [f'({prefix}monochrome:{value})' for prefix in ('', 'min-', 'max-')]
-    assert evaluate(json.dumps(queries) + '.map(q=>matchMedia(q).matches)') == expected
+    assert (await evaluate(json.dumps(queries) + '.map(q=>matchMedia(q).matches)')) == expected
 
 
-def test_long_media_integer_tokens_do_not_change_host_integer_limits():
+async def test_long_media_integer_tokens_do_not_change_host_integer_limits():
     before = sys.get_int_max_str_digits()
-    assert evaluate("""['9'.repeat(4500),'-'+'9'.repeat(4500),'0'.repeat(4500)]
-        .map(value=>['','min-','max-'].map(prefix=>matchMedia('('+prefix+'monochrome:'+value+')').matches))""") == [
+    assert (await evaluate("""['9'.repeat(4500),'-'+'9'.repeat(4500),'0'.repeat(4500)]
+        .map(value=>['','min-','max-'].map(prefix=>matchMedia('('+prefix+'monochrome:'+value+')').matches))""")) == [
         [False, False, True], [False, True, False], [True, True, True],
     ]
     assert sys.get_int_max_str_digits() == before
@@ -218,5 +218,5 @@ def test_long_media_integer_tokens_do_not_change_host_integer_limits():
     ('(monochrome:0)garbage', False), ('(monochrome:0)(monochrome:1)', False),
     ('not screen and garbage', False), ('(monochrome:0)),(monochrome:0)', True),
 ])
-def test_balanced_media_query_conditions_and_error_recovery(query, expected):
-    assert evaluate(f'matchMedia({json.dumps(query)}).matches') is expected
+async def test_balanced_media_query_conditions_and_error_recovery(query, expected):
+    assert (await evaluate(f'matchMedia({json.dumps(query)}).matches')) is expected

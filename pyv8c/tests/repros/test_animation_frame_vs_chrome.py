@@ -2,7 +2,7 @@
 import pytest
 
 from harness import chrome_reference
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 PROBES = {
@@ -43,24 +43,24 @@ EXPECTED = {
 
 
 @pytest.fixture(scope='module')
-def reference():
-    with chrome_reference() as reference:
+async def reference():
+    async with chrome_reference() as reference:
         yield reference
 
 
 @pytest.mark.parametrize('case', PROBES)
-def test_frame_callback_mutation(reference, case):
+async def test_frame_callback_mutation(reference, case):
     script = 'globalThis.log=[];globalThis.done=false;' + PROBES[case] + "'scheduled'"
-    chrome = reference.browser.new_page()
-    browser = Browser(real_network=False, stub_logging='off')
+    chrome = (await reference.browser.new_page())
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        chrome.evaluate(script)
-        chrome.wait_for_function('done', timeout=3000)
-        assert chrome.evaluate('log') == EXPECTED[case]
+        (await chrome.evaluate(script))
+        (await chrome.wait_for_function('done', timeout=3000))
+        assert (await chrome.evaluate('log')) == EXPECTED[case]
         page.evaluate(script)
-        page.wait_for('done', timeout=3)
-        assert page.evaluate('log') == chrome.evaluate('log')
+        (await page.wait_for('done', timeout=3))
+        assert page.evaluate('log') == (await chrome.evaluate('log'))
     finally:
-        browser.close()
-        chrome.close()
+        (await browser.close())
+        (await chrome.close())

@@ -6,6 +6,8 @@ funnels into.  The failures below are the shapes pyv8c actually raises: the sche
 own ``RealmBusyError``, a bare Python failure, and a class that inherits nothing of the
 family -- which is what makes it invisible.
 """
+
+import asyncio
 import time
 
 import pytest
@@ -14,7 +16,7 @@ from loguru import logger
 pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
 pytestmark = pytest.mark.native
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.page_errors import DOMError, PageTypeError
 from pyv8c.foundation.host_errors import RealmBusyError
 
@@ -34,10 +36,10 @@ def sink():
     return messages, token
 
 
-def listening_page():
-    browser = Browser(stub_logging="off")
+async def listening_page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content("<html><body></body></html>")
+    (await page.set_content("<html><body></body></html>", wait_until="commit"))
     page.evaluate(
         "window.__errors = [];"
         " window.addEventListener('error', (event) => __errors.push(String(event.message)))"
@@ -45,59 +47,59 @@ def listening_page():
     return browser, page
 
 
-def drain(page, seconds=0.3):
+async def drain(page, seconds=0.3):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        page.run_until_idle(timeout=0)
-        time.sleep(0.01)
+        (await page.run_until_idle(timeout=0))
+        (await asyncio.sleep(0.01))
 
 
 @pytest.mark.parametrize("failure", HOST_FAILURES, ids=HOST_FAILURE_IDS)
-def test_a_task_that_raises_a_host_failure_is_logged_and_not_shown(failure):
+async def test_a_task_that_raises_a_host_failure_is_logged_and_not_shown(failure):
     messages, token = sink()
-    browser, page = listening_page()
+    browser, page = (await listening_page())
     try:
         page.tasks.post(lambda: (_ for _ in ()).throw(failure))
-        drain(page)
+        (await drain(page))
         assert page.evaluate("__errors.length") == 0
         assert page.evaluate("6 * 7") == 42
     finally:
         logger.remove(token)
-        browser.close()
+        (await browser.close())
     assert any("the host could not finish" in line for line in messages), messages
 
 
-def test_a_task_that_raises_a_declared_error_is_the_pages_to_see():
-    browser, page = listening_page()
+async def test_a_task_that_raises_a_declared_error_is_the_pages_to_see():
+    browser, page = (await listening_page())
     try:
         page.tasks.post(lambda: (_ for _ in ()).throw(PageTypeError("a failure the page caused")))
-        drain(page)
+        (await drain(page))
         assert page.evaluate("__errors.length") == 1
         assert "a failure the page caused" in page.evaluate("__errors[0]")
     finally:
-        browser.close()
+        (await browser.close())
 
 
 @pytest.mark.parametrize("failure", HOST_FAILURES, ids=HOST_FAILURE_IDS)
-def test_the_reporter_keeps_a_host_failure_off_the_window(failure):
+async def test_the_reporter_keeps_a_host_failure_off_the_window(failure):
     messages, token = sink()
-    browser, page = listening_page()
+    browser, page = (await listening_page())
     try:
         page.report_exception(failure)
-        drain(page, 0.1)
+        (await drain(page, 0.1))
         assert page.evaluate("__errors.length") == 0
     finally:
         logger.remove(token)
-        browser.close()
+        (await browser.close())
     assert any("the host could not finish" in line for line in messages), messages
 
 
-def test_the_reporter_still_reports_a_declared_error():
-    browser, page = listening_page()
+async def test_the_reporter_still_reports_a_declared_error():
+    browser, page = (await listening_page())
     try:
         page.report_exception(PageTypeError("a failure the page caused"))
-        drain(page, 0.1)
+        (await drain(page, 0.1))
         assert page.evaluate("__errors.length") == 1
         assert "a failure the page caused" in page.evaluate("__errors[0]")
     finally:
-        browser.close()
+        (await browser.close())

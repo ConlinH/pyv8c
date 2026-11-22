@@ -7,7 +7,8 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 
-from pyv8c import Browser, BrowserEnvironment  # noqa: E402
+from pyv8c import BrowserEnvironment
+from pyv8c.async_api import Browser
 from pyv8c.engine.idl import ArrayProto, Idl  # noqa: E402
 from pyv8c.foundation.environment import COLLECTED_KEYS  # noqa: E402
 from pyv8c.foundation.system_fonts import records as font_records  # noqa: E402
@@ -24,7 +25,7 @@ def chrome_or_skip():
         pytest.skip(str(missing))
 
 
-def test_a_collected_profile_drives_the_environment_it_was_read_from(tmp_path, capsys):
+async def test_a_collected_profile_drives_the_environment_it_was_read_from(tmp_path, capsys):
     path = tmp_path / "profile.json"
     assert collector.main(["--chrome", str(chrome_or_skip()), "--out", str(path)]) == 0
     assert "wrote" in capsys.readouterr().err
@@ -65,10 +66,10 @@ def test_a_collected_profile_drives_the_environment_it_was_read_from(tmp_path, c
     profile = BrowserEnvironment.from_file(path)
     collected = profile.resolved()
     assert [asdict(face) for face in profile.fonts.records] == expected_fonts
-    browser = Browser(environment=profile, stub_logging="off")
+    browser = (await Browser(environment=profile, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://profile.test/")
+        (await page.set_content("<body></body>", url="https://profile.test/", wait_until="commit"))
         assert page.evaluate("""[
             navigator.userAgent, navigator.appVersion, navigator.platform, navigator.vendor,
             navigator.language, navigator.languages, navigator.hardwareConcurrency,
@@ -98,10 +99,10 @@ def test_a_collected_profile_drives_the_environment_it_was_read_from(tmp_path, c
             len(collected["plugins"]),
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_the_high_entropy_hints_are_read_not_derived(tmp_path):
+async def test_the_high_entropy_hints_are_read_not_derived(tmp_path):
     path = tmp_path / "profile.json"
     assert collector.main(["--chrome", str(chrome_or_skip()), "--out", str(path),
                            "--timeout", "60"]) == 0

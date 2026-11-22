@@ -1,197 +1,115 @@
-"""WebSocket events belong to networking, including handshake failures."""
+"""WebSocket owner events, buffering and asynchronous transport teardown."""
+import asyncio
 from collections import deque
-import gc
-import os
-import queue
-import socket as sockets
-import weakref
-from threading import Event, RLock, Thread, get_ident
-from types import SimpleNamespace
 
 import pytest
+from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.server import serve
+from websockets.exceptions import ConnectionClosed
 
 from pyv8c.foundation.tasks import TaskSource
-from pyv8c.network.websockets import _Socket, WebSocketsTransport
-from pyv8c.network.cronet import CronetTransport
-from pyv8c.network.socket_lifetime import OwnedSocket
+from pyv8c.network import websockets as transport_module
+from pyv8c.network.websockets import WebSocketsTransport, _Socket
 
 
 class RecordingTasks:
     def __init__(self):
         self.pending = deque()
+        self.handshakes = 0
+        self.completions = []
 
-    def post_task(self, callback, source=TaskSource.DOM, **kwargs):
-        self.pending.append((source, callback))
+    def post_task(self, callback, source=TaskSource.DOM, *, document_bound=False):
+        self.pending.append((source, document_bound, callback))
+        return True
 
     def begin_network(self):
-        pass
+        self.handshakes += 1
 
     def complete_network(self):
-        pass
+        self.handshakes -= 1
+
+    def track_websocket(self, future, cancel):
+        self.completions.append(future)
+
+    def drain(self):
+        while self.pending:
+            source, _, callback = self.pending.popleft()
+            assert source is TaskSource.NETWORKING
+            callback()
 
 
-@pytest.mark.parametrize("event", ["open", "message", "error", "close"])
-def test_socket_events_are_asynchronous_networking_tasks(event):
-    tasks = RecordingTasks()
-    delivered = []
-    socket = _Socket(tasks, "ws://example.test/", [],
-                     {event: lambda *args: delivered.append(args)}, {})
-    socket._deliver(event, socket, "payload")
-    assert delivered == []
-    source, callback = tasks.pending.popleft()
-    assert source is TaskSource.NETWORKING
-    callback()
-    assert delivered == [(socket, "payload")]
-    assert not tasks.pending
+async def until(condition):
+    async with asyncio.timeout(3):
+        while not condition():
+            await asyncio.sleep(0.005)
 
 
-def test_socket_event_delivery_preserves_fifo_without_coalescing():
-    tasks = RecordingTasks()
-    delivered = []
-    socket = _Socket(tasks, "ws://example.test/", [], {
-        name: lambda *args, name=name: delivered.append(name)
-        for name in ("open", "message", "close")
-    }, {})
+def url(server):
+    return f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/"
+
+
+def recorded_socket(tasks, events):
+    callbacks = {name: lambda *args, name=name: events.append((name, args[1:]))
+                 for name in ("open", "message", "error", "close")}
+    return _Socket(None, tasks, "ws://example.test/", [], callbacks, {})
+
+
+def test_events_use_separate_document_networking_tasks_in_order():
+    tasks, events = RecordingTasks(), []
+    socket = recorded_socket(tasks, events)
     for name in ("open", "message", "message", "close"):
-        socket._deliver(name, socket)
-    assert delivered == []
-    assert all(source is TaskSource.NETWORKING for source, _ in tasks.pending)
-    while tasks.pending:
-        tasks.pending.popleft()[1]()
-    assert delivered == ["open", "message", "message", "close"]
-
-
-def test_cronet_socket_events_use_the_same_networking_boundary():
-    tasks = RecordingTasks()
-    delivered = []
-    handlers = {}
-    socket = object()
-
-    def factory(url, **kwargs):
-        handlers.update(kwargs)
-        return socket
-
-    transport = object.__new__(CronetTransport)
-    transport._closed = False
-    transport._lock = RLock()
-    transport._websockets = set()
-    transport.client = SimpleNamespace(websocket=factory)
-    transport.websocket(tasks, "ws://example.test/", [], {
-        name: lambda *args, name=name: delivered.append(name)
-        for name in ("open", "message", "error", "close")
-    })
-    handlers["on_open"](socket)
-    handlers["on_message"](socket, "text")
-    handlers["on_error"](socket, RuntimeError("failed"))
-    handlers["on_close"](socket, 1006, "", False)
-    assert delivered == []
-    assert all(source is TaskSource.NETWORKING for source, _ in tasks.pending)
-    while tasks.pending:
-        tasks.pending.popleft()[1]()
-    assert delivered == ["open", "message", "error", "close"]
-
-
-@pytest.mark.parametrize("dispose", [False, True])
-def test_close_during_handshake_closes_late_connection(monkeypatch, dispose):
-    entered, release = Event(), Event()
-    tasks, delivered, closed = RecordingTasks(), [], []
-
-    class Connection:
-        def close(self, code, reason):
-            closed.append((code, reason))
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def __iter__(self):
-            return iter(())
-
-    def connect(*args, **kwargs):
-        entered.set()
-        assert release.wait(3)
-        return Connection()
-
-    monkeypatch.setattr("pyv8c.network.websockets._connect_client", lambda: connect)
-    socket = _Socket(tasks, "ws://example.test/", [], {
-        name: lambda *args, name=name: delivered.append(name)
-        for name in ("open", "error", "close")
-    }, {})
-    socket.start()
-    try:
-        assert entered.wait(3)
-        if dispose:
-            socket.dispose()
-        else:
-            socket.close(1000, "cancelled")
-    finally:
-        release.set()
-        socket._thread.join(3)
-    assert not socket._thread.is_alive()
-    while tasks.pending:
-        tasks.pending.popleft()[1]()
-    assert len(closed) == 1
-    assert delivered == ([] if dispose else ["error", "close"])
-
-
-def test_dispose_suppresses_already_queued_events():
-    tasks, delivered = RecordingTasks(), []
-    socket = _Socket(tasks, "ws://example.test/", [],
-                     {"open": lambda *_: delivered.append("open")}, {})
-    socket._deliver("open", socket)
-    socket.dispose()
-    while tasks.pending:
-        tasks.pending.popleft()[1]()
-    assert delivered == []
-
-
-@pytest.mark.parametrize("failed", [False, True])
-def test_transport_releases_finished_socket_before_close_delivery(monkeypatch, failed):
-    tasks, delivered = RecordingTasks(), []
-
-    class Connection:
-        close_code, close_reason = 1000, "done"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def __iter__(self):
-            return iter(())
-
-    def connect(*args, **kwargs):
-        if failed:
-            raise OSError("handshake failed")
-        return Connection()
-
-    monkeypatch.setattr("pyv8c.network.websockets._connect_client", lambda: connect)
-    transport = WebSocketsTransport()
-    socket = transport.websocket(tasks, "ws://example.test/", [], {
-        name: lambda *args, name=name: delivered.append(name)
-        for name in ("open", "error", "close")
-    })
-    socket._thread.join(3)
-    assert not socket._thread.is_alive()
-    assert not transport._sockets
-    while tasks.pending:
-        tasks.pending.popleft()[1]()
-    assert delivered == (["error", "close"] if failed else ["open", "close"])
+        socket._deliver(name, socket, "payload")
+    assert events == []
+    assert len(tasks.pending) == 4
+    assert all(bound for _, bound, _ in tasks.pending)
+    tasks.drain()
+    assert events == [(name, ("payload",)) for name in ("open", "message", "message", "close")]
     assert not socket._callbacks
 
 
-def test_socket_start_failure_releases_registration(monkeypatch):
-    def fail_start(self):
-        raise RuntimeError("cannot start thread")
+def test_dispose_suppresses_already_queued_events():
+    tasks, events = RecordingTasks(), []
+    socket = recorded_socket(tasks, events)
+    socket._deliver("open", socket)
+    socket.dispose()
+    tasks.drain()
+    assert events == []
 
-    monkeypatch.setattr(_Socket, "start", fail_start)
-    transport = WebSocketsTransport()
-    with pytest.raises(RuntimeError, match="cannot start thread"):
-        transport.websocket(RecordingTasks(), "ws://example.test/", [], {})
-    assert not transport._sockets
+
+@pytest.mark.parametrize("finished", [False, True])
+def test_close_before_open_delivery_fails_without_open_or_message(finished):
+    tasks, events = RecordingTasks(), []
+    socket = recorded_socket(tasks, events)
+    socket._deliver("open", socket)
+    socket._deliver("message", socket, "late", True)
+    if finished:
+        socket._deliver("close", socket, 1000, "remote", True)
+    socket.close()
+    if not finished:
+        socket._deliver("close", socket, 1000, "remote", True)
+    for _ in range(3):
+        tasks.pending.popleft()[2]()
+    assert [name for name, _ in events] == ["error"]
+    assert len(tasks.pending) == 1
+    tasks.drain()
+    assert events[-1] == ("close", (1006, "", False))
+    assert not socket._callbacks
+
+
+def test_pre_open_failure_callback_exception_still_schedules_close():
+    tasks, events = RecordingTasks(), []
+    socket = recorded_socket(tasks, events)
+
+    def fail(*args):
+        raise ValueError("error callback failed")
+
+    socket._callbacks["error"] = fail
+    socket._deliver("close", socket, 1000, "", True)
+    socket.close()
+    with pytest.raises(ValueError, match="error callback failed"):
+        tasks.pending.popleft()[2]()
+    tasks.drain()
+    assert events == [("close", (1006, "", False))]
 
 
 def test_close_callback_failure_still_releases_callbacks():
@@ -200,326 +118,189 @@ def test_close_callback_failure_still_releases_callbacks():
     def fail(*args):
         raise ValueError("listener failed")
 
-    socket = _Socket(tasks, "ws://example.test/", [], {"close": fail}, {})
+    socket = _Socket(None, tasks, "ws://example.test/", [], {"close": fail}, {})
     socket._deliver("close", socket, 1000, "", True)
     with pytest.raises(ValueError, match="listener failed"):
-        tasks.pending.popleft()[1]()
+        tasks.drain()
     assert not socket._callbacks
 
 
-def test_close_handshake_does_not_block_caller_and_is_started_once():
-    entered, release, returned = Event(), Event(), Event()
-    calls = []
+def test_socket_start_failure_releases_all_registrations(monkeypatch):
+    def fail_start(self, lifetime):
+        raise RuntimeError("cannot start loop")
 
-    class Connection:
-        def close(self, code, reason):
-            calls.append((code, reason, get_ident()))
-            entered.set()
-            assert release.wait(3)
-
-    socket = _Socket(RecordingTasks(), "ws://example.test/", [], {}, {})
-    socket._connection = Connection()
-
-    def close():
-        socket.close(1000, "done")
-        socket.close(1000, "again")
-        returned.set()
-
-    caller = Thread(target=close)
-    caller.start()
-    try:
-        assert entered.wait(2)
-        assert returned.wait(0.5), "caller is waiting for the peer's close handshake"
-    finally:
-        release.set()
-        caller.join(3)
-        worker = getattr(socket, "_io_thread", None)
-        if worker is not None:
-            worker.join(3)
-            assert not worker.is_alive()
-    assert len(calls) == 1
-    assert calls[0][:2] == (1000, "done")
-    assert calls[0][2] != caller.ident
-
-
-@pytest.mark.parametrize('finished', [False, True])
-def test_close_before_open_delivery_fails_without_open_or_message(finished):
-    tasks, events = RecordingTasks(), []
-    socket = _Socket(tasks, 'ws://example.test/', [], {
-        'open': lambda *_: events.append('open'),
-        'message': lambda *_: events.append('message'),
-        'error': lambda *_: events.append('error'),
-        'close': lambda _, code, reason, clean: events.append(('close', code, reason, clean)),
-    }, {})
-    socket._deliver('open', socket)
-    socket._deliver('message', socket, 'late', True)
-    if finished:
-        socket._deliver('close', socket, 1000, 'remote', True)
-    socket.close()
-    if not finished:
-        socket._deliver('close', socket, 1000, 'remote', True)
-    while tasks.pending:
-        tasks.pending.popleft()[1]()
-        if events == ['error']:
-            assert tasks.pending, 'close needs a later callback boundary'
-    assert events == ['error', ('close', 1006, '', False)]
-    assert not socket._callbacks
-
-
-def test_pre_open_failure_callback_exception_still_schedules_close():
-    tasks, events = RecordingTasks(), []
-
-    def fail(*args):
-        raise ValueError('error callback failed')
-
-    socket = _Socket(tasks, 'ws://example.test/', [], {
-        'error': fail, 'close': lambda *args: events.append('close'),
-    }, {})
-    socket._deliver('close', socket, 1000, '', True)
-    socket.close()
-    with pytest.raises(ValueError, match='error callback failed'):
-        tasks.pending.popleft()[1]()
-    assert len(tasks.pending) == 1
-    tasks.pending.popleft()[1]()
-    assert events == ['close']
-    assert not socket._callbacks
-
-
-def test_slow_send_returns_before_io_and_close_follows_pending_messages():
-    entered, release, returned = Event(), Event(), Event()
-    tasks, operations = RecordingTasks(), []
-
-    class Connection:
-        def send(self, data):
-            entered.set()
-            assert release.wait(3)
-            operations.append(('send', data))
-
-        def close(self, code, reason):
-            operations.append(('close', code, reason))
-
-    socket = _Socket(tasks, 'ws://example.test/', [], {}, {})
-    socket._connection = Connection()
-    socket._open_delivered = True
-
-    def submit():
-        socket.send('中')
-        socket.send_bytes(b'ab')
-        socket.close(1000, 'done')
-        returned.set()
-
-    caller = Thread(target=submit)
-    caller.start()
-    try:
-        assert entered.wait(2)
-        assert returned.wait(0.5), 'send blocked the page owner'
-        assert socket.buffered_amount == 5
-    finally:
-        release.set()
-        caller.join(3)
-        worker = getattr(socket, '_io_thread', None)
-        if worker is not None:
-            worker.join(3)
-            assert not worker.is_alive()
-    assert operations == [('send', '中'), ('send', b'ab'), ('close', 1000, 'done')]
-    assert socket.buffered_amount == 5, 'I/O completion must not mutate observable state mid-task'
-    while tasks.pending:
-        tasks.pending.popleft()[1]()
-    assert socket.buffered_amount == 0
-
-
-@pytest.mark.parametrize('failure', ['send', 'post'])
-def test_writer_failure_closes_connection_and_keeps_unsent_byte_count(failure):
-    closed = Event()
+    monkeypatch.setattr(_Socket, "start", fail_start)
+    engine = WebSocketsTransport()
     tasks = RecordingTasks()
-    if failure == 'post':
-        def fail_post(*args, **kwargs):
-            raise RuntimeError('queue rejected')
-        tasks.post_task = fail_post
-
-    class Connection:
-        def send(self, data):
-            if failure == 'send':
-                raise OSError('write failed')
-
-        def close(self, *args):
-            closed.set()
-
-    socket = _Socket(tasks, 'ws://example.test/', [], {}, {})
-    socket._connection = Connection()
-    socket.send('中')
-    assert closed.wait(3)
-    socket._io_thread.join(3)
-    assert not socket._io_thread.is_alive()
-    assert socket._write_error is not None
-    assert socket.buffered_amount == 3
+    with pytest.raises(RuntimeError, match="cannot start loop"):
+        engine.websocket(tasks, "ws://example.test/", [], {})
+    assert not engine._sockets
+    completion, = tasks.completions
+    assert completion.done()
+    engine.close()
 
 
-def test_peer_close_stops_idle_writer():
-    sent = Event()
-    socket = _Socket(RecordingTasks(), 'ws://example.test/', [], {}, {})
-    socket._connection = SimpleNamespace(send=lambda _: sent.set())
-    socket.send('data')
-    assert sent.wait(3)
-    socket._stop_writer()
-    socket._io_thread.join(3)
-    assert not socket._io_thread.is_alive()
+async def test_graceful_close_is_fifo_with_pending_sends_and_owner_acknowledges_bytes():
+    received = []
+    tasks = RecordingTasks()
+    engine = WebSocketsTransport()
 
-
-def test_idle_writer_does_not_retain_last_payload():
-    waiting = Event()
-
-    class ObservedQueue(queue.SimpleQueue):
-        reads = 0
-
-        def get(self):
-            self.reads += 1
-            if self.reads == 2:
-                waiting.set()
-            return super().get()
-
-    class Payload(bytearray):
-        pass
-
-    socket = _Socket(RecordingTasks(), 'ws://example.test/', [], {}, {})
-    socket._connection = SimpleNamespace(send=lambda _: None)
-    socket._writes = ObservedQueue()
-    payload = Payload(b'x' * 65536)
-    reference = weakref.ref(payload)
-    socket.send_bytes(payload)
-    del payload
-    try:
-        assert waiting.wait(3)
-        gc.collect()
-        assert reference() is None
-    finally:
-        socket._stop_writer()
-        socket._io_thread.join(3)
-        assert not socket._io_thread.is_alive()
-
-
-@pytest.mark.parametrize('close_first', [False, True])
-def test_dispose_interrupts_blocked_socket_write(close_first):
-    sender, peer = sockets.socketpair()
-    # Windows loopback may buffer the entire write despite a small SNDBUF.
-    # Zero disables that buffering so the unread peer actually blocks sendall.
-    sender.setsockopt(sockets.SOL_SOCKET, sockets.SO_SNDBUF, 0)
-    peer.setsockopt(sockets.SOL_SOCKET, sockets.SO_RCVBUF, 4096)
-    entered, finished = Event(), Event()
-
-    class Connection:
-        socket = OwnedSocket(sender)
-
-        def send(self, data):
-            entered.set()
-            try:
-                sender.sendall(data)
-            finally:
-                finished.set()
-
-        def close(self, *args):
-            sender.close()
-
-    transport = _Socket(RecordingTasks(), 'ws://example.test/', [], {'open': lambda *_: None}, {})
-    transport._connection = Connection()
-    transport._open_delivered = True
-    try:
-        transport.send_bytes(b'x' * (8 * 1024 * 1024))
-        assert entered.wait(3)
-        assert not finished.wait(0.1), 'fixture did not block the OS write'
-        if close_first:
-            transport.close()
-        transport.dispose()
-        transport.dispose()
-        transport._io_thread.join(2)
-        assert not transport._io_thread.is_alive(), 'dispose left the writer blocked'
-        assert not transport._callbacks
-    finally:
-        sender.close()
-        peer.close()
-        transport._io_thread.join(3)
-
-
-@pytest.mark.skipif(os.name != 'nt', reason='Windows handle cancellation')
-def test_cancel_and_close_share_socket_lifetime_lock(monkeypatch):
-    entered, release, close_started, closed = Event(), Event(), Event(), Event()
-    calls = []
-
-    class Raw:
-        def fileno(self):
-            assert not closed.is_set()
-            return 1234
-
-        def shutdown(self, how):
-            calls.append('shutdown')
-
-        def close(self):
-            calls.append('close')
-            closed.set()
-
-    def cancel(handle, overlapped):
-        assert handle == 1234
-        entered.set()
-        assert release.wait(3)
-        assert not closed.is_set()
-        calls.append('cancel')
-        return 1
-
-    monkeypatch.setattr('pyv8c.network.socket_lifetime._cancel_io', cancel)
-    owned = OwnedSocket(Raw())
-    aborter = Thread(target=owned.abort)
-
-    def close():
-        close_started.set()
-        owned.close()
-
-    closer = Thread(target=close)
-    aborter.start()
-    try:
-        assert entered.wait(3)
-        closer.start()
-        assert close_started.wait(3)
-        assert not closed.wait(0.1)
-    finally:
-        release.set()
-        aborter.join(3)
-        if closer.ident is not None:
-            closer.join(3)
-    assert not aborter.is_alive()
-    assert not closer.is_alive()
-    assert calls[:3] == ['cancel', 'shutdown', 'close']
-
-
-@pytest.mark.skipif(os.name != 'nt', reason='Windows handle cancellation')
-@pytest.mark.parametrize('code', [5, 1168])
-def test_cancel_failure_is_reported_after_socket_cleanup(monkeypatch, code):
-    import ctypes
-
-    closed = Event()
-
-    class Raw:
-        def fileno(self):
-            return 1234
-
-        def shutdown(self, how):
+    async def reader(connection):
+        try:
+            async for message in connection:
+                received.append(message)
+        except ConnectionClosed:
             pass
+        received.append((connection.close_code, connection.close_reason))
 
-        def close(self):
-            closed.set()
-
-    def fail(*args):
-        ctypes.set_last_error(code)
-        return 0
-
-    previous = ctypes.get_last_error()
-    monkeypatch.setattr('pyv8c.network.socket_lifetime._cancel_io', fail)
     try:
-        if code == 1168:
-            OwnedSocket(Raw()).abort()  # No pending operation is already complete.
-        else:
-            with pytest.raises(OSError) as error:
-                OwnedSocket(Raw()).abort()
-            assert error.value.winerror == code
-        assert closed.is_set()
+        async with serve(reader, "127.0.0.1", 0) as server:
+            socket = engine.websocket(tasks, url(server), [], {"open": lambda *_: None})
+            await until(lambda: tasks.pending)
+            tasks.drain()
+            socket.send("中")
+            socket.send_bytes(b"ab")
+            socket.close(4001, "done")
+            socket.close(4002, "again")
+            await asyncio.wrap_future(socket.completion)
+            assert not engine._sockets
+            assert tasks.handshakes == 0
+            await until(lambda: len(received) == 3)
+            assert received == ["中", b"ab", (4001, "done")]
+            assert socket.buffered_amount == 5
+            assert [bound for _, bound, _ in tasks.pending] == [False]
+            tasks.drain()
+            assert socket.buffered_amount == 0
     finally:
-        ctypes.set_last_error(previous)
+        await asyncio.to_thread(engine.close)
+
+
+@pytest.mark.parametrize("limit", ["messages", "bytes"])
+async def test_sent_messages_release_admission_before_owner_acknowledgement(monkeypatch, limit):
+    tasks, received = RecordingTasks(), []
+    engine = WebSocketsTransport()
+
+    async def reader(connection):
+        async for message in connection:
+            received.append(message)
+
+    monkeypatch.setattr(transport_module, "_MAX_PENDING_MESSAGES", 1 if limit == "messages" else 32)
+    monkeypatch.setattr(transport_module, "_MAX_PENDING_BYTES", 32 if limit == "messages" else 3)
+    try:
+        async with serve(reader, "127.0.0.1", 0) as server:
+            socket = engine.websocket(tasks, url(server), [], {"open": lambda *_: None})
+            await until(lambda: tasks.pending)
+            tasks.drain()
+            for count, data in enumerate(("中", b"abc", "字"), 1):
+                if isinstance(data, str):
+                    socket.send(data)
+                else:
+                    socket.send_bytes(data)
+                await until(lambda: socket._sent_bytes == count * 3)
+                assert socket.buffered_amount == count * 3
+            await until(lambda: len(received) == 3)
+            assert received == ["中", b"abc", "字"]
+            assert [bound for _, bound, _ in tasks.pending] == [False]
+            tasks.drain()
+            assert socket.buffered_amount == 0
+    finally:
+        await asyncio.to_thread(engine.close)
+
+
+async def test_handshake_and_connection_limits_release_on_cancellation(monkeypatch):
+    dialed = []
+    tasks, rejected = RecordingTasks(), []
+
+    async def dial(address, **kwargs):
+        dialed.append(address)
+        await asyncio.Future()
+
+    monkeypatch.setattr(transport_module, "_connect_client", lambda: dial)
+    monkeypatch.setattr(transport_module, "_MAX_HANDSHAKES", 1)
+    monkeypatch.setattr(transport_module, "_MAX_CONNECTIONS", 2)
+    engine = WebSocketsTransport()
+    try:
+        first = engine.websocket(tasks, "ws://first.test/", [], {})
+        second = engine.websocket(tasks, "ws://second.test/", [], {})
+        third = engine.websocket(tasks, "ws://third.test/", [], {"error": lambda *args: rejected.append(args)})
+        await until(lambda: dialed)
+        assert dialed == ["ws://first.test/"]
+        assert third.completion.done()
+        tasks.drain()
+        assert len(rejected) == 1
+        engine.close_websocket(first)
+        await asyncio.wrap_future(first.completion)
+        await until(lambda: len(dialed) == 2)
+        assert dialed[-1] == "ws://second.test/"
+        engine.close_websocket(second)
+        await asyncio.wrap_future(second.completion)
+        assert not engine._sockets and tasks.handshakes == 0
+    finally:
+        await asyncio.to_thread(engine.close)
+
+
+@pytest.mark.parametrize("limit", ["messages", "bytes"])
+async def test_full_send_queue_aborts_once_with_unsent_bytes(monkeypatch, limit):
+    tasks, events = RecordingTasks(), []
+    engine = WebSocketsTransport()
+
+    async def block(*args):
+        await asyncio.Future()
+
+    async def reader(connection):
+        await connection.wait_closed()
+
+    monkeypatch.setattr(ClientConnection, "send", block)
+    monkeypatch.setattr(transport_module, "_MAX_PENDING_MESSAGES", 2 if limit == "messages" else 32)
+    monkeypatch.setattr(transport_module, "_MAX_PENDING_BYTES", 32 if limit == "messages" else 6)
+    try:
+        async with serve(reader, "127.0.0.1", 0) as server:
+            socket = engine.websocket(tasks, url(server), [], {
+                name: lambda *args, name=name: events.append((name, args[1:]))
+                for name in ("open", "error", "close")
+            })
+            await until(lambda: tasks.pending)
+            tasks.drain()
+            for _ in range(4):
+                socket.send("中")
+            await asyncio.wrap_future(socket.completion)
+            tasks.drain()
+            assert [name for name, _ in events] == ["open", "error", "close"]
+            assert isinstance(events[1][1][0], BufferError)
+            assert events[2][1] == (1006, "", False)
+            assert socket.buffered_amount == 12
+    finally:
+        await asyncio.to_thread(engine.close)
+
+
+@pytest.mark.parametrize("limit", ["messages", "bytes"])
+async def test_slow_owner_applies_receive_backpressure_in_order(monkeypatch, limit):
+    tasks, received = RecordingTasks(), []
+    engine = WebSocketsTransport()
+    messages = ["中", "二", "三", "四", "五", "六"]
+
+    async def send_burst(connection):
+        for message in messages:
+            await connection.send(message)
+        await connection.wait_closed()
+
+    monkeypatch.setattr(transport_module, "_MAX_PENDING_MESSAGES", 2 if limit == "messages" else 32)
+    monkeypatch.setattr(transport_module, "_MAX_PENDING_BYTES", 32 if limit == "messages" else 6)
+    try:
+        async with serve(send_burst, "127.0.0.1", 0) as server:
+            socket = engine.websocket(tasks, url(server), [], {
+                "open": lambda *_: None,
+                "message": lambda _, message, is_text: received.append(message),
+            })
+            await until(lambda: socket._read_paused)
+            assert len(tasks.pending) == 3  # open plus exactly two messages
+            assert socket._pending_read_bytes == 6
+            while len(received) < len(messages):
+                await until(lambda: tasks.pending)
+                tasks.drain()
+            assert received == messages
+            engine.close_websocket(socket)
+            await asyncio.wrap_future(socket.completion)
+            assert socket._pending_reads == socket._pending_read_bytes == 0
+    finally:
+        await asyncio.to_thread(engine.close)

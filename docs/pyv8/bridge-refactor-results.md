@@ -2,6 +2,8 @@
 
 **简体中文** | [English](../en/pyv8/bridge-refactor-results.md)
 
+> 本文是历史实验结果，命令与数据均对应旧测量方式。当前统一基准入口见 [benchmarks/README.md](../../benchmarks/README.md)。
+
 ## 范围与状态
 
 已实现原生生命周期/资源重构、CPython 3.12 Stable ABI、

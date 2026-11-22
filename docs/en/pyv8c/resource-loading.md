@@ -20,25 +20,21 @@ The loader signature is `loader(url, request)` and may return a Web Response, a 
 Unsupported URL schemes are not handed to the loader. `chrome-extension:` only handles resources declared and matched in the environment profile; the current project contains no extension files, so placeholder content is returned and a warning is logged; it must not be treated as a real extension resource.
 
 ```python
-from pyv8c import Browser
+from pyv8c.async_api import Browser, run
 
-def load(url, request):
-    if url == "https://example.test/":
-        return {
-            "body": "<script src='/app.js'></script>",
-            "headers": {"content-type": "text/html; charset=utf-8"},
-        }
-    if url == "https://example.test/app.js":
-        return {"body": "globalThis.ready = true", "headers": {"content-type": "text/javascript"}}
-    raise RuntimeError(f"未提供本地资源：{url}")
+async def main():
 
-browser = Browser(real_network=False, resource_loader=load)
-try:
-    page = browser.new_profile().new_page()
-    page.goto("https://example.test/")
-    page.wait_for("ready === true", timeout=1)
-finally:
-    browser.close()
+    def load(url, request):
+        if url == 'https://example.test/':
+            return {'body': "<script src='/app.js'></script>", 'headers': {'content-type': 'text/html; charset=utf-8'}}
+        if url == 'https://example.test/app.js':
+            return {'body': 'globalThis.ready = true', 'headers': {'content-type': 'text/javascript'}}
+        raise RuntimeError(f'未提供本地资源：{url}')
+    async with Browser(real_network=False, resource_loader=load) as browser:
+        page = browser.new_profile().new_page()
+        await page.goto('https://example.test/')
+        await page.wait_for('ready === true', timeout=1)
+run(main())
 ```
 
 Common keys of the response dict are `body`, `status`, `statusText`, `url`, and `headers`. Put binary data into the dict's `body` without first converting it to a text representation. Different resources should return the corresponding Content-Type; requests for unknown fixtures should fail explicitly rather than being uniformly disguised as a successful empty page.
@@ -68,13 +64,15 @@ Intercepting images, styles, or scripts changes page execution and layout and is
 
 With `threaded_loaders=False`, ordinary host callbacks may run on the page owner, and blocking prevents that thread from advancing. `threaded_loaders=True` uses the Browser's bounded thread pool; host callbacks for Worker source loading, Fetch, and importScripts are forced onto the thread pool. Pool callbacks only handle input and ordinary data, do not access the page, Realm, or live JS handles, and do not wait back on the owner through `page.evaluate()`.
 
-LoadHandle manages the request's atomic final state and late transport binding; ResourceOwnership registers uniformly and plugs into ResourceScope, and a callback returning before the handle must still be released once. After a request is cancelled, uninterruptible underlying Python work may be allowed to finish, but it can no longer redirect, write to the cache, or deliver a page result.
+LoadHandle manages the request's atomic final state and late transport binding. ResourceOwnership registers requests with ResourceScope and releases their registrations at settlement. Cancellation stops further redirects and page delivery. Running Python work can finish cleanup.
 
 The document resource coordinator maintains loading barriers using typed entries, tokens, navigation generations, and subdocument identities. After an iframe's transport completes, it still waits for valid subdocuments to finish; stale callbacks after removal, reinsertion, navigation, or srcdoc replacement must not release a new barrier or send an old load event.
 
 A Worker's ResourceRequestSession freezes the resource configuration and effective origin. importScripts blocks the Worker's current call, waits for an ordinary transport result, does not wait on the parent page owner, and does not nest a drive of the event loop. The wait reuses the current operation's remaining deadline; termination or shutdown wakes the wait, and late results no longer execute scripts.
 
-The implementation is concentrated in `pyv8c/pyv8c/platform/resources/`: session provides shared sources, security policy, and Worker ordinary data requests; worker manages Worker request snapshots, waiting, and networking delivery; fetcher handles page requests; callbacks runs host callbacks; cache stores ordinary payloads; ownership/handles manages registration and final state; discovery/tracker/completion/documents manages document resources; frames manages iframe lifecycle.
+Window, navigation, and Worker loads share `ResourceRequestSession`. It uses the initiating context to advance cache, preflight, and redirect stages and returns plain Python response data. The Window and Worker adapters construct a Web Response on their respective owner threads. When configured, a custom loader or interceptor still runs in the pool or on the Window owner according to the callback settings.
+
+`local.py` validates schemes and resolves local resources. `response.py` converts responses. `fetcher.py` and `worker.py` own their waiting and delivery behavior and share the Web Response constructor. The load handle detaches a completed transport before the request advances.
 
 ## Sources, Redirects and Security Policy
 
@@ -86,9 +84,11 @@ Shared Blob registration within a Profile does not grant cross-origin read permi
 
 Extension resources currently answer with placeholder content locally according to the public rules in the environment's `extensions`, and do not execute real extension packages or carry complete file bytes.
 
-## Disk Cache
+## Response Cache
 
-A persistent response cache is used only when `cache=True` and `cache_dir` is specified. The cache belongs to the Profile's resource component, and multiple instances pointing at the same directory may still share files.
+The response cache is enabled with `cache=True` and an explicit `cache_dir`. Each Profile checks its own memory cache first, retaining up to 256 entries or an estimated 16 MiB. Disk access runs in the loader pool. Instances pointing at the same directory can share disk records.
+
+The request handle orders cancellation and the cache publication claim. If cancellation wins, the cache job removes the temporary file. If publication wins, the loader thread completes the atomic replace. Shutdown waits asynchronously for the job to finish cleanup.
 
 GET/HEAD may be written when cache conditions are met. The key includes the method, URL, mode, credentials, initiating origin, and normalized request headers; requests carrying Authorization, Cookie, or content matching the CookieJar bypass the cache. Request no-store/reload/no-cache, and responses with no-store/no-cache/private, Set-Cookie, Vary: *, non-success status, and the like, are not treated as ordinary cacheable responses.
 

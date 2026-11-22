@@ -1,10 +1,15 @@
 """Regression tests for profile isolation and transport policy."""
+
+import asyncio
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from pyv8c import Browser
+from _http_fixtures import submit
+
+from pyv8c.async_api import Browser
 from pyv8c.foundation.host_errors import HostStateError
 from pyv8c.foundation.urls import origin_string, origin_tuple, serialize_origin
 from pyv8c.network.assembly import assemble_backend
@@ -16,7 +21,7 @@ class HttpEngine:
     def __init__(self):
         self.closed = False
         self.cookies = None
-    def request_sync(self, request): return None
+    def submit_request(self, request, handle, remaining): raise NotImplementedError
     def close(self): self.closed = True
 
 
@@ -30,7 +35,7 @@ def settings(**overrides):
                                'http_options': {}, 'ws_options': {}} | overrides))
 
 
-def test_cookie_same_site_and_secure_origin():
+async def test_cookie_same_site_and_secure_origin():
     jar = CookieJar()
     url = 'https://bank.example/test'
     jar.add_from_response(url, 'strict=1; Secure; SameSite=Strict')
@@ -38,17 +43,15 @@ def test_cookie_same_site_and_secure_origin():
     jar.add_from_response(url, 'none=1; Secure; SameSite=None')
     request = NetworkRequest(url=url, origin='https://attacker.test', credentials='include', method='POST')
     assert cookie_header(jar, request) == 'none=1'
-    request.method = 'GET'
-    request.mode = 'navigate'
-    request.top_level_navigation = True
+    request = replace(request, method='GET', mode='navigate', top_level_navigation=True)
     assert cookie_header(jar, request) == 'lax=1; none=1'
-    request.top_level_navigation = False
+    request = replace(request, top_level_navigation=False)
     assert cookie_header(jar, request) == 'none=1'
-    request.origin = 'https://shop.bank.example'
+    request = replace(request, origin='https://shop.bank.example')
     assert cookie_header(jar, request) == 'strict=1; lax=1; none=1'
-    request.site_for_cookies = 'null'
+    request = replace(request, site_for_cookies='null')
     assert cookie_header(jar, request) == 'none=1'
-    request.site_for_cookies = None
+    request = replace(request, site_for_cookies=None)
     jar.add_from_response('http://bank.example/', 'scheme=1; SameSite=Strict')
     cross_scheme = NetworkRequest(url='http://bank.example/', origin='https://bank.example', credentials='include')
     assert cookie_header(jar, cross_scheme) == ''
@@ -60,7 +63,7 @@ def test_cookie_same_site_and_secure_origin():
     assert 'session=bad' not in jar.header_for(url)
 
 
-def test_cookie_max_age_overflow_and_idna_origin():
+async def test_cookie_max_age_overflow_and_idna_origin():
     jar = CookieJar()
     jar.add_from_response('https://example.test/', 'x=1; Max-Age=' + '9' * 309)
     assert jar.header_for('https://example.test/') == 'x=1'
@@ -71,10 +74,10 @@ def test_cookie_max_age_overflow_and_idna_origin():
     assert cookie_header(jar, request) == 'idna=1'
 
 
-def test_ready_engine_is_not_shared_between_profiles_or_browsers():
+async def test_ready_engine_is_not_shared_between_profiles_or_browsers():
     engine = HttpEngine()
-    first = Browser(real_network=True, http_engine=engine, ws_engine=None)
-    second = Browser(real_network=True, http_engine=engine, ws_engine=None)
+    first = (await Browser(real_network=True, http_engine=engine, ws_engine=None).__aenter__())
+    second = (await Browser(real_network=True, http_engine=engine, ws_engine=None).__aenter__())
     try:
         profile = first.new_profile()
         with pytest.raises(HostStateError, match='one profile'):
@@ -84,13 +87,13 @@ def test_ready_engine_is_not_shared_between_profiles_or_browsers():
         assert engine.cookies is profile.cookies
         assert not engine.closed
     finally:
-        first.close()
-        second.close()
+        (await first.close())
+        (await second.close())
 
 
-def test_factory_cannot_return_an_engine_already_owned_by_another_profile():
+async def test_factory_cannot_return_an_engine_already_owned_by_another_profile():
     engine = HttpEngine()
-    browser = Browser(real_network=True, http_engine=lambda: engine, ws_engine=None)
+    browser = (await Browser(real_network=True, http_engine=lambda: engine, ws_engine=None).__aenter__())
     try:
         first = browser.new_profile()
         with pytest.raises(HostStateError, match='another profile'):
@@ -99,10 +102,10 @@ def test_factory_cannot_return_an_engine_already_owned_by_another_profile():
         assert engine.cookies is first.cookies
         assert not engine.closed
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_engine_role_validation_and_rollback():
+async def test_engine_role_validation_and_rollback():
     engine = HttpEngine()
     with pytest.raises(TypeError, match='websocket'):
         assemble_backend(settings(http_engine=engine, ws_engine=engine))
@@ -122,54 +125,45 @@ def test_engine_role_validation_and_rollback():
         backend.close()
 
 
-def test_close_during_page_creation_releases_page(monkeypatch):
+async def test_close_during_page_creation_releases_page(monkeypatch):
     from pyv8c.platform import browser as module
-    entered, release = threading.Event(), threading.Event()
-    made, results = [], []
-    class SlowPage:
-        def __init__(self, *args, **kwargs):
-            self.closed = False; made.append(self); entered.set(); release.wait(5)
-        def close(self): self.closed = True
-    monkeypatch.setattr(module, 'Page', SlowPage)
-    browser = Browser(real_network=False)
-    try:
-        profile = browser.new_profile()
-        def create():
-            try: profile.new_page()
-            except BaseException as error: results.append(error)
-        worker = threading.Thread(target=create)
-        worker.start()
-        assert entered.wait(3)
-        profile.close()
-        release.set(); worker.join(5)
-        assert not worker.is_alive()
-        assert len(results) == 1 and isinstance(results[0], HostStateError)
+    made = []
+    class ClosingPage:
+        def __init__(self, profile, **kwargs):
+            self.closed = False
+            made.append(self)
+            profile._retire_pages()
+        def _retire(self):
+            self.closed = True
+    monkeypatch.setattr(module, 'Page', ClosingPage)
+    async with Browser(real_network=False) as runtime:
+        profile = runtime.new_profile()
+        with pytest.raises(HostStateError, match="closed"):
+            profile.new_page()
         assert made[0].closed and not profile.pages
-    finally:
-        release.set(); browser.close()
 
 
-def test_accept_ch_is_keyed_by_response_origin():
+async def test_accept_ch_is_keyed_by_response_origin():
     seen = []
     def loader(url, request):
         headers = {name.lower(): value for name, value in request['headers'].items()}
         seen.append((url, headers.get('sec-ch-ua-arch')))
         return {'status': 200, 'body': '<html></html>',
                 'headers': {'accept-ch': 'Sec-CH-UA-Arch'} if 'site-a.test' in url else {}}
-    browser = Browser(real_network=False, resource_loader=loader)
+    browser = (await Browser(real_network=False, resource_loader=loader).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto('https://site-a.test/first')
-        page.goto('https://site-b.test/')
-        page.goto('https://site-a.test/second')
+        (await page.goto('https://site-a.test/first'))
+        (await page.goto('https://site-b.test/'))
+        (await page.goto('https://site-a.test/second'))
         assert seen[0][1] is None
         assert seen[1][1] is None
         assert seen[2][1] is not None
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_real_cronet_does_not_send_client_jar_or_follow_manual_redirects():
+async def test_real_cronet_does_not_send_client_jar_or_follow_manual_redirects():
     pytest.importorskip('cycronet')
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from pyv8c.network.cronet import CronetTransport
@@ -193,22 +187,22 @@ def test_real_cronet_does_not_send_client_jar_or_follow_manual_redirects():
     try:
         transport = CronetTransport()
         base = f'http://127.0.0.1:{server.server_port}'
-        response = transport.request_sync(NetworkRequest(base + '/set', credentials='include', redirect='manual'))
+        response = submit(transport, NetworkRequest(base + '/set', credentials='include', redirect='manual')).result(timeout=6)
         assert len(response.headers['set-cookie']) == 2
         assert transport.cookies.document_for(base) == 'strict=1'
-        response = transport.request_sync(NetworkRequest(base + '/cross', credentials='include',
-                                                          origin='http://other.test', redirect='manual'))
+        response = submit(transport, NetworkRequest(base + '/cross', credentials='include',
+                                                          origin='http://other.test', redirect='manual')).result(timeout=6)
         assert response.content == b''
-        response = transport.request_sync(NetworkRequest(base + '/omit', credentials='omit', redirect='manual'))
+        response = submit(transport, NetworkRequest(base + '/omit', credentials='omit', redirect='manual')).result(timeout=6)
         assert response.content == b''
-        response = transport.request_sync(NetworkRequest(base + '/redirect', redirect='manual'))
+        response = submit(transport, NetworkRequest(base + '/redirect', redirect='manual')).result(timeout=6)
         assert response.status == 302 and not response.redirected
     finally:
         if transport is not None: transport.close()
-        server.shutdown(); server.server_close(); thread.join(5)
+        server.shutdown(); server.server_close(); (await asyncio.to_thread(thread.join, 5))
 
 
-def test_page_fetch_enforces_same_site_cookies_on_real_http():
+async def test_page_fetch_enforces_same_site_cookies_on_real_http():
     pytest.importorskip('curl_cffi')
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -224,24 +218,24 @@ def test_page_fetch_enforces_same_site_cookies_on_real_http():
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-    browser = Browser(real_network=True, ws_engine=None)
+    browser = (await Browser(real_network=True, ws_engine=None).__aenter__())
     try:
         base = f'http://127.0.0.1:{server.server_port}'
         profile = browser.new_profile(); page = profile.new_page()
         profile.cookies.add_from_response(base, 'strict=1; SameSite=Strict; Path=/')
-        page.set_content('<body></body>', url='http://other.test/')
+        (await page.set_content('<body></body>', url='http://other.test/', wait_until="commit"))
         page.evaluate(f"window.__done=false; fetch('{base}/cross', {{credentials: 'include'}}).finally(() => window.__done=true)")
-        page.wait_for('window.__done', timeout=5)
+        (await page.wait_for('window.__done', timeout=5))
         same_page = profile.new_page()
-        same_page.set_content('<body></body>', url=base + '/page')
+        (await same_page.set_content('<body></body>', url=base + '/page', wait_until="commit"))
         same_page.evaluate(f"window.__done=false; fetch('{base}/same', {{credentials: 'include'}}).finally(() => window.__done=true)")
-        same_page.wait_for('window.__done', timeout=5)
+        (await same_page.wait_for('window.__done', timeout=5))
         assert seen == ['', 'strict=1']
     finally:
-        browser.close(); server.shutdown(); server.server_close(); thread.join(5)
+        (await browser.close()); server.shutdown(); server.server_close(); (await asyncio.to_thread(thread.join, 5))
 
 
-def test_nontransitional_idna_keeps_origins_and_cookies_separate():
+async def test_nontransitional_idna_keeps_origins_and_cookies_separate():
     from pyv8c.foundation.urls import same_origin
     source = 'https://faß.de/'
     assert origin_string(source) == 'https://xn--fa-hia.de'
@@ -252,9 +246,9 @@ def test_nontransitional_idna_keeps_origins_and_cookies_separate():
     assert jar.header_for('https://fass.de/') == ''
 
 
-def test_worker_plain_response_preserves_multivalue_headers():
+async def test_worker_plain_response_preserves_multivalue_headers():
     from pyv8c.network.models import NetworkResponse
-    from pyv8c.platform.resources.session import plain_response
+    from pyv8c.platform.resources.response import plain_response
     original = ['a=1', 'b=2']
     response = plain_response(NetworkResponse(url='https://example.test/', headers={'set-cookie': original}),
                               'https://example.test/')
@@ -262,53 +256,38 @@ def test_worker_plain_response_preserves_multivalue_headers():
     assert response.headers['set-cookie'] is not original
 
 
-def test_browser_close_waits_for_concurrent_profile_close():
-    browser = Browser(real_network=False)
-    profile = browser.new_profile()
-    entered, release, browser_done = threading.Event(), threading.Event(), threading.Event()
-    class Page:
-        def close(self):
-            entered.set()
-            assert release.wait(5)
-    profile.pages.append(Page())
-    closer = threading.Thread(target=profile.close)
-    browser_closer = threading.Thread(target=lambda: (browser.close(), browser_done.set()))
-    try:
-        closer.start()
-        assert entered.wait(5)
-        browser_closer.start()
-        assert not browser_done.wait(0.1)
-    finally:
-        release.set()
-        closer.join(5)
-        if browser_closer.ident is not None:
-            browser_closer.join(5)
-    assert profile.closed and browser_done.is_set()
+async def test_profile_close_rejects_foreign_ownership_and_runtime_cleanup_completes():
+    from pyv8c.foundation.host_errors import HostStateError
+    async with Browser(real_network=False) as runtime:
+        profile = runtime.new_profile()
+        profile.new_page()
+        with pytest.raises(HostStateError, match="owner thread"):
+            await asyncio.to_thread(lambda: asyncio.run(profile.close()))
+        assert not profile.closed
+    assert profile.closed
 
 
-def test_cronet_redirect_recomputes_cookies(monkeypatch):
+async def test_cronet_redirect_recomputes_cookies(monkeypatch):
     import sys
     from pyv8c.network.cronet import CronetTransport
     seen = []
     class Client:
         def __init__(self, **kwargs): pass
-        def get(self, url, **kwargs):
+        async def request(self, method, url, **kwargs):
             seen.append((url, kwargs))
             if len(seen) == 1:
                 return SimpleNamespace(url=url, status_code=302, reason='', content=b'', history=(),
                                        headers={'location': 'https://other.test/end'},
                                        _headers={'set-cookie': ['new=1; Secure']})
             return SimpleNamespace(url=url, status_code=200, reason='', content=b'ok', history=(), headers={})
-        def close(self): pass
-    monkeypatch.setitem(sys.modules, 'cycronet', SimpleNamespace(CronetClient=Client))
-    transport = CronetTransport()
-    try:
+        async def close(self): pass
+    monkeypatch.setitem(sys.modules, 'cycronet', SimpleNamespace(AsyncCronetClient=Client))
+    async with Browser(http_engine=CronetTransport, ws_engine=None) as browser:
+        page = browser.new_page()
+        transport = page.profile.network_backend.http
         transport.cookies.add_from_response('https://other.test/', 'target=1; Secure')
-        response = transport.request_sync(NetworkRequest(url='https://source.test/', credentials='include',
-                                                          headers={'Cookie': 'secret=1'}, redirect='follow'))
+        response = await page.net.get('https://source.test/', headers={'Cookie': 'secret=1'}, timeout=6)
         assert response.redirected
         assert all(not kwargs['allow_redirects'] for _, kwargs in seen)
         assert seen[1][1]['headers']['Cookie'] == 'target=1'
         assert transport.cookies.header_for('https://source.test/') == 'new=1'
-    finally:
-        transport.close()

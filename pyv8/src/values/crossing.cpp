@@ -31,6 +31,11 @@ py_throw_js(Local<Value> js_exc, Local<Message> js_message)
         IsolateState::restore_python_exception(exc_object);
     }
     else {
+        // A failed materialization may set a fallback Python error while V8
+        // also caught the original getter/proxy exception. Its Python wrapper
+        // must be constructed with a clean error indicator, or CPython turns
+        // the successful constructor result into a SystemError.
+        PyErr_Clear();
         PyObject* exception = js_exception_new(js_exc, js_message);
         if (exception == NULL) {
             return;

@@ -129,11 +129,16 @@ isolate_state_from_python(PyObject* object, bool allow_none)
 static PyObject*
 isolate_new(PyTypeObject* type, PyObject* args, PyObject* kwargs)
 {
-    static const char* keywords[] = {nullptr};
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "", (char**)keywords))
+    PyObject* thread_bound = Py_False;
+    static const char* keywords[] = {"thread_bound", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|$O", (char**)keywords, &thread_bound))
         return nullptr;
+    if (!PyBool_Check(thread_bound)) {
+        PyErr_SetString(PyExc_TypeError, "thread_bound must be a bool");
+        return nullptr;
+    }
 
-    IsolateState* state = runtime_manager.create_isolate();
+    IsolateState* state = runtime_manager.create_isolate(thread_bound == Py_True);
     if (state == nullptr)
         return nullptr;
 

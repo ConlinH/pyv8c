@@ -49,4 +49,4 @@ python -m pytest pyv8c/tests/unit/test_request_headers.py pyv8c/tests/integratio
 python -m pytest pyv8c/tests/repros/test_request_headers_vs_chrome.py -q
 ```
 
-Chrome 对照使用本机浏览器；用 `PYV8C_CHROME` 指定可执行文件。对照失败应判断是框架缺陷、传输差异还是版本变化，不通过放宽断言或修改基线直接消除差异。
+请求头和表单对照可以用 `PYV8C_CHROME_BASELINE` 指定 Chrome 154.0.8030.0，以固定请求头行为。未设置时使用 `PYV8C_CHROME` 指定的浏览器或系统 Chrome。对照失败时，分别核查框架、传输层和 Chrome 版本的实际行为，并保留请求头名称、值及顺序的断言。

@@ -35,9 +35,9 @@ _CORS_SAFE_RESPONSE_HEADERS = frozenset((
 _HEADER_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 
 
-def response_is_cors(origin, initial_url, final_url, redirect_crossed=False):
+def response_is_cors(origin, initial_url, final_url, redirect_crossed=False, *, local_extension=False):
     """Whether the request or an inspected redirect crossed the caller's origin."""
-    if origin is None:
+    if origin is None or local_extension:
         return False
     origin = tuple(origin)
     return (origin_tuple(initial_url, inherited=origin) != origin

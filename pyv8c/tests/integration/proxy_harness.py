@@ -135,7 +135,7 @@ class RecordingProxy:
         with self._lock:
             self.tunnels.append(authority)
         connection.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        _pump(connection, upstream)
+        (_pump(connection, upstream))
         return True
 
     def _forward(self, connection, request, target):

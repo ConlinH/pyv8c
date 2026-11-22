@@ -1,12 +1,12 @@
 """Frame focus and rendering checks measured against local Chrome 157."""
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_frame_visibility_and_focusing_child_inputs():
-    browser = Browser(real_network=False)
+async def test_frame_visibility_and_focusing_child_inputs():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><button>top</button></body>')
+        (await page.set_content('<body><button>top</button></body>', wait_until="commit"))
         assert page.evaluate("""(() => {
           return ['', 'display:none', 'visibility:hidden', 'opacity:0',
                   'content-visibility:hidden'].map(css => {
@@ -34,14 +34,14 @@ def test_frame_visibility_and_focusing_child_inputs():
             {'before': [True, False, True, True], 'after': [True, True, 'IFRAME', 'INPUT', 0]},
         ]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_focus_chain_tracks_nested_frames_and_parent_focus_changes():
-    browser = Browser(real_network=False)
+async def test_focus_chain_tracks_nested_frames_and_parent_focus_changes():
+    browser = (await Browser(real_network=False).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body><button>top</button><iframe></iframe></body>')
+        (await page.set_content('<body><button>top</button><iframe></iframe></body>', wait_until="commit"))
         assert page.evaluate("""(() => {
           const outer = document.querySelector('iframe');
           const child = outer.contentDocument;
@@ -61,4 +61,4 @@ def test_focus_chain_tracks_nested_frames_and_parent_focus_changes():
         })()""") == {'focused': [True, True, True, True, True],
                      'moved': [True, False, False], 'hidden': False, 'visible': True}
     finally:
-        browser.close()
+        (await browser.close())

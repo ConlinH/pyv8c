@@ -11,6 +11,8 @@
 #include "context.h"
 
 #include <climits>
+#include <array>
+#include <memory>
 #include <new>
 #include <unordered_map>
 #include <vector>
@@ -41,19 +43,22 @@ namespace
 class JsToPyConversionContext
 {
 public:
-    explicit JsToPyConversionContext(Isolate*)
-    {
-    }
-
     PyObject* find(Local<Object> object)
     {
+        for (size_t i = 0; i < inline_size_; ++i) {
+            if (inline_[i].object == object) {
+                Py_INCREF(inline_[i].result);
+                return inline_[i].result;
+            }
+        }
+        if (visited_.empty()) return nullptr;
         const int identity_hash = object->GetIdentityHash();
         auto bucket = visited_.find(identity_hash);
         if (bucket == visited_.end())
             return NULL;
         for (const Entry& entry : bucket->second)
         {
-            if (entry.object->StrictEquals(object))
+            if (entry.object == object)
             {
                 Py_INCREF(entry.result);
                 return entry.result;
@@ -64,6 +69,10 @@ public:
 
     bool remember(Local<Object> object, PyObject* result)
     {
+        if (inline_size_ < inline_.size()) {
+            inline_[inline_size_++] = {object, result};
+            return true;
+        }
         try
         {
             visited_[object->GetIdentityHash()].emplace_back(object, result);
@@ -77,23 +86,17 @@ public:
     }
 
 private:
-    struct Entry
-    {
-        Entry(Local<Object> object, PyObject* result)
-            : object(object), result(result)
-        {
-        }
-
-        Entry(Entry&&) noexcept = default;
-        Entry& operator=(Entry&&) noexcept = default;
-        Entry(const Entry&) = delete;
-        Entry& operator=(const Entry&) = delete;
-
+    struct Entry {
         Local<Object> object;
         PyObject* result;
     };
 
-    // V8 identity hashes make lookups constant-time on average. StrictEquals
+    // Most result graphs fit here. Larger graphs keep hashed overflow buckets;
+    // Local<Object> equality checks physical identity, including across GC.
+    // One context belongs to the entire materialization, not to each recursion.
+    std::array<Entry, 16> inline_;
+    size_t inline_size_ = 0;
+    // V8 identity hashes make overflow lookups constant-time on average. Object identity
     // remains the final check because identity hashes are not unique.
     std::unordered_map<int, std::vector<Entry>> visited_;
 };
@@ -139,32 +142,37 @@ py_from_js_impl(Local<Value> value,
         {
             uint8_t buffer[kInlineStringBytes];
             text->WriteOneByte(isolate, 0, static_cast<uint32_t>(length), buffer);
-            bool ascii = true;
-            for (int index = 0; index < length; ++index)
-            {
-                if (buffer[index] > 0x7f)
-                {
-                    ascii = false;
-                    break;
-                }
-            }
-            // ASCII is spelled the same in UTF-8 and in Latin-1, and the high
-            // half of a one-byte string is Latin-1 by definition, which is what
-            // Python needs to be told it is.
-            if (ascii)
-                return PyUnicode_DecodeASCII(reinterpret_cast<const char*>(buffer), length, "replace");
+            // Latin-1 covers ASCII too. CPython selects the compact ASCII
+            // representation itself; a separate scan here repeated that work.
             return PyUnicode_DecodeLatin1(reinterpret_cast<const char*>(buffer), length, "replace");
         }
-        String::Utf8Value utf8(isolate, text);
-        return PyUnicode_DecodeUTF8(*utf8, utf8.length(), "replace");
+        if (text->IsOneByte())
+        {
+            String::Utf8Value utf8(isolate, text);
+            return PyUnicode_DecodeUTF8(*utf8, utf8.length(), "replace");
+        }
+        // V8 strings can carry unpaired UTF-16 surrogates. Keep those code
+        // units when materializing a value such as a page's response text.
+        uint16_t inline_units[kInlineStringBytes];
+        std::unique_ptr<uint16_t[]> dynamic_units;
+        uint16_t* units = inline_units;
+        if (length > kInlineStringBytes)
+        {
+            dynamic_units.reset(new (std::nothrow) uint16_t[length]);
+            if (!dynamic_units)
+                return PyErr_NoMemory();
+            units = dynamic_units.get();
+        }
+        text->Write(isolate, 0, static_cast<uint32_t>(length), units);
+        const uint16_t endian_marker = 1;
+        int byte_order = *reinterpret_cast<const uint8_t*>(&endian_marker) ? -1 : 1;
+        return PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(units),
+                                    static_cast<Py_ssize_t>(length) * 2,
+                                    "surrogatepass", &byte_order);
     }
 
     if (value->IsArray())
     {
-        JsToPyConversionContext local_conversion(isolate);
-        if (conversion == nullptr)
-            conversion = &local_conversion;
-
         Local<Array> array = value.As<Array>();
         PyObject* existing = conversion->find(array);
         if (existing != NULL || PyErr_Occurred())
@@ -234,10 +242,6 @@ py_from_js_impl(Local<Value> value,
         }
         if (obj_value->GetPrototype()->StrictEquals(context->GetEmbedderData(OBJECT_PROTOTYPE_SLOT)) && !has_to_string_tag)
         {
-            JsToPyConversionContext local_conversion(isolate);
-            if (conversion == nullptr)
-                conversion = &local_conversion;
-
             PyObject* existing = conversion->find(obj_value);
             if (existing != NULL || PyErr_Occurred())
                 return existing;
@@ -261,7 +265,10 @@ py_from_js_impl(Local<Value> value,
             for (uint32_t i = 0; i < js_keys->Length(); i++)
             {
                 Local<Value> js_key;
-                if (!without_gil([&] { return js_keys->Get(context, i).ToLocal(&js_key); }))
+                // GetPropertyNames creates a private dense array of data keys.
+                // Reading it cannot reach user getters, unlike the source
+                // object's values below, which still run without the GIL.
+                if (!js_keys->Get(context, i).ToLocal(&js_key))
                 {
                     Py_XDECREF((PyObject*)dict);
                     PyErr_SetString(PyExc_RuntimeError, "failed to get JavaScript object property key");
@@ -327,7 +334,8 @@ py_from_js_impl(Local<Value> value,
 PyObject *
 py_materialize(Local<Value> value, Local<Context> context)
 {
-    return py_from_js_impl(value, context, nullptr);
+    JsToPyConversionContext conversion;
+    return py_from_js_impl(value, context, &conversion);
 }
 
 PyObject *

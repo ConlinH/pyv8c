@@ -2,12 +2,12 @@
 import pytest
 from loguru import logger
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_bitmap_uses_live_image_data_and_offscreen_webgl_encodes():
+async def test_bitmap_uses_live_image_data_and_offscreen_webgl_encodes():
     pytest.importorskip('PIL')
-    browser = Browser(real_network=False, stub_logging='off')
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate('''(() => {
@@ -25,21 +25,21 @@ def test_bitmap_uses_live_image_data_and_offscreen_webgl_encodes():
           window.emptyResult = 'pending';
           new OffscreenCanvas(0, 1).convertToBlob().catch(e => window.emptyResult = e.name);
         })()''')
-        page.run_until_idle(timeout=2)
+        (await page.run_until_idle(timeout=2))
         assert page.evaluate('window.bitmapResult') == [255, 0, 0, 255]
         assert page.evaluate('window.blobResult') == ['image/png', True]
         assert page.evaluate('window.emptyResult') == 'IndexSizeError'
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_an_offscreen_canvas_draws_and_reports_its_pixels():
+async def test_an_offscreen_canvas_draws_and_reports_its_pixels():
     pytest.importorskip("PIL", reason="Pillow backs the canvas drawing surface")
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://repro.test/index.html")
-        page.run_until_idle(timeout=2)
+        (await page.set_content("<body></body>", url="https://repro.test/index.html", wait_until="commit"))
+        (await page.run_until_idle(timeout=2))
         value = page.evaluate("""(() => {
             const canvas = new OffscreenCanvas(8, 6);
             const context = canvas.getContext('2d');
@@ -54,19 +54,19 @@ def test_an_offscreen_canvas_draws_and_reports_its_pixels():
                     Array.from(context.getImageData(0, 0, 1, 1).data)];
         })()""")
     finally:
-        browser.close()
+        (await browser.close())
 
     assert value == [2, 8, 6, "OffscreenCanvas", True, True, True, True, "function",
                      "function", "object", [255, 0, 0, 255]]
 
 
-def test_the_eight_members_the_log_reported_answer_like_chromium():
+async def test_the_eight_members_the_log_reported_answer_like_chromium():
     """The members the case run reported as 待实现, with Chromium's values and refusals."""
-    browser = Browser(stub_logging="off")
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://repro.test/index.html")
-        page.run_until_idle(timeout=2)
+        (await page.set_content("<body></body>", url="https://repro.test/index.html", wait_until="commit"))
+        (await page.run_until_idle(timeout=2))
         value = page.evaluate("""(() => {
             const context = new OffscreenCanvas(8, 8).getContext('2d', {alpha: false});
             const attempt = (action) => {
@@ -91,7 +91,7 @@ def test_the_eight_members_the_log_reported_answer_like_chromium():
             ];
         })()""")
     finally:
-        browser.close()
+        (await browser.close())
 
     assert value == [
         ["alpha", "desynchronized", "colorSpace", "colorType", "toneMapping", "willReadFrequently"],
@@ -114,9 +114,9 @@ def test_the_eight_members_the_log_reported_answer_like_chromium():
     ]
 
 
-def test_a_worker_webgl_extension_uses_the_worker_realm():
+async def test_a_worker_webgl_extension_uses_the_worker_realm():
     """A worker's WebGL extension is materialized through its own realm services."""
-    browser = Browser(real_network=False, stub_logging="off")
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate("""window.result = 'pending';
@@ -134,21 +134,21 @@ def test_a_worker_webgl_extension_uses_the_worker_realm():
           worker.onmessage = event => { window.result = event.data; };
           worker.onerror = event => { window.result = 'worker-error:' + event.message; };
         """)
-        page.wait_for("result !== 'pending'", timeout=5)
+        (await page.wait_for("result !== 'pending'", timeout=5))
         assert page.evaluate("result") == 'ok'
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_no_offscreen_2d_member_reports_itself_as_unimplemented():
+async def test_no_offscreen_2d_member_reports_itself_as_unimplemented():
     """Driving every member the log reported leaves the stub reporter silent."""
     messages = []
     token = logger.add(lambda message: messages.append(str(message)), format="{message}")
     try:
-        browser = Browser(stub_logging="on")
+        browser = (await Browser(stub_logging="on").__aenter__())
         try:
             page = browser.new_profile().new_page()
-            page.set_content("<body></body>", url="https://repro.test/index.html")
+            (await page.set_content("<body></body>", url="https://repro.test/index.html", wait_until="commit"))
             page.evaluate("""(() => {
                 const context = new OffscreenCanvas(4, 4).getContext('2d');
                 context.fill(); context.fill('evenodd'); context.closePath(); context.scale(1, 1);
@@ -159,7 +159,7 @@ def test_no_offscreen_2d_member_reports_itself_as_unimplemented():
                 context.filter = 'blur(2px)';
             })()""")
         finally:
-            browser.close()
+            (await browser.close())
     finally:
         logger.remove(token)
     assert [message for message in messages

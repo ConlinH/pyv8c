@@ -8,41 +8,30 @@ such a frame by its own URL instead answered ``false`` with thirty of those memb
 on 2026-10-06).  A frame of an insecure page has
 nothing to inherit, so it must stay insecure: the chain is a fallback, not a promotion.
 """
+
+import asyncio
 import json
 import threading
 import time
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 #: The members Cloudflare's widget reads, all of them secure-context only.
 MEMBERS = ["userActivation", "clipboard", "credentials", "mediaDevices", "storage"]
 
 
-def _bounded(action, seconds=10.0):
-    done = threading.Event()
-
-    def run():
-        try:
-            action()
-        except BaseException:  # noqa: BLE001
-            pass
-        finally:
-            done.set()
-
-    threading.Thread(target=run, daemon=True).start()
-    done.wait(seconds)
 
 
-def _pump(page, seconds=0.6):
+async def _pump(page, seconds=0.6):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         try:
-            page.run_until_idle(timeout=0)
+            (await page.run_until_idle(timeout=0))
         except BaseException:  # noqa: BLE001 - a JS error on the way is not this test's
             pass
-        time.sleep(0.01)
+        (await asyncio.sleep(0.01))
 
 
 #: The frame reports itself, because a ``sandbox`` without ``allow-same-origin`` leaves the
@@ -74,22 +63,22 @@ setTimeout(function () {
             return typeof view.navigator[name]; }).join(',')];
     } catch (error) { out.plain = 'threw: ' + String(error); }
 }, 300);
-</script></body>""".replace("__INNER__", json.dumps(_INNER).replace("</", "<\\/")) \
+</script></body>""".replace("__INNER__", json.dumps(_INNER).replace("</", "<\\/"))\
                .replace("__MEMBERS__", json.dumps(MEMBERS))
 
 
 @pytest.mark.parametrize("url, secure", [("https://frames.test/", True),
                                          ("http://frames.test/", False)])
-def test_a_frameless_document_inherits_the_context_of_its_creator(url, secure):
-    browser = Browser(stub_logging="off")
+async def test_a_frameless_document_inherits_the_context_of_its_creator(url, secure):
+    browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content(PAGE, url=url)
-        _pump(page)
+        (await page.set_content(PAGE, url=url, wait_until="commit"))
+        (await _pump(page))
         seen = json.loads(page.evaluate("JSON.stringify(window.__out || {})"))
         assert seen.get("url", "about:srcdoc") == "about:srcdoc", seen
         expected = "object" if secure else "undefined"
         assert seen.get("answer") == [secure, ",".join([expected] * len(MEMBERS))], seen
         assert seen.get("plain") == [secure, ",".join([expected] * len(MEMBERS))], seen
     finally:
-        _bounded(browser.close)
+        await browser.close()

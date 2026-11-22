@@ -51,7 +51,11 @@ class BrowserDebugging:
 
     @staticmethod
     def page_host(page, kind="page"):
-        return Host(page.v8_context, _InspectorExecutor(page.realm.executor), lambda: page.url, page.close, kind)
+        # Target discovery runs on the transport thread, including while JS is
+        # paused. Read only the stored Python URL; never call a public owner API
+        # or enqueue a request that would depend on that paused owner.
+        return Host(page.v8_context, _InspectorExecutor(page.realm.executor),
+                    lambda: page.window.location.href, page._retire, kind)
 
     def _register_descendants(self, page):
         for child in tuple(page._owned.frames):

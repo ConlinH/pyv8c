@@ -1,21 +1,21 @@
 """Regression coverage for HTML form state and canvas context selection."""
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def page():
-    browser = Browser(real_network=False, stub_logging="off")
+async def page():
+    browser = (await Browser(real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/page")
+        (await page.set_content("<body></body>", url="https://example.test/page", wait_until="commit"))
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_textarea_value_is_independent_and_reset(page):
+async def test_textarea_value_is_independent_and_reset(page):
     assert page.evaluate("""(() => {
       const f = document.createElement('form');
       f.innerHTML = '<textarea name=t>initial</textarea>'; document.body.appendChild(f);
@@ -26,7 +26,7 @@ def test_textarea_value_is_independent_and_reset(page):
     })()""") == ['initial', ['changed', 'updated'], 'updated']
 
 
-def test_select_exclusivity_and_reset(page):
+async def test_select_exclusivity_and_reset(page):
     assert page.evaluate("""(() => {
       const f = document.createElement('form');
       f.innerHTML = '<select><option selected value=a>A</option><option value=b>B</option></select>';
@@ -37,7 +37,7 @@ def test_select_exclusivity_and_reset(page):
     })()""") == [['b', 1], 'a', 1]
 
 
-def test_radio_groups_and_form_owner(page):
+async def test_radio_groups_and_form_owner(page):
     assert page.evaluate("""(() => {
       const f = document.createElement('form'); f.id = 'owner';
       f.innerHTML = '<input type=radio name=x><input type=radio name=x>' +
@@ -51,7 +51,7 @@ def test_radio_groups_and_form_owner(page):
     })()""") == [False, True, True, True, True, True, 2]
 
 
-def test_radio_checked_attributes_are_exclusive(page):
+async def test_radio_checked_attributes_are_exclusive(page):
     assert page.evaluate("""(() => {
       const div = document.createElement('div');
       div.innerHTML = '<input type=radio name=x checked><input type=radio name=x checked>';
@@ -60,7 +60,7 @@ def test_radio_checked_attributes_are_exclusive(page):
     })()""") == [False, True]
 
 
-def test_failed_canvas_options_do_not_lock_context(page):
+async def test_failed_canvas_options_do_not_lock_context(page):
     assert page.evaluate("""(() => {
       const results = [];
       for (const c of [document.createElement('canvas'), new OffscreenCanvas(1, 1)]) {
@@ -71,7 +71,7 @@ def test_failed_canvas_options_do_not_lock_context(page):
     })()""") == [True, True]
 
 
-def test_submitter_overrides_request():
+async def test_submitter_overrides_request():
     from pyv8c.web.html.forms import HTMLFormElement, submission
     from pyv8c.web.html.inputs import HTMLInputElement
     form = HTMLFormElement('form', attributes={'action': 'https://example.test/base', 'method': 'get'})
@@ -84,7 +84,7 @@ def test_submitter_overrides_request():
     assert request.content_type == 'text/plain'
 
 
-def test_submitter_can_skip_form_validation(page):
+async def test_submitter_can_skip_form_validation(page):
     assert page.evaluate("""(() => {
       const form = document.createElement('form');
       form.innerHTML = '<input required><button type=submit formnovalidate>go</button>';

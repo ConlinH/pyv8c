@@ -5,18 +5,18 @@ import io
 
 import pytest
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def page():
-    browser = Browser(real_network=False, stub_logging='off')
+async def page():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('<body></body>', url='https://canvas.test/')
+        (await page.set_content('<body></body>', url='https://canvas.test/', wait_until="commit"))
         yield page
     finally:
-        browser.close()
+        (await browser.close())
 
 
 def decode(data_url):
@@ -24,7 +24,7 @@ def decode(data_url):
     return header, base64.b64decode(body)
 
 
-def test_blank_canvas_formats_and_context_are_independent(page):
+async def test_blank_canvas_formats_and_context_are_independent(page):
     pytest.importorskip('PIL')
     from PIL import features
     if not features.check('jpg') or not features.check('webp'):
@@ -56,7 +56,7 @@ def test_blank_canvas_formats_and_context_are_independent(page):
     assert result['oversized'] == 'data:,'
 
 
-def test_canvas_formats_encode_pixels_and_only_numeric_quality(page):
+async def test_canvas_formats_encode_pixels_and_only_numeric_quality(page):
     image_module = pytest.importorskip('PIL.Image')
     from PIL import features
     if not features.check('jpg') or not features.check('webp'):

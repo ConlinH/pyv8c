@@ -1,29 +1,29 @@
-"""Browser-facing behavior for ``HTMLMetaElement``."""
+"""Runtime-facing behavior for ``HTMLMetaElement``."""
 
 import pytest
 
 pytest.importorskip("pyv8c.pyv8")
 from pyv8c import pyv8
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
 @pytest.fixture
-def page():
-    browser = Browser(stub_logging="off")
+async def page():
+    browser = (await Browser(stub_logging="off").__aenter__())
     instance = browser.new_profile().new_page()
-    instance.set_content(
+    (await instance.set_content(
         "<html><head><meta name='viewport' http-equiv='refresh' "
         "content='width=device-width' media='screen' scheme='text'>"
         "</head><body></body></html>"
-    )
+    , wait_until="commit"))
     try:
         yield instance
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_meta_is_a_real_html_meta_element_with_reflected_attributes(page):
+async def test_meta_is_a_real_html_meta_element_with_reflected_attributes(page):
     result = page.evaluate("""
 (() => {
   const meta = document.querySelector('meta');
@@ -43,7 +43,7 @@ def test_meta_is_a_real_html_meta_element_with_reflected_attributes(page):
     ]
 
 
-def test_meta_properties_are_domstring_reflections_and_clone_independently(page):
+async def test_meta_properties_are_domstring_reflections_and_clone_independently(page):
     result = page.evaluate("""
 (() => {
   const meta = document.querySelector('meta');

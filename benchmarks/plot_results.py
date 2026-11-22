@@ -15,7 +15,17 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    samples = json.loads(args.input.read_text(encoding="utf-8"))["samples"]
+    payload = json.loads(args.input.read_text(encoding="utf-8"))
+    # Accept either a direct lifecycle report or a unified benchmark.py output.
+    if "samples" in payload:
+        samples = payload["samples"]
+    else:
+        cases = payload.get("cases", {})
+        result = cases.get("lifecycle_pages", {}).get("result") or {}
+        report = result.get("report") or {}
+        samples = report.get("samples")
+        if not samples:
+            raise SystemExit("no lifecycle samples found in " + str(args.input))
     rounds = [sample["created"] for sample in samples]
     figure, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True, layout="constrained")
     axes[0].plot(rounds, [None if sample["private_bytes"] is None else sample["private_bytes"] / 2**20

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import math
 import threading
 import time
@@ -15,6 +16,7 @@ from typing import Literal
 from pyv8c import pyv8  # patch target for native V8Context instrumentation
 
 from ..engine.bindings import Idl, Bindings
+from ..foundation.close_timing import close_phase
 from ..foundation.environment import BrowserEnvironment
 from ..foundation.error_policy import control_exceptions
 from ..foundation.host_errors import HostStateError, LoadFailure
@@ -22,10 +24,15 @@ from ..foundation.urls import origin_string, origin_tuple
 from ..network.assembly import assemble_backend
 from ..network.cookies import CookieJar
 from ..network.proxy import normalize_proxy
-from ..network.registry import HttpTransport, WebSocketTransport
+from ..network.registry import KIND_METHODS, HttpTransport, WebSocketTransport
+from ..network.websocket_io import WebSocketIO
+from ..network.websockets import WebSocketsTransport
 from .bootstrap import bootstrap_runtime
+from ..foundation.futures import consume_future
+from .runtime import Runtime, RuntimeState
 from .page import Page
 from .resources.cache import ResourceCache
+from .resources.cors import PreflightCache
 
 #: With ``threaded_loaders``, loader and interceptor callbacks run here instead of on
 #: the page's owner thread, or a slow one would freeze the realm.
@@ -99,10 +106,8 @@ class Profile:
                  trace_scripts=_TRACE_SCRIPTS_INHERIT, _engine_token=None):
         self.browser, self.pages = browser, []
         self._state_lock = threading.RLock()
-        self._close_condition = threading.Condition(self._state_lock)
-        self._close_owner = None
-        self._close_error = None
         self._closing = False
+        self._close_task = None
         self.cookies = CookieJar()
         #: Its own proxy setting, or the browser's while it was given none.
         self.proxy = browser.proxy if proxy is None else proxy
@@ -113,20 +118,18 @@ class Profile:
         self.trace_scripts = (browser.trace_scripts if trace_scripts is _TRACE_SCRIPTS_INHERIT
                               else _trace_script_patterns(trace_scripts))
         self.resource_cache_dir = browser.cache_dir if browser.cache_enabled else None
-        self.resource_cache_lock = threading.RLock()
         self.resource_cache = ResourceCache(self)
+        self.preflight_cache = PreflightCache()
         self._client_hints_lock = threading.Lock()
         self._accept_ch_hints = {}
         token = _engine_token if _engine_token is not None else object()
         self.network_backend = assemble_backend(browser, proxy=self.proxy)
         if self.network_backend is not None:
-            engines = []
-            for engine in (self.network_backend.http, self.network_backend.ws,
-                           *self.network_backend._additional.values()):
-                if engine is not None and all(engine is not current for current in engines):
-                    engines.append(engine)
+            engines = self.network_backend._engine_instances
             try:
                 _claim_ready_engines(engines, token)
+                if isinstance(self.network_backend.ws, WebSocketsTransport):
+                    self.network_backend.ws._share_io(browser._websocket_io)
                 self.network_backend.cookies = self.cookies
             except BaseException:
                 _cleanup_failed_engines(engines, browser, token)
@@ -200,20 +203,15 @@ class Profile:
             self._accept_ch_hints[origin] = hints
 
     def new_page(self,
-                 url: str = "about:blank",
                  *,
                  trace: bool | None = None,
                  trace_scripts=_TRACE_SCRIPTS_INHERIT,
                  environment: dict | BrowserEnvironment | None = None) -> Page:
         """Create a page in this profile and return it.
 
-        A URL other than ``about:blank`` is loaded right away with
-        :meth:`Page.goto <pyv8c.platform.page.Page.goto>`; when that load fails
-        the new page is closed again and the error propagates, so a returned page
-        is always usable.
+        The page starts with an empty document. Navigate with
+        ``await page.goto(url)`` after construction.
 
-        :param url: initial URL; the default creates an empty document without
-            touching the loader.
         :param trace: start this page traced; ``None`` inherits the Browser
             setting.
         :param trace_scripts: source-URL Glob patterns for this page; omitted
@@ -224,25 +222,23 @@ class Profile:
             :attr:`pages`.
         :raises InvalidStateError: the profile or its browser is closed.
         """
+        self.browser._runtime.check_owner()
         self._ensure_open()
         selected_scripts = (self.trace_scripts if trace_scripts is _TRACE_SCRIPTS_INHERIT
                             else _trace_script_patterns(trace_scripts))
-        page = Page(self, trace=trace, trace_scripts=selected_scripts,
+        page = self._create_page(trace=trace, trace_scripts=selected_scripts,
                     environment=environment)
         with self._state_lock:
             accepted = not (self.closed or self._closing or self.browser._closed or self.browser._closing)
             if accepted:
                 self.pages.append(page)
         if not accepted:
-            page.close()
+            page._retire()
             raise HostStateError('Profile is closed or closing')
-        if str(url) != "about:blank":
-            try:
-                page.goto(url)
-            except BaseException:
-                page.close()
-                raise
         return page
+
+    def _create_page(self, **kwargs):
+        return Page(self, **kwargs)
 
     def _discard_page(self, page):
         with self._state_lock:
@@ -269,6 +265,7 @@ class Profile:
         :raises InvalidStateError: the profile is closed, the page belongs to
             another profile or is closed, or a server is already attached.
         """
+        self.browser._runtime.check_owner()
         self._ensure_open()
         if page not in self.pages or page.closed:
             raise HostStateError("Page does not belong to this profile")
@@ -277,45 +274,70 @@ class Profile:
         from .devtools import start_devtools
         return start_devtools(self, page, options=options)
 
-    def close(self) -> None:
-        """Close the profile: its pages, then DevTools and the network stack.
+    def _retire_pages(self):
+        self.browser._runtime.check_owner(allow_closing=True)
+        self._closing = True
+        first_error = None
+        for page in tuple(self.pages):
+            try:
+                page._retire()
+            except control_exceptions():
+                raise
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
 
-        Best effort and idempotent: each part is close-attempted even when an
-        earlier one raised, blob URLs are dropped, and the first error is
-        re-raised once the rest was attempted.  Execution control signals are
-        never treated as an ordinary cleanup failure; they unwind immediately.
-        """
-        with self._close_condition:
-            if self._closing:
-                if self._close_owner == threading.get_ident():
-                    return
-                while self._closing:
-                    self._close_condition.wait()
-                if self._close_error is not None:
-                    raise self._close_error
-            if self.closed:
-                return
-            self._closing = True
-            self._close_owner = threading.get_ident()
-            self._close_error = None
-            pages = list(self.pages)
+    async def close(self):
+        kernel = self.browser._runtime
+        kernel.check_thread()
+        kernel.check_loop()
+        task = self._begin_close()
+        if task is not None:
+            await asyncio.shield(task)
+
+    def _begin_close(self):
+        kernel = self.browser._runtime
+        kernel.check_thread()
+        if self.closed:
+            return
+        kernel.check_owner(allow_closing=True)
+        task = self._close_task
+        if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
+            self._retire_pages()
+            task = self._close_task = kernel.loop.create_task(self._finish_close(tuple(self.pages)))
+            task.add_done_callback(consume_future)
+        return task
+
+    async def __aenter__(self):
+        self.browser._runtime.check_owner()
+        self.browser._runtime.check_loop()
+        self._ensure_open()
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+
+    async def _finish_close(self, pages):
         first_error = None
         try:
-            for page in pages:
-                try:
-                    page.close()
-                except control_exceptions():
-                    raise
-                except BaseException as exc:
-                    # Teardown is best effort: one realm's error must not leave the
-                    # later pages, DevTools or the network backend alive.
-                    if first_error is None:
-                        first_error = exc
+            with close_phase(self, "pages"):
+                results = await asyncio.gather(*(page.close() for page in pages), return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and first_error is None:
+                    first_error = result
+            if first_error is not None:
+                raise first_error
             for name in ("_devtools", "network_backend"):
                 resource = getattr(self, name)
                 if resource is not None:
                     try:
-                        resource.close()
+                        with close_phase(self, name):
+                            if name == "network_backend":
+                                await asyncio.to_thread(resource.close)
+                            else:
+                                resource.close()
                     except control_exceptions():
                         raise
                     except BaseException as exc:
@@ -326,25 +348,19 @@ class Profile:
             if first_error is not None:
                 raise first_error
             self.closed = True
+            self.resource_cache.clear_memory()
+            self.preflight_cache.clear()
             token = getattr(self, '_ready_engine_token', None)
             if token is not None:
                 _release_ready_engines(token)
                 self._ready_engine_token = None
             if self in self.browser.profiles:
                 self.browser.profiles.remove(self)
-        except BaseException as exc:
-            with self._close_condition:
-                self._close_error = exc
-            raise
         finally:
             self._blob_urls.clear()
             self._blob_origins.clear()
             self._databases.clear()
             self._file_systems.clear()
-            with self._close_condition:
-                self._closing = False
-                self._close_owner = None
-                self._close_condition.notify_all()
 
 
 class Browser:
@@ -367,7 +383,7 @@ class Browser:
                  frame_rate: float = 60.0,
                  http_engine: Literal["cronet", "curl_cffi"] | HttpTransport | Callable | None = "curl_cffi",
                  http_options: dict | None = None,
-                 ws_engine: Literal["cronet", "websockets"] | WebSocketTransport | Callable | None = "websockets",
+                 ws_engine: Literal["websockets"] | WebSocketTransport | Callable | None = "websockets",
                  ws_options: dict | None = None,
                  proxy: str | None = None,
                  default_headers: dict | None = None,
@@ -414,7 +430,7 @@ class Browser:
         :param frame_rate: virtual rendering clock frequency in Hz; defaults to
             60. Iframes share their page tree's clock; workers drive their own.
         :param http_engine: the HTTP engine -- a registered name (built with
-            ``http_options``), a ready object with ``request_sync``, or a factory
+            ``http_options``), a ready object with ``submit_request``, or a factory
             called once per profile; ``None`` leaves the role empty.  Further
             engines can be added with
             :func:`~pyv8c.network.registry.register_transport`.
@@ -483,8 +499,9 @@ class Browser:
         self.trace_callback = trace_callback
         self.trace_scripts = _trace_script_patterns(trace_scripts)
         started = time.perf_counter_ns()
-        self._closed = False
-        self._closing = False
+        self._runtime = Runtime()
+        self._close_task = None
+        self._default_profile = None
         self._state_lock = threading.Lock()
         self._ready_engine_reserved = False
         # pyv8 starts its global V8 runtime on first use, not at import, so the
@@ -504,6 +521,7 @@ class Browser:
         self.real_network = bool(real_network)
         self.http_engine = http_engine
         self.ws_engine = ws_engine
+        self._websocket_io = WebSocketIO()
         #: Options for the two engines; a key an engine does not accept is refused
         #: when a profile is created rather than passed on unread.
         self.http_options = dict(http_options or {})
@@ -601,6 +619,7 @@ class Browser:
         :raises InvalidStateError: the browser is closed.
         :raises ValueError: the proxy value is not an ``http``/``https`` URL.
         """
+        self._runtime.check_owner()
         with self._state_lock:
             if self._closed or self._closing:
                 raise HostStateError("Browser is closed or closing")
@@ -608,7 +627,8 @@ class Browser:
             raise TypeError("trace_callback must be callable or None")
         ready = []
         if self.real_network:
-            for value, method in ((self.http_engine, 'request_sync'), (self.ws_engine, 'websocket')):
+            for role, method in KIND_METHODS.items():
+                value = getattr(self, f"{role}_engine")
                 if (value is not None and not isinstance(value, (str, type))
                         and (not callable(value) or callable(getattr(value, method, None)))
                         and all(value is not existing for existing in ready)):
@@ -624,7 +644,7 @@ class Browser:
                 self._ready_engine_reserved = True
         try:
             if uses_ready: _claim_ready_engines(ready, token)
-            profile = Profile(self, proxy=None if proxy is None else normalize_proxy(proxy),
+            profile = self._create_profile(proxy=None if proxy is None else normalize_proxy(proxy),
                               trace=trace, traceable=traceable, trace_callback=trace_callback,
                               trace_scripts=trace_scripts, _engine_token=token)
         except BaseException:
@@ -637,9 +657,12 @@ class Browser:
             if accepted:
                 self.profiles.append(profile)
         if not accepted:
-            profile.close()
+            profile._retire_pages()
             raise HostStateError("Browser is closed or closing")
         return profile
+
+    def _create_profile(self, **kwargs):
+        return Profile(self, **kwargs)
 
     @property
     def loader_pool(self):
@@ -652,37 +675,86 @@ class Browser:
                     max_workers=_LOADER_WORKERS, thread_name_prefix="pyv8c-loader")
             return self._loader_pool
 
-    def close(self) -> None:
-        """Close every profile, then mark the browser closed.
+    @property
+    def _closed(self):
+        return self._runtime.closed
 
-        Best effort and idempotent: every profile gets its close attempt even
-        when an earlier one raised, and the first error is re-raised afterwards.
-        A closed browser refuses new profiles.
-        """
-        with self._state_lock:
-            if self._closed or self._closing:
-                return
-            self._closing = True
+    @property
+    def _closing(self):
+        return self._runtime.state in (RuntimeState.CLOSING, RuntimeState.CLOSE_FAILED)
+
+    @property
+    def closed(self):
+        return self._runtime.closed
+
+    async def __aenter__(self):
+        self._runtime.open()
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+
+    def new_page(self, **options):
+        self._runtime.check_owner()
+        if self._default_profile is None or self._default_profile.closed:
+            self._default_profile = self.new_profile()
+        return self._default_profile.new_page(**options)
+
+    async def close(self):
+        self._runtime.check_thread()
+        self._runtime.check_loop()
+        task = self._begin_close()
+        if task is not None:
+            await asyncio.shield(task)
+
+    def _begin_close(self):
+        self._runtime.check_thread()
+        if self.closed:
+            return self._close_task
+        if self._close_task is None or (
+            self._close_task.done() and (self._close_task.cancelled() or self._close_task.exception() is not None)
+        ):
+            self._runtime.begin_close()
             profiles = tuple(self.profiles)
+            try:
+                first_error = None
+                retired = []
+                for profile in profiles:
+                    try:
+                        with close_phase(profile, "retire-pages"):
+                            profile._retire_pages()
+                    except control_exceptions():
+                        raise
+                    except BaseException as exc:
+                        if first_error is None:
+                            first_error = exc
+                    else:
+                        retired.append(profile)
+            except BaseException:
+                self._runtime.fail_close()
+                raise
+            self._close_task = self._runtime.loop.create_task(self._finish_close(retired, first_error))
+            self._close_task.add_done_callback(consume_future)
+        return self._close_task
+
+    async def _finish_close(self, profiles, first_error):
         try:
-            # Never hold the state lock while calling a realm owner or host factory.
-            first_error = None
-            for profile in profiles:
-                try:
-                    profile.close()
-                except control_exceptions():
-                    raise
-                except BaseException as exc:
-                    if first_error is None:
-                        first_error = exc
+            with close_phase(self, "profiles"):
+                results = await asyncio.gather(*(profile.close() for profile in profiles), return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and first_error is None:
+                    first_error = result
             if first_error is not None:
-                # Keep the loader available for a failed profile's cleanup retry.
                 raise first_error
+            if self._websocket_io.started:
+                with close_phase(self, "websocket-io"):
+                    await asyncio.to_thread(self._websocket_io.close)
             with self._loader_lock:
-                self._closed = True
                 pool = self._loader_pool
             if pool is not None:
-                pool.shutdown(wait=False, cancel_futures=True)
-        finally:
-            with self._state_lock:
-                self._closing = False
+                self._runtime._retire_io_pool(pool)
+            with close_phase(self, "runtime"):
+                await self._runtime.close()
+        except BaseException:
+            self._runtime.fail_close()
+            raise

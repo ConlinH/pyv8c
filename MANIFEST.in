@@ -10,14 +10,12 @@ include CHROMIUM_VERSION
 include pyv8/V8_VERSION
 include pyv8/v8_build.py
 include pyv8/build_support.py
-include build_tools/__init__.py
-include build_tools/idl_build.py
 include pyv8/bootstrap.py
 include pyv8/build.env.example
 recursive-include pyv8/src *.cpp *.h *.def
 recursive-include pyv8c/pyv8c *.py *.pyi py.typed *.json *.zip
-recursive-include pyv8c/audio_native Cargo.toml Cargo.lock *.rs *.md
-prune pyv8c/audio_native/target
+recursive-include pyv8c/native Cargo.toml Cargo.lock *.rs *.cpp *.md
+prune pyv8c/native/target
 recursive-include docs *.md
 # The ICU data file belongs in wheels only; a locally built sdist must not pick up
 # the machine-specific copy that happens to sit in the source tree.

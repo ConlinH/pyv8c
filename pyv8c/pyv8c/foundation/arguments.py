@@ -54,6 +54,8 @@ def _matches_interface(value, expected):
 
 
 def dom_string(value):
+    if type(value) is str:
+        return value
     if isinstance(value, (pyv8.JSObject, pyv8.JSValue)):
         return value._to_string()
     if isinstance(value, str):

@@ -2,9 +2,65 @@ import gc
 import threading
 import weakref
 
+import pytest
+
 from pyv8c.foundation.agent_tasks import AgentTaskQueue, TaskContext
 from pyv8c.foundation.tasks import TaskQueue, TaskSource
 from pyv8c.foundation.executor import RealmExecutor
+
+
+@pytest.mark.parametrize("transition", [
+    "cancel", "invalidate", "rebind", "migrate", "close_lane", "close_agent", "prune", "turn",
+])
+def test_cancelled_callback_finalizer_can_reenter_owner(transition):
+    class ClosingHost(Host):
+        closed = False
+
+        def is_closed(self):
+            return self.closed
+
+    host = ClosingHost()
+    lane = TaskQueue(host)
+    executor = RealmExecutor()
+    outcomes = []
+
+    class Callback:
+        def __call__(self):
+            pytest.fail("cancelled callback executed")
+
+        def __del__(self):
+            try:
+                executor.call(lambda: (lane.pending(), lane.post(lambda: None)), timeout=0.2)
+            except BaseException as error:
+                outcomes.append(type(error).__name__)
+            else:
+                outcomes.append("completed")
+
+    try:
+        ticket = lane.post_task(Callback(), document_bound=True)
+        if transition == "cancel":
+            assert ticket.cancel()
+        elif transition == "invalidate":
+            lane.set_task_context(TaskContext())
+        elif transition == "rebind":
+            lane.bind_scheduler(lane._scheduler, None, TaskContext())
+        elif transition == "migrate":
+            lane.bind_scheduler(AgentTaskQueue(), None, TaskContext())
+        elif transition == "close_lane":
+            lane.close()
+        elif transition == "close_agent":
+            lane._scheduler.close()
+        else:
+            host.closed = True
+            if transition == "prune":
+                assert not lane._scheduler.has_runnable_tasks()
+            else:
+                assert not lane._scheduler.run_turn()
+        assert not ticket.pending
+        assert outcomes == ["completed"]
+    finally:
+        lane.close()
+        executor.close()
 
 
 class Host:
@@ -218,25 +274,23 @@ def test_prebind_records_and_timer_tickets_move_to_shared_selector():
     assert not agent.pending() and not lane.has_runnable_tasks()
 
 
-def test_executor_rechecks_future_deadlines_after_clearing_the_wakeup(monkeypatch):
+def test_executor_rechecks_a_deadline_published_during_the_sleep_scan(monkeypatch):
     executor = RealmExecutor(auto_pump=True)
     queue = TaskQueue()
     done, armed = threading.Event(), threading.Event()
-    original_clear = executor._wake.clear
-    def clear():
+    next_deadline = executor._next_deadline
+    def scan():
+        old = next_deadline()
         if armed.is_set():
             armed.clear()
-            # Simulate a future timer arriving after the driver chose its old
-            # sleep hint but before that hint's wake signal is cleared.
+            # Publish after reading the old hint. The wake generation must
+            # prevent parking on that stale hint, including when it was None.
             queue.schedule(done.set, 0.05)
-        original_clear()
+        return old
     try:
         executor.attach_task_queue(queue)
         def install():
-            # Install and arm on the owner before it next clears the wakeup.
-            # Otherwise clear() can observe armed=False, then erase the host's
-            # wakeup after armed.set(), without ever injecting the timer.
-            monkeypatch.setattr(executor._wake, 'clear', clear)
+            monkeypatch.setattr(executor, '_next_deadline', scan)
             armed.set()
         executor.call(install)
         assert done.wait(1)

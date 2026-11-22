@@ -1,22 +1,25 @@
 """Worker-owned requests; transport threads exchange only plain data with the owner."""
+from contextvars import copy_context
 from dataclasses import replace
 from functools import partial
-from threading import Event
+from threading import Event, get_ident
 from time import perf_counter
 
 from pyv8c import pyv8
 
 from ...foundation.arguments import is_nullish
-from ...foundation.host_errors import LoadFailure
+from ...foundation.host_errors import LoadFailure, RequestTimeout
 from ...foundation.error_policy import control_exceptions
 from ...foundation.tasks import TaskSource
 from ...foundation.urls import origin_tuple
-from ...web.fetch.response import Response
+from ...network.models import NetworkRequest
 from ...web.fileapi.blob import Blob, _array_buffer_bytes
-from .handles import LoadHandle
+from .response import web_response
 
 
 class WorkerResourceCapability:
+    supports_sync_xhr_timeout = True
+
     def __init__(self, worker):
         self.worker = worker
         self._session = None
@@ -27,8 +30,11 @@ class WorkerResourceCapability:
     @property
     def session(self):
         if self._session is None:
-            self._session = replace(self.worker.config.resource_session, origin=origin_tuple(
-                self.worker.script_url, inherited=self.worker.config.creator_origin))
+            script_url = self.worker.script_url
+            self._session = replace(
+                self.worker.config.resource_session, base_url=script_url,
+                origin=origin_tuple(script_url, inherited=self.worker.config.creator_origin),
+            )
         return self._session
 
     @property
@@ -36,18 +42,18 @@ class WorkerResourceCapability:
         return self.session.origin
 
     def file_system_state(self, factory):
-        key = self.session.file_system_key or (self.session.origin, self.session.origin)
+        key = self.worker.config.file_system_key or (self.origin, self.origin)
         return self.session.profile.file_system_state(key, factory)
 
     def load_resource_async(self, url, request, callback):
         return self.worker.resource_ownership.issue(self._start, url, request, callback)
 
-    def _start(self, url, request, callback):
-        handle = LoadHandle()
+    def _start(self, handle, url, request, callback):
         self._callbacks[handle] = callback
         handle.add_done_callback(self._terminal)
         try:
             options = self._options(request)
+            load = self.session.prepare(str(url), options)
         except control_exceptions():
             self._callbacks.pop(handle, None)
             handle.finish()
@@ -55,9 +61,7 @@ class WorkerResourceCapability:
         except BaseException as error:
             self._post_result(handle, None, error)
         else:
-            self._submit(handle, str(url), options,
-                         partial(self._post_result, handle))
-        return handle
+            self._submit(handle, load, partial(self._post_result, handle))
 
     def _options(self, request):
         options = dict(request or {})
@@ -72,57 +76,112 @@ class WorkerResourceCapability:
         options['timeout'] = None if is_nullish(timeout) else float(timeout)
         return options
 
-    def _submit(self, handle, url, options, received):
+    def _submit(self, handle, load, received, *, blocking=False):
         tasks = self.worker.tasks
-        session = self.session  # Freeze the origin on the Worker owner before submission.
-        def run():
-            try:
-                payload = session.load(url, options,
-                                            lambda: handle.done or tasks.closed)
-            except BaseException as error:
-                received(None, LoadFailure(str(error)))
-            else:
-                received(payload, None)
+        task_services = self.worker.services.task_services
+        session = self.session
+        browser, background = self.worker.config.browser, self.worker.config.background
+        request_context = copy_context()
+        owner = get_ident()
+        stop_event = self.worker.stop_event
+
+        def owner_gone():
+            return tasks.closed or stop_event.is_set()
+
+        steps = session.steps(load, handle, owner_gone)
         tasks.begin_loader()
-        try:
-            future = self.worker.config.browser.loader_pool.submit(run)
-        except BaseException as error:
-            tasks.complete_loader()
-            received(None, LoadFailure(str(error)))
-        else:
-            future.add_done_callback(lambda done: tasks.complete_loader())
-            handle.bind_transport(future)
+
+        def finish(payload, error):
+            steps.close()
+            try:
+                if isinstance(error, RequestTimeout) or error is None:
+                    failure = error
+                else:
+                    failure = LoadFailure(str(error))
+                if not handle.done:
+                    received(payload, failure)
+            finally:
+                tasks.complete_loader()
+
+        def advance(done=None):
+            if handle.done or owner_gone():
+                finish(None, None)
+                return
+            try:
+                value = None if done is None else done.result()
+            except BaseException as error:
+                finish(None, error)
+                return
+            try:
+                step = steps.send(value)
+                if isinstance(step, NetworkRequest):
+                    job = session.submit(task_services, load, step, blocking=blocking,
+                                         bind=handle.bind_transport)
+                    handle.observe_transport(job, job.result, step_done)
+                else:
+                    def call():
+                        if handle.done or owner_gone():
+                            raise LoadFailure("Worker request cancelled")
+                        return step.call()
+
+                    future = background.submit(browser.loader_pool, request_context.copy().run, call,
+                                               kind="worker-resource")
+                    handle.bind_transport(future)
+                    handle.observe_transport(future, future, step_done)
+            except StopIteration as terminal:
+                finish(terminal.value, None)
+            except BaseException as error:
+                finish(None, error)
+
+        def step_done(done):
+            if get_ident() != owner:
+                request_context.copy().run(advance, done)
+                return
+            # Already-completed futures invoke callbacks inline. Keep response
+            # processing off the Worker owner in that case as well.
+            try:
+                background.submit(browser.loader_pool, request_context.copy().run,
+                                  advance, done, kind="worker-resource-step")
+            except BaseException as error:
+                finish(None, error)
+
+        advance()
 
     def load_resource(self, url, request=None):
         """Wait for plain transport data, never for another Realm's owner queue."""
         options = self._options(request)
         deadline = self.worker.execution_deadline
-        if deadline is not None:
-            remaining = max(0, deadline - perf_counter())
-            options['timeout'] = min(options['timeout'], remaining) if options['timeout'] else remaining
+        load = self.session.prepare(str(url), options)
         completed, answer = Event(), {}
-        def start(url, options, callback):
-            handle = LoadHandle()
+        def start(handle, _url, _options, callback):
             handle.add_done_callback(lambda done: completed.set() if done.cancelled else None)
             def received(payload, error):
                 if handle.finish():
                     callback(payload, error)
-            self._submit(handle, url, options, received)
-            return handle
+            self._submit(handle, load, received, blocking=True)
         def received(payload, error):
             answer.update(payload=payload, error=error)
             completed.set()
         handle = self.worker.resource_ownership.issue(start, str(url), options, received)
         try:
-            while not completed.wait(.01):
+            while True:
                 if self.worker.stop_event.is_set() or (deadline is not None and perf_counter() >= deadline):
                     self.worker.v8_context.terminate_operation(self.worker.execution_ticket)
                     raise pyv8.JavaScriptTerminated()
-            if handle.cancelled or self.worker.stop_event.is_set():
+                if completed.is_set():
+                    break
+                try:
+                    budget = load.remaining()
+                except RequestTimeout:
+                    if completed.is_set():
+                        break
+                    raise
+                completed.wait(.01 if budget is None else min(.01, budget))
+            if handle.cancelled:
                 raise pyv8.JavaScriptTerminated()
             if answer['error'] is not None:
                 raise answer['error']
-            return answer['payload']
+            return web_response(answer['payload'], self.worker.services)
         finally:
             if not handle.done:
                 handle.cancel()
@@ -155,11 +214,7 @@ class WorkerResourceCapability:
         response = None
         if error is None:
             try:
-                response = Response(payload.body, {
-                    'url': payload.url, 'status': payload.status, 'statusText': payload.status_text,
-                    'headers': payload.headers, 'redirected': payload.redirected, 'type': payload.type,
-                }, services=self.worker.services)
-                response._redirect_crossed = payload.redirect_crossed
+                response = web_response(payload, self.worker.services)
             except control_exceptions():
                 raise
             except BaseException as exc:

@@ -3,18 +3,19 @@ import pytest
 pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importable")
 pytestmark = pytest.mark.native
 
-from pyv8c import Browser, PageTypeError
+from pyv8c import PageTypeError
+from pyv8c.async_api import Browser
 
 
-def test_dom_exception_constructor_and_legacy_code():
-    browser = Browser(); page = browser.new_profile().new_page()
+async def test_dom_exception_constructor_and_legacy_code():
+    browser = (await Browser().__aenter__()); page = browser.new_profile().new_page()
     value = page.evaluate("(() => { const e = new DOMException('bad', 'InvalidStateError'); return [e.name, e.message, e.code, e instanceof DOMException, Object.prototype.toString.call(e), DOMException.length]; })()")
     assert value == ["InvalidStateError", "bad", 11, True, "[object DOMException]", 0]
-    browser.close()
+    (await browser.close())
 
 
-def test_python_v8_error_metadata_and_dom_errors():
-    browser = Browser(); page = browser.new_profile().new_page(); page.set_content("<body><div></div></body>")
+async def test_python_v8_error_metadata_and_dom_errors():
+    browser = (await Browser().__aenter__()); page = browser.new_profile().new_page(); (await page.set_content("<body><div></div></body>", wait_until="commit"))
     value = page.evaluate("""
       (() => {
         const results = [];
@@ -31,21 +32,21 @@ def test_python_v8_error_metadata_and_dom_errors():
     ]
     assert value[1] == ["NotFoundError", 8, True]
     assert value[2] == ["SyntaxError", True]
-    browser.close()
+    (await browser.close())
 
 
-def test_history_security_error_and_fetch_rejection_object():
-    browser = Browser(resource_loader=lambda url, request: (_ for _ in ()).throw(RuntimeError("offline")))
-    page = browser.new_profile().new_page(); page.set_content("<body></body>", url="https://example.test/")
+async def test_history_security_error_and_fetch_rejection_object():
+    browser = (await Browser(resource_loader=lambda url, request: (_ for _ in ()).throw(RuntimeError("offline"))).__aenter__())
+    page = browser.new_profile().new_page(); (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
     assert page.evaluate("(() => { try { history.pushState({}, '', 'https://other.test/'); } catch (e) { return [e.name, e.code, e instanceof DOMException]; } })()") == ["SecurityError", 18, True]
     page.evaluate("fetch('/offline').catch(e => window.__fetchError = [e.name, e instanceof Error, e.message])")
-    page.run_until_idle()
+    (await page.run_until_idle())
     assert page.evaluate("__fetchError.slice(0, 3)") == ["TypeError", True, "Failed to fetch"]
-    browser.close()
+    (await browser.close())
 
 
-def test_a_dom_exception_reaches_python_as_the_browser_stringifies_it():
-    browser = Browser(); page = browser.new_profile().new_page()
+async def test_a_dom_exception_reaches_python_as_the_browser_stringifies_it():
+    browser = (await Browser().__aenter__()); page = browser.new_profile().new_page()
     value = page.evaluate(
         "e = new DOMException('Service workers are not implemented here.',"
         " 'NotSupportedError'); e")
@@ -53,10 +54,10 @@ def test_a_dom_exception_reaches_python_as_the_browser_stringifies_it():
     assert str(page.evaluate("new DOMException('m')")) == "Error: m"
     assert str(page.evaluate("new DOMException('m', '')")) == "m"
     assert str(page.evaluate("new DOMException()")) == "Error"
-    browser.close()
+    (await browser.close())
 
 
-def test_the_error_family_is_declared_for_a_realm():
+async def test_the_error_family_is_declared_for_a_realm():
     """Inheriting the family is the whole declaration: what a page sees is what a class
     inherited, which the browser tests hold end to end."""
     from pyv8c import pyv8
@@ -67,7 +68,7 @@ def test_the_error_family_is_declared_for_a_realm():
         raise PageTypeError("boom")
 
 
-def test_the_legacy_code_table_agrees_with_the_document():
+async def test_the_legacy_code_table_agrees_with_the_document():
     """``DOM_EXCEPTION_CODES`` answers ``code``, by DOM error name; the document installs the
     same numbers as ``*_ERR`` constants.  Two spellings of one table, held together by the
     numbers and by the count."""

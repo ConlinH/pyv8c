@@ -112,6 +112,7 @@ CORE_CLASSES = (
     ('PermissionsPolicy', 'pyv8c.web.permissions_policy', 'PermissionsPolicy', None),
     ('CSSRule', 'pyv8c.web.css.rules', 'CSSRule', None),
     ('CSSStyleRule', 'pyv8c.web.css.rules', 'CSSStyleRule', None),
+    ('CSSFontFaceRule', 'pyv8c.web.css.rules', 'CSSFontFaceRule', None),
     ('CSSGroupingRule', 'pyv8c.web.css.rules', 'CSSGroupingRule', None),
     ('CSSConditionRule', 'pyv8c.web.css.rules', 'CSSConditionRule', None),
     ('CSSMediaRule', 'pyv8c.web.css.rules', 'CSSMediaRule', None),

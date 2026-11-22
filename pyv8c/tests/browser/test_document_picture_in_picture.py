@@ -1,6 +1,6 @@
 """``documentPictureInPicture`` exists in a secure page and answers Chrome's shape."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 SURFACE = """(() => {
   const pip = documentPictureInPicture;
@@ -17,11 +17,11 @@ SURFACE = """(() => {
 })()"""
 
 
-def test_the_object_matches_chromes_shape():
-    browser = Browser(cache=False, real_network=False, stub_logging="off")
+async def test_the_object_matches_chromes_shape():
+    browser = (await Browser(cache=False, real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="https://example.test/")
+        (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         assert page.evaluate(SURFACE) == {
             "type": "object",
             "tag": "[object DocumentPictureInPicture]",
@@ -33,14 +33,14 @@ def test_the_object_matches_chromes_shape():
             "requestLength": 0,
         }
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_an_insecure_page_has_none():
-    browser = Browser(cache=False, real_network=False, stub_logging="off")
+async def test_an_insecure_page_has_none():
+    browser = (await Browser(cache=False, real_network=False, stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content("<body></body>", url="http://plain.test/")
+        (await page.set_content("<body></body>", url="http://plain.test/", wait_until="commit"))
         assert page.evaluate("typeof documentPictureInPicture") == "undefined"
     finally:
-        browser.close()
+        (await browser.close())

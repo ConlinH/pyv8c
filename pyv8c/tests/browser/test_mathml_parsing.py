@@ -1,14 +1,14 @@
 """MathML foreign content in HTML document and fragment parsing."""
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 
-def test_mathml_namespaces_and_color_hints_follow_the_html_parser():
-    browser = Browser(real_network=False, stub_logging='off')
+async def test_mathml_namespaces_and_color_hints_follow_the_html_parser():
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.set_content('''<body><math><mrow id="row" mathcolor="blue"><mn>1</mn></mrow>
-          <mi><span id="embedded">x</span></mi></math></body>''', url='https://math.test/')
+        (await page.set_content('''<body><math><mrow id="row" mathcolor="blue"><mn>1</mn></mrow>
+          <mi><span id="embedded">x</span></mi></math></body>''', url='https://math.test/', wait_until="commit"))
         assert page.evaluate('''(() => {
           const row = document.getElementById('row'), number = row.firstElementChild;
           const embedded = document.getElementById('embedded');
@@ -34,4 +34,4 @@ def test_mathml_namespaces_and_color_hints_follow_the_html_parser():
             'htmlNamespace': 'http://www.w3.org/1999/xhtml',
         }
     finally:
-        browser.close()
+        (await browser.close())

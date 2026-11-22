@@ -1,12 +1,14 @@
+
+import asyncio
 import json
 import threading
 import pytest
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 from pyv8c.web.workers.runtime import WorkerRuntime
 
 
 @pytest.mark.parametrize("phase", ["timer", "microtask", "frame", "frame-microtask"])
-def test_worker_background_execution_uses_a_budget_and_recovers(monkeypatch, phase):
+async def test_worker_background_execution_uses_a_budget_and_recovers(monkeypatch, phase):
     started = threading.Event()
     runtimes = []
     original = WorkerRuntime._started
@@ -23,23 +25,23 @@ def test_worker_background_execution_uses_a_budget_and_recovers(monkeypatch, pha
     if phase.startswith('frame'):
         source = ("requestAnimationFrame(()=>{" + body + "});"
                   "setTimeout(()=>requestAnimationFrame(()=>postMessage('after')),75);")
-    browser = Browser(real_network=False, stub_logging='off')
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate("window.messages=[];window.worker=new Worker(URL.createObjectURL(new Blob(["
                       + json.dumps(source) + "])));worker.onmessage=e=>messages.push(e.data)")
-        assert started.wait(1)
-        page.wait_for("messages.includes('after')", timeout=2)
+        assert (await asyncio.to_thread(started.wait, 1))
+        (await page.wait_for("messages.includes('after')", timeout=2))
         assert page.evaluate('messages') == ['after']
         assert runtimes[0].executor.call(lambda: 42, timeout=1) == 42
     finally:
-        browser.close()
+        (await browser.close())
         for runtime in runtimes:
-            runtime.executor._thread.join(2)
+            (await asyncio.to_thread(runtime.executor._thread.join, 2))
             assert not runtime.executor._thread.is_alive()
 
 
-def test_parent_termination_interrupts_the_active_worker_operation(monkeypatch):
+async def test_parent_termination_interrupts_the_active_worker_operation(monkeypatch):
     ready = threading.Event()
     runtimes = []
     original = WorkerRuntime._started
@@ -50,19 +52,19 @@ def test_parent_termination_interrupts_the_active_worker_operation(monkeypatch):
         ready.set()
     monkeypatch.setattr(WorkerRuntime, '_started', started)
     source = "setTimeout(()=>{postMessage('entered');let s=Date.now();while(Date.now()-s<2000){}},0)"
-    browser = Browser(real_network=False, stub_logging='off')
+    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
         page.evaluate("window.entered=false;window.worker=new Worker(URL.createObjectURL(new Blob(["
                       + json.dumps(source) + "])));worker.onmessage=()=>entered=true")
-        assert ready.wait(1)
-        page.wait_for('entered', timeout=1)
+        assert (await asyncio.to_thread(ready.wait, 1))
+        (await page.wait_for('entered', timeout=1))
         page.evaluate('worker.terminate()')
         runtime = runtimes[0]
-        runtime.executor._thread.join(0.5)
+        (await asyncio.to_thread(runtime.executor._thread.join, 0.5))
         assert not runtime.executor._thread.is_alive()
         assert page.evaluate('1+1') == 2
     finally:
-        browser.close()
+        (await browser.close())
         for runtime in runtimes:
-            runtime.executor._thread.join(3)
+            (await asyncio.to_thread(runtime.executor._thread.join, 3))

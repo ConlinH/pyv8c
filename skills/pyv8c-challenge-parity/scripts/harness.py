@@ -165,7 +165,7 @@ def worker(config, result_path):
     save()
     try:
         if side == "here":
-            from pyv8c import Browser
+            from pyv8c.async_api import Browser
             from pyv8c import pyv8
             from pyv8c.pyv8 import _pyv8 as native
 

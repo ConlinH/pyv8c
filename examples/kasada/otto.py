@@ -1,12 +1,12 @@
-"""Fetch OTTO search HTML using pyv8c and the current, unmodified challenge SDK.
+"""Execute OTTO's current Kasada challenge in pyv8c and print the search results.
 
-Each run starts a fresh profile. HAR files, captured tokens, browser automation,
-and saved challenge payloads are never used as runtime inputs.
-Responses and products stay in memory; results are logged without writing files.
+Each run starts a fresh profile. No HAR, captured tokens, saved SDK, or browser
+automation is used as runtime input; responses and products stay in memory.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import hashlib
 import json
@@ -19,14 +19,20 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'pyv8c'))
+
 from loguru import logger
-from pyv8c import Browser, register_transport
+from pyv8c import register_transport
+from pyv8c.async_api import Browser
 from pyv8c.network.curl_cffi import CurlCffiTransport
 
-DEFAULT_URL = "https://www.otto.de/suche/banana/"
-CHALLENGE_FILES = {"ips.js", "p.js", "rc.js", "fp", "mfc", "tl"}
-VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input",
-             "link", "meta", "param", "source", "track", "wbr"}
+DEFAULT_URL = 'https://www.otto.de/suche/banana/'
+DEFAULT_PROXY = 'http://127.0.0.1:6696'
+CHALLENGE_FILES = {'ips.js', 'p.js', 'rc.js', 'fp', 'mfc', 'tl'}
+VOID_TAGS = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+             'link', 'meta', 'param', 'source', 'track', 'wbr'}
+TOP_N = 10
 
 
 class _ProductParser(HTMLParser):
@@ -120,8 +126,8 @@ def extract_products(html, base_url=DEFAULT_URL):
 
 
 def log_products(products):
-    logger.info("共整理 {} 条商品，按页面顺序打印前 {} 条", len(products), min(10, len(products)))
-    for index, product in enumerate(products[:10], 1):
+    logger.info("共整理 {} 条商品，按页面顺序打印前 {} 条", len(products), min(TOP_N, len(products)))
+    for index, product in enumerate(products[:TOP_N], 1):
         price = product.get("price")
         price_text = (f"{price} {product['currency']}" if price is not None else "未提供价格")
         if product.get("starting_price"):
@@ -132,15 +138,13 @@ def log_products(products):
                     product.get("variation_id") or "--", product["url"])
 
 
-def run(args) -> dict:
-    target = urlsplit(args.url)
+async def run(*, url=DEFAULT_URL, proxy=DEFAULT_PROXY, timeout=65, environment=None) -> dict:
+    target = urlsplit(url)
     if target.scheme != "https" or target.hostname != "www.otto.de":
         raise ValueError("The target must be an HTTPS URL on www.otto.de")
-    report = {"url": args.url, "runtime": "pyv8c", "proxy": args.proxy,
-              "uses_har": False, "uses_browser_automation": False,
-              "sdk_modified": False, "events": [], "documents": [], "tl": [],
-              "success": False}
-    logger.info("查询 {}，代理 {}", args.url, args.proxy)
+    report = {"url": url, "runtime": "pyv8c", "proxy": proxy,
+              "events": [], "documents": [], "tl": [], "success": False}
+    logger.info("查询 {}，代理 {}", url, proxy or '直连')
     lock = threading.RLock()
     finished = threading.Event()
     started = time.monotonic()
@@ -148,8 +152,8 @@ def run(args) -> dict:
 
     def record(event, **fields):
         with lock:
-            item = {"at": round(time.monotonic() - started, 3), "event": event, **fields}
-            report["events"].append(item)
+            report["events"].append({"at": round(time.monotonic() - started, 3),
+                                     "event": event, **fields})
             if event == "request":
                 logger.info("{} {}，请求体 {} B", fields["method"], fields["path"], fields["body_bytes"])
                 if fields["kpsdk"]:
@@ -168,14 +172,14 @@ def run(args) -> dict:
         return {str(k).lower(): len(str(v)) for k, v in headers.items()
                 if str(k).lower().startswith("x-kpsdk-")}
 
-    def relevant(url):
-        parts = urlsplit(url)
+    def relevant(link):
+        parts = urlsplit(link)
         return parts.hostname == target.hostname and (
             parts.path == target.path or parts.path.rsplit("/", 1)[-1] in CHALLENGE_FILES)
 
-    def intercept(url, request):
-        parts = urlsplit(str(url))
-        allowed = relevant(str(url)) or parts.scheme in {"about", "data", "blob", "javascript"}
+    def intercept(link, request):
+        parts = urlsplit(str(link))
+        allowed = relevant(str(link)) or parts.scheme in {"about", "data", "blob", "javascript"}
         return None if allowed else False
 
     class ObservedTransport(CurlCffiTransport):
@@ -230,28 +234,25 @@ def run(args) -> dict:
             return response
 
     register_transport("otto_search", ObservedTransport, proxy=True)
-    environment = (json.loads(args.environment.read_text(encoding="utf-8"))
-                   if args.environment else None)
-    browser = Browser(real_network=True, proxy=args.proxy, cache=False,
-                      threaded_loaders=True, environment=environment,
-                      resource_interceptor=intercept, http_engine="otto_search",
-                      http_options={"impersonate": "chrome150", "timeout": 25},
-                      ws_engine=None, stub_logging="off")
-    try:
+    async with Browser(
+        real_network=True, proxy=proxy, cache=False, threaded_loaders=True,
+        environment=environment, resource_interceptor=intercept, http_engine="otto_search",
+        http_options={"impersonate": "chrome150", "timeout": 25},
+        ws_engine=None, stub_logging="off",
+    ) as browser:
         page = browser.new_profile().new_page()
         try:
-            page.goto(args.url, wait_until="domcontentloaded", timeout=min(35, args.timeout))
+            await page.goto(url, wait_until="domcontentloaded", timeout=min(35, timeout))
         except Exception as error:
             record("navigation_error", error=type(error).__name__)
-        finished.wait(max(0, args.timeout - (time.monotonic() - started)))
-    finally:
-        browser.close()
+        await asyncio.to_thread(finished.wait, max(0, timeout - (time.monotonic() - started)))
+
     report["success"] = any(d["business_html"] for d in report["documents"])
     report["challenge_verified"] = any(t["reload"] for t in report["tl"])
     report["product_count"] = 0
     if report["success"]:
         try:
-            products = extract_products(search_html, args.url)
+            products = extract_products(search_html, url)
             if not products:
                 raise ValueError("搜索页未提取到商品，请检查当前页面结构")
             report["product_count"] = len(products)
@@ -270,27 +271,31 @@ def run(args) -> dict:
     return report
 
 
-def main() -> int:
+async def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default=DEFAULT_URL)
-    parser.add_argument("--proxy", default="http://127.0.0.1:6696")
-    parser.add_argument("--timeout", type=float, default=65)
-    parser.add_argument("--environment", type=Path)
+    parser.add_argument('--url', default=DEFAULT_URL)
+    parser.add_argument('--proxy', default=DEFAULT_PROXY)
+    parser.add_argument('--timeout', type=float, default=65)
+    parser.add_argument('--environment', type=Path)
     args = parser.parse_args()
     if args.timeout <= 0:
-        parser.error("--timeout must be positive")
+        parser.error('--timeout must be positive')
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     logger.remove()
-    logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} | {level:<7} | {message}",
-               filter=lambda record: record["name"] == __name__)
+    logger.add(sys.stderr, level='INFO', format='{time:HH:mm:ss} | {level:<7} | {message}',
+               filter=lambda record: record['name'] == __name__)
+    environment = (json.loads(args.environment.read_text(encoding='utf-8'))
+                   if args.environment else None)
     try:
-        return 0 if run(args)["success"] else 1
+        report = await run(url=args.url, proxy=args.proxy,
+                           timeout=args.timeout, environment=environment)
     except Exception as error:
-        logger.error("运行失败：{}: {}", type(error).__name__, error)
+        logger.error('运行失败：{}: {}', type(error).__name__, error)
         return 1
+    return 0 if report['success'] else 1
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == '__main__':
+    raise SystemExit(asyncio.run(main()))

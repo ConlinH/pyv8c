@@ -9,12 +9,17 @@
 JavaScript runs under the execution group's native operation budget. The process
 timeout also bounds work that cannot be interrupted by the V8 watchdog.
 """
+
+import asyncio
 import argparse
 import json
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from loguru import logger
+from pyv8c.async_api import Browser
 
 URL = ("https://www.skyscanner.com.au/sttc/px/captcha-v2/index.html?url=Lz8=&uuid=b74291f0-c061-11f1-ae58-2588bb3de0f3&vid=72d0bd15-c061-11f1-9900-dad3975d6")
 LOG = Path(__file__).with_name("px3.log")
@@ -60,7 +65,7 @@ RESULT = r"""
 """
 
 
-def pump(page, seconds=0.0):
+async def pump(page, seconds=0.0):
     """Let the queue turn for *seconds*.
 
     A running challenge keeps its own timers going, so the page need not reach
@@ -69,29 +74,29 @@ def pump(page, seconds=0.0):
     deadline = time.time() + seconds
     while True:
         try:
-            page.run_until_idle(timeout=0)
+            (await page.run_until_idle(timeout=0))
         except Exception:  # noqa: BLE001
             pass
         if time.time() >= deadline:
             return
-        time.sleep(0.2)
+        (await asyncio.sleep(0.2))
 
 
-def wait_for_widget(page, seconds):
+async def wait_for_widget(page, seconds):
     """Poll until the challenge button is pressable, letting the page's timers run."""
     waited = 0.0
     while waited < seconds:
         if page.evaluate(READY):
             return True
-        pump(page)
-        time.sleep(0.5)
+        (await pump(page))
+        (await asyncio.sleep(0.5))
         waited += 0.5
     return False
 
 
-def hold(page, seconds):
+async def hold(page, seconds):
     """Move to the challenge button, press, hold, release, then let the page react."""
-    if not wait_for_widget(page, 20):
+    if not (await wait_for_widget(page, 20)):
         print("no challenge widget appeared")
         return False
     spot = page.evaluate(BUTTON)
@@ -100,46 +105,43 @@ def hold(page, seconds):
         return False
     print(f"button {spot['text']!r} at ({spot['x']:.0f}, {spot['y']:.0f}) "
           f"{spot['w']:.0f}x{spot['h']:.0f}")
-    page.mouse.move(spot["x"] - 150, spot["y"] + 60, steps=15)
-    page.mouse.move(spot["x"], spot["y"], steps=10)
-    page.mouse.down()
+    (await page.mouse.move(spot["x"] - 150, spot["y"] + 60, steps=15))
+    (await page.mouse.move(spot["x"], spot["y"], steps=10))
+    (await page.mouse.down())
     step = 0.25
     waited = 0.0
     while waited < seconds:
         # Stay on the button while held, the way a hand does, and let the page run.
-        page.mouse.move(spot["x"] + (1 if int(waited * 4) % 2 else -1), spot["y"], steps=1)
-        time.sleep(step)
-        pump(page)
+        (await page.mouse.move(spot["x"] + (1 if int(waited * 4) % 2 else -1), spot["y"], steps=1))
+        (await asyncio.sleep(step))
+        (await pump(page))
         waited += step
-    page.mouse.up()
+    (await page.mouse.up())
     print(f"released after {waited:.2f}s")
     return True
 
 
-def browse(stub_logging, trace, log, seconds):
-    from loguru import logger
-    from pyv8c import Browser
-
+async def browse(stub_logging, trace, log, seconds):
     logger.add(log, level="DEBUG" if trace else "INFO", mode="w")
     started = time.time()
-    browser = Browser(stub_logging=stub_logging, trace=trace, traceable=trace,
-                      threaded_loaders=True)
+    browser = (await Browser(stub_logging=stub_logging, trace=trace, traceable=trace,
+                      threaded_loaders=True).__aenter__())
     try:
         page = browser.new_profile().new_page()
-        page.goto(URL)
-        pump(page, 20)
-        hold(page, seconds)
-        pump(page, 20)
+        (await page.goto(URL))
+        (await pump(page, 20))
+        (await hold(page, seconds))
+        (await pump(page, 20))
         try:
             print("after hold:", json.dumps(page.evaluate(RESULT)))
         except Exception as error:  # noqa: BLE001
             print("after hold: realm stayed busy:", type(error).__name__)
     finally:
-        browser.close()
+        (await browser.close())
     print(f"browsed in {time.time() - started:.1f}s")
 
 
-def main(argv=None):
+async def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--trace", action="store_true", help="verbose stubs and engine trace")
@@ -149,8 +151,8 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
 
     if arguments.child:
-        browse("verbose" if arguments.trace else "off", arguments.trace, arguments.log,
-               arguments.hold)
+        (await browse("verbose" if arguments.trace else "off", arguments.trace, arguments.log,
+               arguments.hold))
         return 0
 
     command = [sys.executable, "-u", __file__, "--child", "--log", str(arguments.log),
@@ -160,10 +162,10 @@ def main(argv=None):
     started = time.time()
     process = subprocess.Popen(command)
     try:
-        code = process.wait(timeout=arguments.timeout)
+        code = (await asyncio.to_thread(process.wait, timeout=arguments.timeout))
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=10)
+        (await asyncio.to_thread(process.wait, timeout=10))
         print(f"killed after {arguments.timeout:.0f}s: the page never ran out of work", file=sys.stderr)
         return 1
     print(f"child exited {code} after {time.time() - started:.1f}s")
@@ -171,4 +173,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(asyncio.run(main()))

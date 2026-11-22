@@ -16,7 +16,7 @@ pytest.importorskip("pyv8c.pyv8", reason="native pyv8 extension is not importabl
 pytest.importorskip("curl_cffi", reason="the curl_cffi engine is not installed")
 pytestmark = pytest.mark.native
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 FORM = ('<!doctype html><html><body><form method=post action="/echo">'
         '<p><input name=a value=1></p><p><button name=b value=bv>Go</button></p>'
@@ -70,40 +70,43 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 @pytest.fixture(scope="module")
-def submissions():
+async def submissions():
     """One submission per trigger, recorded as the server received it."""
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{server.server_port}"
-    browser = Browser(real_network=True, stub_logging="off")
+    browser = (await Browser(real_network=True, stub_logging="off").__aenter__())
     collected = {}
     try:
         page = browser.new_profile().new_page()
 
-        def submit(name, path, drive):
+        async def submit(name, path, drive):
             with LOCK:
                 RECORDS.clear()
-            page.goto(f"{origin}{path}", wait_until="load")
-            drive(page)
-            page.wait_for("location.pathname === '/echo' && document.readyState === 'complete'", timeout=5)
+            (await page.goto(f"{origin}{path}", wait_until="load"))
+            await drive(page)
+            (await page.wait_for("location.pathname === '/echo' && document.readyState === 'complete'", timeout=5))
             with LOCK:
                 records = list(RECORDS)
             collected[name] = next((record for record in records
                                     if urlparse(record["path"]).path == "/echo"), None)
             collected[name + ".landed"] = page.url
 
-        submit("click", "/plain", lambda page: page.click("form button"))
-        submit("script", "/script",
-               lambda page: page.evaluate("document.querySelector('form').submit()"))
-        submit("untrusted-click", "/script",
-               lambda page: page.evaluate("document.querySelector('form button').click()"))
-        submit("get", "/get", lambda page: page.click("form button"))
-        submit("empty-get", "/empty-get", lambda page: page.click("form button"))
-        submit("kinds", "/kinds", lambda page: page.click("form button"))
-        submit("text-plain", "/plain-enc", lambda page: page.click("form button"))
-        submit("multipart", "/multi-enc", lambda page: page.click("form button"))
+        (await submit("click", "/plain", lambda page: page.click("form button")))
+        async def script_submit(page):
+            page.evaluate("document.querySelector('form').submit()")
+        async def script_click(page):
+            page.evaluate("document.querySelector('form button').click()")
+        (await submit("script", "/script", script_submit))
+        (await submit("untrusted-click", "/script",
+               script_click))
+        (await submit("get", "/get", lambda page: page.click("form button")))
+        (await submit("empty-get", "/empty-get", lambda page: page.click("form button")))
+        (await submit("kinds", "/kinds", lambda page: page.click("form button")))
+        (await submit("text-plain", "/plain-enc", lambda page: page.click("form button")))
+        (await submit("multipart", "/multi-enc", lambda page: page.click("form button")))
     finally:
-        browser.close()
+        (await browser.close())
         server.shutdown()
         server.server_close()
     yield collected
@@ -114,7 +117,7 @@ def headers_of(record):
     return {name.lower(): value for name, value in record["headers"]}
 
 
-def test_a_clicked_submit_button_posts_the_entry_list(submissions):
+async def test_a_clicked_submit_button_posts_the_entry_list(submissions):
     record = submissions["click"]
     assert (record["method"], record["path"]) == ("POST", "/echo")
     assert record["body"] == b"a=1&b=bv"
@@ -130,7 +133,7 @@ def test_a_clicked_submit_button_posts_the_entry_list(submissions):
     assert sent["referer"].endswith("/plain")
 
 
-def test_a_script_submission_sends_no_submitter_and_no_user_activation(submissions):
+async def test_a_script_submission_sends_no_submitter_and_no_user_activation(submissions):
     record = submissions["script"]
     assert (record["method"], record["path"]) == ("POST", "/echo")
     assert record["body"] == b"a=1"
@@ -141,14 +144,14 @@ def test_a_script_submission_sends_no_submitter_and_no_user_activation(submissio
     assert sent["content-type"] == "application/x-www-form-urlencoded"
 
 
-def test_an_untrusted_click_submits_its_button_without_user_activation(submissions):
+async def test_an_untrusted_click_submits_its_button_without_user_activation(submissions):
     """A page's own ``button.click()`` sends the button's entry, but is no gesture."""
     record = submissions["untrusted-click"]
     assert record["body"] == b"a=1&b=bv"
     assert "sec-fetch-user" not in headers_of(record)
 
 
-def test_a_get_submission_replaces_the_actions_query(submissions):
+async def test_a_get_submission_replaces_the_actions_query(submissions):
     record = submissions["get"]
     assert record["method"] == "GET"
     assert record["path"] == "/echo?sp=hello+world&b=x+y"
@@ -160,24 +163,24 @@ def test_a_get_submission_replaces_the_actions_query(submissions):
     assert "cache-control" not in sent
 
 
-def test_a_get_submission_with_no_entries_still_has_a_query(submissions):
+async def test_a_get_submission_with_no_entries_still_has_a_query(submissions):
     record = submissions["empty-get"]
     assert (record["method"], record["path"]) == ("GET", "/echo?")
     assert submissions["empty-get.landed"].endswith("/echo?")
 
 
-def test_the_entry_list_leaves_out_what_the_browser_leaves_out(submissions):
+async def test_the_entry_list_leaves_out_what_the_browser_leaves_out(submissions):
     """Chrome sent ``t=v&on=on&s=o1&ta=text&b=bv`` for this page."""
     assert submissions["kinds"]["body"] == b"t=v&on=on&s=o1&ta=text&b=bv"
 
 
-def test_text_plain_is_line_per_entry(submissions):
+async def test_text_plain_is_line_per_entry(submissions):
     record = submissions["text-plain"]
     assert record["body"] == b"a=1\r\nb=2\r\n"
     assert headers_of(record)["content-type"] == "text/plain"
 
 
-def test_multipart_form_data_delimits_each_entry(submissions):
+async def test_multipart_form_data_delimits_each_entry(submissions):
     record = submissions["multipart"]
     content_type = headers_of(record)["content-type"]
     prefix = "multipart/form-data; boundary="

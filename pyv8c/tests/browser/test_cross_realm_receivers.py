@@ -7,7 +7,7 @@ works while the frames are same-origin. A cross-origin receiver still throws, an
 so does an object that is not an instance at all.
 """
 
-from pyv8c import Browser
+from pyv8c.async_api import Browser
 
 FRAME = """
 (() => {
@@ -19,17 +19,18 @@ FRAME = """
 """
 
 
-def _page():
-    browser = Browser(cache=False, real_network=False, stub_logging="off")
+async def _page():
+    browser = (await Browser(cache=False, real_network=False, stub_logging="off").__aenter__())
     page = browser.new_profile().new_page()
-    page.set_content("<body></body>", url="https://example.test/")
+    (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
     return browser, page
 
 
-def test_attributes_accept_a_same_origin_frame_receiver():
-    browser, page = _page()
+async def test_attributes_accept_a_same_origin_frame_receiver():
+    browser, page = (await _page())
     try:
         assert page.evaluate(FRAME) is True
+        assert await page.run_until_idle(timeout=1)
         assert page.evaluate("""(() => {
             const frame = document.querySelector('iframe');
             const childWindow = frame.contentWindow;
@@ -44,13 +45,14 @@ def test_attributes_accept_a_same_origin_frame_receiver():
                     Node.prototype.lookupNamespaceURI.call(childDocument.body, null)];
         })()""") == [True, True, True, "http://www.w3.org/1999/xhtml"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_methods_accept_a_same_origin_frame_receiver():
-    browser, page = _page()
+async def test_methods_accept_a_same_origin_frame_receiver():
+    browser, page = (await _page())
     try:
         assert page.evaluate(FRAME) is True
+        assert await page.run_until_idle(timeout=1)
         assert page.evaluate("""(() => {
             const childDocument = document.querySelector('iframe').contentDocument;
             const body = childDocument.body;
@@ -73,13 +75,14 @@ def test_methods_accept_a_same_origin_frame_receiver():
                     appended, lastIsElement, body.textContent];
         })()""") == [1, True, "div", "null", 2, True, "text"]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_event_prototype_chain_stays_in_the_constructing_frame():
-    browser, page = _page()
+async def test_event_prototype_chain_stays_in_the_constructing_frame():
+    browser, page = (await _page())
     try:
         assert page.evaluate(FRAME) is True
+        assert await page.run_until_idle(timeout=1)
         assert page.evaluate("""(() => {
             const child = document.querySelector('iframe').contentWindow;
             const event = new child.MouseEvent('x');
@@ -92,13 +95,14 @@ def test_event_prototype_chain_stays_in_the_constructing_frame():
                     Object.getPrototypeOf(child.UIEvent.prototype) === child.Event.prototype];
         })()""") == [True, True, True, False, False, True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_window_method_accepts_a_same_origin_frame_receiver():
-    browser, page = _page()
+async def test_a_window_method_accepts_a_same_origin_frame_receiver():
+    browser, page = (await _page())
     try:
         assert page.evaluate(FRAME) is True
+        assert await page.run_until_idle(timeout=1)
         assert page.evaluate("""(() => {
             const childWindow = document.querySelector('iframe').contentWindow;
             const childDocument = childWindow.document;
@@ -107,13 +111,14 @@ def test_a_window_method_accepts_a_same_origin_frame_receiver():
                         .call(childWindow.performance, 100) === undefined];
         })()""") == ["block", True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_insertion_adopts_the_subtree_into_the_frame_document():
-    browser, page = _page()
+async def test_insertion_adopts_the_subtree_into_the_frame_document():
+    browser, page = (await _page())
     try:
         assert page.evaluate(FRAME) is True
+        assert await page.run_until_idle(timeout=1)
         assert page.evaluate("""(() => {
             const childDocument = document.querySelector('iframe').contentDocument;
             const wrapper = document.createElement('div');
@@ -128,17 +133,17 @@ def test_insertion_adopts_the_subtree_into_the_frame_document():
                     child.baseURI === childDocument.baseURI];
         })()""") == [True, True, True, True, True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_shared_template_outlives_the_frame_that_built_it():
+async def test_a_shared_template_outlives_the_frame_that_built_it():
     """The template lives with the isolate, so its callbacks must too.
 
     A callback bound to the realm that first materialised the interface would be
     released with it, and the next frame to borrow the member would be told the V8
     context is closed.
     """
-    browser, page = _page()
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const frame = document.createElement('iframe');
@@ -155,11 +160,11 @@ def test_a_shared_template_outlives_the_frame_that_built_it():
             }
         })()""") == ["ok", True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_borrowed_member_survives_the_frame_navigating():
-    browser, page = _page()
+async def test_a_borrowed_member_survives_the_frame_navigating():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const frame = document.createElement('iframe');
@@ -169,10 +174,10 @@ def test_a_borrowed_member_survives_the_frame_navigating():
             frame.srcdoc = '<body>two</body>';
             return true;
         })()""") is True
-        page.wait_for(
+        (await page.wait_for(
             "document.querySelector('iframe').contentDocument.body.textContent === 'two'",
             timeout=5,
-        )
+        ))
         assert page.evaluate("""(() => {
             const element = document.createElement('b');
             try {
@@ -183,18 +188,19 @@ def test_a_borrowed_member_survives_the_frame_navigating():
             }
         })()""") == ["ok", True]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_plain_subclass_is_not_shared_under_a_realm_bound_ancestor():
+async def test_a_plain_subclass_is_not_shared_under_a_realm_bound_ancestor():
     """``CustomEvent``'s spec is realm-independent while ``Event``'s is not.
 
     Sharing the child would chain its prototype into the frame that built it first,
     so the constructor is kept per realm and ``instanceof`` stays inside the frame.
     """
-    browser, page = _page()
+    browser, page = (await _page())
     try:
         assert page.evaluate(FRAME) is True
+        assert await page.run_until_idle(timeout=1)
         assert page.evaluate("""(() => {
             const childWindow = document.querySelector('iframe').contentWindow;
             const event = new childWindow.CustomEvent('sample', {detail: 7});
@@ -204,11 +210,11 @@ def test_a_plain_subclass_is_not_shared_under_a_realm_bound_ancestor():
                     event.detail];
         })()""") == [True, True, False, 7]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_an_object_that_is_not_an_instance_is_refused():
-    browser, page = _page()
+async def test_an_object_that_is_not_an_instance_is_refused():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const getter = Object.getOwnPropertyDescriptor(window, 'document').get;
@@ -222,11 +228,11 @@ def test_an_object_that_is_not_an_instance_is_refused():
         })()""") == [["TypeError", "Illegal invocation"],
                      ["TypeError", "Illegal invocation"]]
     finally:
-        browser.close()
+        (await browser.close())
 
 
-def test_a_cross_origin_receiver_is_refused():
-    browser, page = _page()
+async def test_a_cross_origin_receiver_is_refused():
+    browser, page = (await _page())
     try:
         assert page.evaluate("""(() => {
             const frame = document.createElement('iframe');
@@ -246,4 +252,4 @@ def test_a_cross_origin_receiver_is_refused():
             return outcomes;
         })()""") == ["null", "SecurityError", "SecurityError", "SecurityError"]
     finally:
-        browser.close()
+        (await browser.close())

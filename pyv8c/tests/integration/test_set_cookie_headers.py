@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip("pyv8c.pyv8", reason="the engine is imported by the package under test")
 
-from pyv8c import Browser  # noqa: E402
+from pyv8c.async_api import Browser
 
 BODY = b"<!doctype html><body>cookies"
 
@@ -46,16 +46,16 @@ def server():
         httpd.server_close()
 
 
-def test_every_set_cookie_header_of_one_response_reaches_the_jar(server):
-    browser = Browser(stub_logging="off", real_network=True, threaded_loaders=True)
+async def test_every_set_cookie_header_of_one_response_reaches_the_jar(server):
+    browser = (await Browser(stub_logging="off", real_network=True, threaded_loaders=True).__aenter__())
     try:
         context = browser.new_profile()
         page = context.new_page()
-        page.goto(server)
+        (await page.goto(server))
         stored = sorted(name for (_domain, _path, name)
                         in dict(getattr(context.cookies, "_cookies", {}) or {}))
         assert stored == ["first", "second"], (
             f"the jar kept {stored}: repeated Set-Cookie headers reached it as one value"
         )
     finally:
-        browser.close()
+        (await browser.close())
