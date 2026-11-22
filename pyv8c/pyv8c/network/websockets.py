@@ -46,6 +46,29 @@ def _connect_client():
     return BrowserConnect
 
 
+@cache
+def _connection_type():
+    """A client connection whose closing callback survives a failed TLS handshake."""
+    client = importlib.import_module("websockets.asyncio.client")
+
+    class ClientConnection(client.ClientConnection):
+        def connection_lost(self, exc):
+            # A proxied wss:// calls start_tls before connection_made. The
+            # library then closes recv_messages, which only connection_made
+            # creates, so a certificate failure crashes the event-loop callback.
+            if not hasattr(self, "recv_messages"):
+                self.set_connection_exc(exc)
+                if self.keepalive_task is not None:
+                    self.keepalive_task.cancel()
+                    self.keepalive_task = None
+                if not self.connection_lost_waiter.done():
+                    self.connection_lost_waiter.set_result(None)
+                return
+            super().connection_lost(exc)
+
+    return ClientConnection
+
+
 def _http_url(url):
     return "http" + url[2:]
 
@@ -523,6 +546,7 @@ class WebSocketsTransport:
             kwargs.setdefault("user_agent_header", user_agent)
         if headers:
             kwargs["additional_headers"] = headers
+        kwargs.setdefault("create_connection", _connection_type())
         return kwargs
 
     def _handshake_headers(self, url, call):
