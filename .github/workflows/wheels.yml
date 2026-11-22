@@ -360,9 +360,31 @@ jobs:
         run: python -c "from v8_build import V8BuildConfig; V8BuildConfig.from_environment('.', download_and_build=True).prepare()"
       - name: Build and install wheel
         shell: bash
+        env:
+          ARCHFLAGS: -arch arm64
+          MACOSX_DEPLOYMENT_TARGET: '15.0'
+          _PYTHON_HOST_PLATFORM: macosx-15.0-arm64
         run: |
           set -euo pipefail
           python -m build --wheel --no-isolation --outdir dist .
+          python - <<'PY'
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel, = Path("dist").glob("*-cp312-abi3-macosx_15_0_arm64.whl")
+          with ZipFile(wheel) as archive, tempfile.TemporaryDirectory() as temporary:
+              modules = [name for name in archive.namelist() if name.endswith(".so")]
+              if len(modules) != 2:
+                  raise SystemExit(f"Expected two native extension modules, found {modules}")
+              for name in modules:
+                  path = Path(temporary, Path(name).name)
+                  path.write_bytes(archive.read(name))
+                  arch = subprocess.check_output(["lipo", "-archs", path], text=True).strip()
+                  if arch != "arm64":
+                      raise SystemExit(f"{name} has architectures {arch}, expected arm64")
+          PY
           python -m twine check dist/*.whl
           for wheel in dist/*.whl; do python tools/check_license.py --artifact "$wheel"; done
           python -m pip install dist/*.whl
