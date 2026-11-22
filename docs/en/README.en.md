@@ -48,7 +48,7 @@ flowchart LR
 
 ## Installation
 
-Once the release is available on PyPI, install it with:
+Install from [PyPI](https://pypi.org/project/pyv8c/):
 
 ```bash
 python -m pip install pyv8c

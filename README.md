@@ -48,7 +48,7 @@ flowchart LR
 
 ## 安装
 
-PyPI 发布后，可用以下命令安装：
+从 [PyPI](https://pypi.org/project/pyv8c/) 安装：
 
 ```bash
 python -m pip install pyv8c
