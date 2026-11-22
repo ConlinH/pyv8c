@@ -48,7 +48,13 @@ flowchart LR
 
 ## 安装
 
-发行包将框架与 V8 引擎打包为单个 ABI3 wheel，提供 Windows x64（`win_amd64`）、Linux x64（`linux_x86_64`）和 macOS arm64（`macosx_arm64`）版本。选择匹配平台的 wheel 文件后可执行 `py -m pip install 路径\pyv8c-版本-cp312-abi3-平台.whl`；它不依赖顶层 `pyv8` 发行包。发行包中的原生引擎也可单独使用：
+PyPI 发布后，可用以下命令安装：
+
+```bash
+python -m pip install pyv8c
+```
+
+发行包将框架与 V8 引擎打包为单个 ABI3 wheel，覆盖 Windows x64、Linux x64（glibc 2.35 或更新版本）和 macOS arm64。也可以从 GitHub Actions 下载对应的 wheel，再运行 `python -m pip install <wheel 文件>`。发行包中的原生引擎也可单独使用：
 
 ```python
 from pyv8c import pyv8
@@ -63,7 +69,7 @@ finally:
     context.close()
 ```
 
-目前暂不发布到 PyPI。源码开发和发行包均使用 `pyv8c.pyv8` 入口。源码构建说明见[开发指南](docs/pyv8c/development.md#源码构建)。
+源码开发和发行包均使用 `pyv8c.pyv8` 入口。源码构建说明见[开发指南](docs/pyv8c/development.md#源码构建)。
 
 要求启用 GIL 的 CPython 3.12 及以上，并能导入与当前解释器匹配的 `pyv8` 原生扩展。free-threaded CPython 暂不支持。
 

@@ -139,6 +139,14 @@ Three hard constraints:
 
 `native/` is wired into the `Build wheels` workflow: the Windows wheel test matrix and the Linux and macOS build jobs each run the native crash smoke after installing the wheel, and the Windows matrix also runs the `layers` architecture gate on Python 3.12. When the source tree has no compiled extension the smoke test loads the installed wheel automatically; locally it keeps using the source tree as before. The `layers` gate spawns child processes that really import Web modules and the `startup` gate constructs a Browser, so both need a compiled extension and stay with the wheel jobs and local pre-commit; the PR gate in `.github/workflows/source-checks.yml` runs only `check_license.py`, the three source-only policy gates and the offline `tests/unit` suite.
 
+## Publishing wheels
+
+Run **Build wheels** on `main` with Windows, Linux, and macOS enabled. Linux x64 builds on Ubuntu 22.04, repairs the wheel to `manylinux_2_35_x86_64` with `auditwheel`, and installs and tests the repaired wheel.
+
+Once the builds and tests pass, run **Publish pyv8c wheels** on the same commit. Enter the numeric ID from the build run's URL as `build_run_id` and start with the default `testpypi` target. The workflow checks the run source, commit, project name, version, and platform tags before uploading. To rehearse installation, download the pyv8c wheel from TestPyPI and use regular PyPI to install its dependencies.
+
+Configure a GitHub Trusted Publisher separately on TestPyPI and PyPI. Use a pending publisher for a first release. Set the project to `pyv8c`, owner to `ConlinH`, repository to `pyv8c`, and workflow to `publish.yml`. Set the environment to `testpypi` on TestPyPI and `pypi` on PyPI. Create the matching environments in GitHub and restrict deployment to `main`. Once the TestPyPI installation is verified, you can explicitly select `pypi` for the same build run.
+
 ## Chrome Behavior Comparison
 
 ```powershell

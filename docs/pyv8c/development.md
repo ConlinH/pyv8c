@@ -138,6 +138,14 @@ python pyv8/tools/check_layout.py
 
 `native/` 已接进 `Build wheels` 工作流：Windows wheel 测试矩阵、Linux 与 macOS 构建任务在安装 wheel 后各跑一次原生崩溃冒烟，Windows 矩阵另在 Python 3.12 上跑 `layers` 架构门；源码树里没有编译扩展时，冒烟测试自动从已安装的 wheel 加载，本地有扩展时仍按原来的源码路径运行。`layers` 门会启动子进程真实导入 Web 模块，`startup` 门要构造 Browser，二者都需要编译扩展，因此留在 wheel 任务与本地 pre-commit；`.github/workflows/source-checks.yml` 的 PR 门禁只跑 `check_license.py`、三个纯源码策略门和离线 `tests/unit`。
 
+## 发布 wheel
+
+在 GitHub Actions 的 `main` 分支运行 **Build wheels**，启用 Windows、Linux 和 macOS。Linux x64 在 Ubuntu 22.04 构建，由 `auditwheel` 修复到 `manylinux_2_35_x86_64`，随后安装并测试修复后的 wheel。
+
+三平台构建和测试都通过后，在同一 commit 上运行 **Publish pyv8c wheels**。将构建运行 URL 中的数字填入 `build_run_id`，先选择默认的 `testpypi`。工作流会核对构建来源、commit、包名、版本和平台标签，再上传。演练安装时，从 TestPyPI 下载 pyv8c wheel，然后通过常规 PyPI 安装其依赖。
+
+在 TestPyPI 和 PyPI 分别配置 GitHub Trusted Publisher。首次发布用 Pending Publisher。项目名填 `pyv8c`，Owner 填 `ConlinH`，Repository 填 `pyv8c`，Workflow 填 `publish.yml`。Environment 在 TestPyPI 填 `testpypi`，在正式 PyPI 填 `pypi`。在 GitHub 中创建同名环境，并将部署来源限制为 `main`。TestPyPI 安装验证通过后，可针对同一个构建运行显式选择 `pypi`。
+
 ## Chrome 行为对照
 
 ```powershell

@@ -48,7 +48,13 @@ flowchart LR
 
 ## Installation
 
-The wheel packages the framework and the V8 engine into a single ABI3 artifact; CI builds Windows x64 (`win_amd64`), Linux x64 (`linux_x86_64`), and macOS arm64 (`macosx_arm64`). After downloading the artifact for your platform, install it with `py -m pip install PATH\TO\pyv8c-<version>-cp312-abi3-<platform>.whl`; it does not depend on a separate top-level `pyv8` distribution. The bundled native engine can also be used on its own:
+Once the release is available on PyPI, install it with:
+
+```bash
+python -m pip install pyv8c
+```
+
+The ABI3 wheel packages the framework and the V8 engine. Builds cover Windows x64, Linux x64 (glibc 2.35 or newer), and macOS arm64. You can also download the appropriate wheel from GitHub Actions and run `python -m pip install <wheel-file>`. The bundled native engine can also be used on its own:
 
 ```python
 from pyv8c import pyv8
@@ -63,7 +69,7 @@ finally:
     context.close()
 ```
 
-The project is not published on PyPI yet. Both source development and the wheel use the `pyv8c.pyv8` entry point. See the [development guide](pyv8c/development.md) for source build instructions.
+Both source development and the wheel use the `pyv8c.pyv8` entry point. See the [development guide](pyv8c/development.md) for source build instructions.
 
 CPython 3.12 or newer with the GIL enabled is required, and a matching `pyv8` native extension must be importable. Free-threaded CPython is not supported.
 

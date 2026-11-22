@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "pyv8c"
 dynamic = ["version"]
 description = "A deterministic Chromium-like BOM/DOM environment on pyv8"
+readme = "README.md"
 requires-python = ">=3.12"
 # The source project is MIT; the wheel also incorporates V8 and other code.
 # Declare a distribution-wide SPDX expression only after auditing every linked input.

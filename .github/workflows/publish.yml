@@ -1,0 +1,110 @@
+name: Publish pyv8c wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Build wheels run ID for this commit on main
+        type: string
+        required: true
+      target:
+        description: Package index
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: publish-pyv8c-${{ inputs.target }}
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download wheels from the verified build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" |
+            jq -e --arg sha "$GITHUB_SHA" '
+              .path == ".github/workflows/wheels.yml" and
+              .event == "workflow_dispatch" and .conclusion == "success" and
+              .head_branch == "main" and .head_sha == $sha and
+              .head_repository.full_name == .repository.full_name
+            '
+          gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir incoming \
+            --name windows-wheels --name linux-wheels --name macos-arm64-wheels
+      - name: Validate release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install packaging twine
+          python - <<'PY'
+          import runpy
+          import shutil
+          from pathlib import Path
+
+          from packaging.utils import parse_wheel_filename
+          from packaging.version import Version
+
+          version = Version(runpy.run_path("pyv8c/pyv8c/_version.py")["__version__"])
+          platforms = {
+              "windows-wheels": lambda tag: tag == "win_amd64",
+              "linux-wheels": lambda tag: tag == "manylinux_2_35_x86_64",
+              "macos-arm64-wheels": lambda tag: tag.startswith("macosx_") and tag.endswith("_arm64"),
+          }
+          dist = Path("dist")
+          dist.mkdir()
+          for artifact, supported in platforms.items():
+              files = list((Path("incoming") / artifact).iterdir())
+              if len(files) != 1 or not files[0].is_file() or files[0].suffix != ".whl":
+                  raise SystemExit(f"{artifact} must contain exactly one wheel")
+              wheel = files[0]
+              name, wheel_version, _, tags = parse_wheel_filename(wheel.name)
+              if (name != "pyv8c" or wheel_version != version or
+                  not any(tag.interpreter == "cp312" and tag.abi == "abi3"
+                          and supported(tag.platform) for tag in tags)):
+                  raise SystemExit(f"Unexpected project, version or platform: {wheel.name}")
+              shutil.copy2(wheel, dist / wheel.name)
+          PY
+          python -m twine check --strict dist/*.whl
+          for wheel in dist/*.whl; do python tools/check_license.py --artifact "$wheel"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-pyv8c-wheels
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-pyv8c-wheels
+          path: dist
+      - name: Upload using Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
