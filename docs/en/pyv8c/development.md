@@ -145,7 +145,9 @@ Run **Build wheels** on `main` with Windows, Linux, and macOS enabled. Linux x64
 
 Once the builds and tests pass, run **Publish pyv8c wheels** on the same commit. Enter the numeric ID from the build run's URL as `build_run_id` and start with the default `testpypi` target. The workflow checks the run source, commit, project name, version, and platform tags before uploading. To rehearse installation, download the pyv8c wheel from TestPyPI and use regular PyPI to install its dependencies.
 
-Configure a GitHub Trusted Publisher separately on TestPyPI and PyPI. Use a pending publisher for a first release. Set the project to `pyv8c`, owner to `ConlinH`, repository to `pyv8c`, and workflow to `publish.yml`. Set the environment to `testpypi` on TestPyPI and `pypi` on PyPI. Create the matching environments in GitHub and restrict deployment to `main`. Once the TestPyPI installation is verified, you can explicitly select `pypi` for the same build run.
+Configure a GitHub Trusted Publisher separately on TestPyPI and PyPI. Use a pending publisher for a first release. Set the project to `pyv8c`, owner to `ConlinH`, repository to `pyv8c`, and workflow to `publish.yml`. Set the environment to `testpypi` on TestPyPI and `pypi` on PyPI. Create the matching environments in GitHub and restrict deployment to `main`.
+
+Once the TestPyPI installation is verified, manually select `pypi` for the same `build_run_id` and enter the exact tag in `confirm_version`, for example `v0.2.1`. After PyPI upload succeeds, the workflow tags the build commit, generates GitHub Release notes, attaches the same wheels, and verifies their SHA-256 digests. The TestPyPI rehearsal only uploads to TestPyPI. If PyPI succeeds and the GitHub Release fails, use **Re-run failed jobs** on that run to resume from the existing tag and draft. A tag that points to a different commit or an asset with a different checksum stops the job.
 
 ## Chrome Behavior Comparison
 

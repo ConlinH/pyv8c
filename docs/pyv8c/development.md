@@ -144,7 +144,9 @@ python pyv8/tools/check_layout.py
 
 三平台构建和测试都通过后，在同一 commit 上运行 **Publish pyv8c wheels**。将构建运行 URL 中的数字填入 `build_run_id`，先选择默认的 `testpypi`。工作流会核对构建来源、commit、包名、版本和平台标签，再上传。演练安装时，从 TestPyPI 下载 pyv8c wheel，然后通过常规 PyPI 安装其依赖。
 
-在 TestPyPI 和 PyPI 分别配置 GitHub Trusted Publisher。首次发布用 Pending Publisher。项目名填 `pyv8c`，Owner 填 `ConlinH`，Repository 填 `pyv8c`，Workflow 填 `publish.yml`。Environment 在 TestPyPI 填 `testpypi`，在正式 PyPI 填 `pypi`。在 GitHub 中创建同名环境，并将部署来源限制为 `main`。TestPyPI 安装验证通过后，可针对同一个构建运行显式选择 `pypi`。
+在 TestPyPI 和 PyPI 分别配置 GitHub Trusted Publisher。首次发布用 Pending Publisher。项目名填 `pyv8c`，Owner 填 `ConlinH`，Repository 填 `pyv8c`，Workflow 填 `publish.yml`。Environment 在 TestPyPI 填 `testpypi`，在正式 PyPI 填 `pypi`。在 GitHub 中创建同名环境，并将部署来源限制为 `main`。
+
+TestPyPI 安装验证通过后，用同一个 `build_run_id` 手动选择 `pypi`，并在 `confirm_version` 输入完整标签（如 `v0.2.1`）。正式 PyPI 上传成功后，工作流给构建 commit 打标签，生成 GitHub Release 说明，附上同一批 wheel 并核对 SHA-256。TestPyPI 演练不创建标签或 GitHub Release。如果 PyPI 已成功而 GitHub Release 失败，在原运行中选择 **Re-run failed jobs**，即可从已有标签和草稿继续。已有标签指向其他 commit 或附件哈希不符时，工作流会停止。
 
 ## Chrome 行为对照
 

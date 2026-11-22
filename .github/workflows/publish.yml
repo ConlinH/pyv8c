@@ -15,6 +15,10 @@ on:
           - pypi
         default: testpypi
         required: true
+      confirm_version:
+        description: For PyPI, enter the exact version tag (for example v0.2.1)
+        type: string
+        required: false
 
 permissions: {}
 
@@ -28,6 +32,8 @@ jobs:
     permissions:
       actions: read
       contents: read
+    outputs:
+      tag: ${{ steps.wheels.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,11 +59,16 @@ jobs:
           gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir incoming \
             --name windows-wheels --name linux-wheels --name macos-arm64-wheels
       - name: Validate release files
+        id: wheels
+        env:
+          TARGET: ${{ inputs.target }}
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install packaging twine
           python - <<'PY'
+          import os
           import runpy
           import shutil
           from pathlib import Path
@@ -66,6 +77,12 @@ jobs:
           from packaging.version import Version
 
           version = Version(runpy.run_path("pyv8c/pyv8c/_version.py")["__version__"])
+          tag = f"v{version}"
+          if os.environ["TARGET"] == "pypi":
+              if version.is_prerelease or version.is_devrelease or version.local is not None:
+                  raise SystemExit("Formal releases require a final public version")
+              if os.environ["CONFIRM_VERSION"] != tag:
+                  raise SystemExit(f"Confirm the formal release by entering {tag}")
           platforms = {
               "windows-wheels": lambda tag: tag == "win_amd64",
               "linux-wheels": lambda tag: tag == "manylinux_2_35_x86_64",
@@ -84,9 +101,16 @@ jobs:
                           and supported(tag.platform) for tag in tags)):
                   raise SystemExit(f"Unexpected project, version or platform: {wheel.name}")
               shutil.copy2(wheel, dist / wheel.name)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"tag={tag}", file=output)
           PY
           python -m twine check --strict dist/*.whl
           for wheel in dist/*.whl; do python tools/check_license.py --artifact "$wheel"; done
+      - name: Check existing release tag
+        if: inputs.target == 'pypi'
+        env:
+          RELEASE_TAG: ${{ steps.wheels.outputs.tag }}
+        run: bash tools/publish_github_release.sh --check-tag
       - uses: actions/upload-artifact@v4
         with:
           name: verified-pyv8c-wheels
@@ -108,3 +132,22 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+
+  github-release:
+    if: inputs.target == 'pypi'
+    needs: [validate, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-pyv8c-wheels
+          path: dist
+      - name: Tag commit and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: bash tools/publish_github_release.sh
