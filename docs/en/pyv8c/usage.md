@@ -121,7 +121,7 @@ assert snapshot == {"answer": 42}
 
 ## Environment Configuration
 
-`BrowserEnvironment` uses flat key names and is immutable after construction. Values not explicitly set come from the bundled environment profile and derived rules. `Browser(environment=...)` sets the default environment, and `new_page(environment=...)` can override the page environment.
+`BrowserEnvironment` uses flat key names and is immutable after construction. Values not explicitly set come from the bundled Windows environment profile and derived rules. When `environment` is omitted, `Browser` reads that Windows profile whole. A profile path is also read whole, for example `Browser(environment=profile_path("darwin"))`. A mapping or `BrowserEnvironment` still overlays the Windows profile. `new_page(environment=...)` can override the page environment.
 
 ```python
 from pyv8c import BrowserEnvironment
@@ -166,7 +166,7 @@ The current time control estimates internal field dimensions using a 24-hour clo
 | `interface_overrides` | None; experimental replacement callbacks for interface members |
 | `webgl_backend` | `simulated`; WebGL backend, `angle` is experimental (see [ANGLE prototype](angle-prototype.md)) |
 | `angle_library_dir` | None; EGL/GLES library directory for ANGLE, resolved by `comfy-angle` when unset |
-| `idl_path` | None. When `environment` is also omitted, the file follows `sys.platform`: `darwin` reads `idl/idl-158.0.8127.36.zip` (a missing file falls back). An explicit `environment`, or a direct `Idl.load()`, still reads the in-package `idl.zip` |
+| `idl_path` | None. When omitted, a packaged Mac profile path pairs with `idl/idl-158.0.8127.36.zip` (a missing file falls back). `Browser()` with no environment, a mapping, a `BrowserEnvironment`, and any other profile all read the in-package `idl.zip`. An explicit path wins. A direct `Idl.load()` still reads the in-package `idl.zip` |
 | `baseline_mismatch` | `warn`; warns when the implementation or Window order does not match the selected baseline, `error` enables strict validation |
 
 `new_profile(proxy=..., trace=..., traceable=..., trace_callback=..., trace_scripts=...)` can set the corresponding session options; `new_page(trace_scripts=...)` can also override script filtering, see [Browser Tracing](tracing.md). For thread restrictions on network and resource callbacks, see [Resource Loading](resource-loading.md).

@@ -1,12 +1,11 @@
 import copy
 import json
-from pathlib import Path
 
 import pytest
 from pyv8c import pyv8
 
 from pyv8c.async_api import Browser
-from pyv8c.engine.idl import DEFAULT_IDL_PATH, IDL_VERSION, Idl, PACKAGE_ROOT, idl_path
+from pyv8c.engine.idl import DEFAULT_IDL_PATH, IDL_VERSION, Idl
 
 
 def _document():
@@ -37,11 +36,11 @@ def _custom_baseline(path):
 
 
 async def test_default_baseline_is_bundled_and_describes_snapshot():
-    chosen = Path(idl_path()).resolve()
     browser = (await Browser(stub_logging="off").__aenter__())
     try:
-        assert browser.idl_path == f"pyv8c:{chosen.relative_to(PACKAGE_ROOT).as_posix()}"
-        loaded = Idl.load(chosen, profile=None)
+        assert browser.idl_path == "pyv8c:idl/idl.zip"
+        loaded = Idl.load(profile=None)
+        assert loaded.metadata["chromium_version"] == "154.0.8030.0"
         assert browser.idl_info["idl"]["chromium_version"] == loaded.metadata["chromium_version"]
         info = browser.idl_info
         assert info["interface_count"] > 1000

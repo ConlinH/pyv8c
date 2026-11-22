@@ -18,7 +18,7 @@ from pyv8c import pyv8  # patch target for native V8Context instrumentation
 from ..engine.bindings import Idl, Bindings
 from ..foundation.close_timing import close_phase
 from ..engine.idl import Profile as IdlProfile, idl_path as packaged_idl_path
-from ..foundation.environment import BrowserEnvironment, profile_path
+from ..foundation.environment import PROFILE, BrowserEnvironment, profile_path
 from ..foundation.error_policy import control_exceptions
 from ..foundation.host_errors import HostStateError, LoadFailure
 from ..foundation.urls import origin_string, origin_tuple
@@ -38,6 +38,28 @@ from .resources.cors import PreflightCache
 #: With ``threaded_loaders``, loader and interceptor callbacks run here instead of on
 #: the page's owner thread, or a slow one would freeze the realm.
 _LOADER_WORKERS = 4
+
+
+def _profile_file(environment):
+    """The Windows profile, a profile path, or ``None`` when *environment* is an overlay."""
+    if environment is None:
+        return PROFILE
+    if isinstance(environment, (str, os.PathLike)):
+        return Path(environment).expanduser()
+    return None
+
+
+def _packaged_idl_for(profile):
+    """IDL paired with a packaged profile path, or ``None`` for the baseline zip.
+
+    The packaged Mac profile pairs with the 158 archive. The Windows profile and
+    any other file leave the choice to ``Idl.load``, which reads ``idl.zip``.
+    """
+    resolved = Path(profile).resolve()
+    darwin = profile_path("darwin").resolve()
+    if resolved == darwin and resolved != PROFILE.resolve():
+        return packaged_idl_path("darwin")
+    return None
 _TRACE_SCRIPTS_INHERIT = object()
 _READY_ENGINE_LOCK = threading.Lock()
 _READY_ENGINE_CLAIMS = {}
@@ -387,7 +409,7 @@ class Browser:
     """
 
     def __init__(self, *,
-                 environment: dict | BrowserEnvironment | None = None,
+                 environment: dict | BrowserEnvironment | str | os.PathLike | None = None,
                  real_network: bool = True,
                  resource_loader: Callable | None = None,
                  resource_interceptor: Callable | None = None,
@@ -419,11 +441,12 @@ class Browser:
         assembled in this call and are not reconfigured later, so another baseline
         means another Browser.
 
-        :param environment: flat "dotted key" dict or
-            :class:`~pyv8c.foundation.environment.BrowserEnvironment`.  Omitted,
-            the packaged profile for this host is used whole, Window order
-            included.  A mapping still overlays the Windows profile, and keys
-            left out come from that file.  Profiles and pages may overlay it.
+        :param environment: flat "dotted key" dict,
+            :class:`~pyv8c.foundation.environment.BrowserEnvironment`, or a path
+            to a profile JSON.  Omitted, the packaged Windows profile is used
+            whole, Window order included.  A path is read whole the same way.
+            A mapping still overlays the Windows profile, and keys left out come
+            from that file.  Profiles and pages may overlay it.
         :param real_network: assemble ``http_engine`` and ``ws_engine``; ``False``
             keeps this browser offline, and a ready engine handed to either of them
             is then refused rather than dropped.  The default engines are core
@@ -499,10 +522,10 @@ class Browser:
             return null, while keeping CPU Canvas 2D available.
         :param angle_library_dir: use ANGLE libraries from this directory instead
             of comfy-angle; for compatibility, specifying it also selects ANGLE.
-        :param idl_path: Chromium interface baseline JSON or ZIP.  When this
-            and ``environment`` are both omitted, the host file from
-            :func:`pyv8c.engine.idl.idl_path` is used.  An explicit environment
-            with no path still reads the packaged ``idl.zip``.
+        :param idl_path: Chromium interface baseline JSON or ZIP.  Omitted, a
+            packaged Mac profile path selects that platform's archive and every
+            other case reads the packaged ``idl.zip``.  An explicit path wins.
+            A direct ``Idl.load()`` always reads the packaged zip.
         :param baseline_mismatch: ``"warn"`` (the default) logs a difference
             between hand-written implementations and the chosen baseline once and
             skips it, which is how another Chromium version's baseline is run;
@@ -547,12 +570,18 @@ class Browser:
         self.default_headers = dict(default_headers or {})
         self.trace = bool(trace)
         self.traceable = bool(traceable) or self.trace
-        if environment is None:
-            host_profile = profile_path()
-            self.environment = BrowserEnvironment.from_file(host_profile)
-        else:
-            host_profile = None
+        profile_file = _profile_file(environment)
+        if profile_file is None:
             self.environment = BrowserEnvironment.from_dict(environment)
+            loaded_profile = None
+        else:
+            self.environment = BrowserEnvironment.from_file(profile_file)
+            loaded_profile = IdlProfile.load(profile_file)
+            if loaded_profile is None:
+                raise FileNotFoundError(
+                    f"the environment profile does not exist: {profile_file}")
+            if idl_path is None:
+                idl_path = _packaged_idl_for(profile_file)
         self.expose_unimplemented = bool(expose_unimplemented)
         self.stub_logging = str(stub_logging or "off")
         self._startup_stats = {}
@@ -573,15 +602,9 @@ class Browser:
                 angle_library_dir = comfy_angle.get_lib_dir()
             from ..web.graphics.webgl.backends.angle import AngleBackend
             self._graphics_backend = AngleBackend(angle_library_dir)
-        if host_profile is not None and idl_path is None:
-            idl_path = packaged_idl_path()
-        if host_profile is None:
+        if loaded_profile is None:
             snapshot = Idl.load(idl_path, timings=self._startup_stats)
         else:
-            loaded_profile = IdlProfile.load(host_profile)
-            if loaded_profile is None:
-                raise FileNotFoundError(
-                    f"the environment profile does not exist: {host_profile}")
             snapshot = Idl.load(idl_path, loaded_profile, timings=self._startup_stats)
         loaded = time.perf_counter_ns()
         self.bindings = Bindings(

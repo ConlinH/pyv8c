@@ -2,12 +2,13 @@
 
 The defaults are a profile collected from a real Chrome
 (``data/chrome-environment.json``). ``BrowserEnvironment`` and any partial mapping
-overlay that Windows profile. ``profile_path`` is the whole file a ``Browser`` reads
-when ``environment`` is omitted: the Windows file, or on darwin
-``chrome-environment-darwin.json`` when that file is packaged. A caller overrides
-any key by name, and the keys that follow ``user_agent`` move with it. The profile's
-``bindings`` section belongs to the engine, so this module skips it like the other
-envelope keys.
+overlay that Windows profile. A ``Browser`` with no environment reads that same
+Windows file whole. ``profile_path`` names a packaged file for a platform, or
+this host when the platform is omitted; pass that path as ``environment`` to
+load it. On darwin the packaged file is ``chrome-environment-darwin.json`` when
+it is present. A caller overrides any key by name, and the keys that follow
+``user_agent`` move with it. The profile's ``bindings`` section belongs to the
+engine, so this module skips it like the other envelope keys.
 """
 from __future__ import annotations
 
@@ -45,7 +46,8 @@ def profile_path(platform=None):
     """The packaged environment for *platform*, or this host when omitted.
 
     An unknown platform, or a host file that is not packaged, is the Windows profile.
-    ``BrowserEnvironment`` does not call this; only a ``Browser`` with no environment does.
+    ``Browser`` does not call this. Pass the path it returns as ``environment``
+    to load that file whole.
     """
     name = sys.platform if platform is None else platform
     chosen = _HOST_PROFILES.get(name, PROFILE)

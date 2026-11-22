@@ -116,7 +116,7 @@ assert snapshot == {"answer": 42}
 
 ## 环境配置
 
-`BrowserEnvironment` 使用扁平键名，构建后不可变。未显式设置的值来自随包环境档案及派生规则。`Browser(environment=...)` 设置默认环境，`new_page(environment=...)` 可覆盖页面环境。
+`BrowserEnvironment` 使用扁平键名，构建后不可变。未显式设置的值来自随包 Windows 环境档案及派生规则。省略 `environment` 时 `Browser` 整份使用这份 Windows 档案。传入档案路径则整份使用该文件，例如 `Browser(environment=profile_path("darwin"))`。映射和 `BrowserEnvironment` 仍覆盖 Windows 底稿。`new_page(environment=...)` 可覆盖页面环境。
 
 ```python
 from pyv8c import BrowserEnvironment
@@ -161,7 +161,7 @@ assert values["viewport.width"] == 1280
 | `interface_overrides` | None；接口成员实验性替代回调 |
 | `webgl_backend` | `simulated`；WebGL 后端，可选 `angle`（实验性，见 [ANGLE 实验后端](angle-prototype.md)） |
 | `angle_library_dir` | None；ANGLE 的 EGL/GLES 库目录，未指定时由 `comfy-angle` 解析 |
-| `idl_path` | None。`environment` 也省略时按 `sys.platform` 选：`darwin` 读 `idl/idl-158.0.8127.36.zip`（文件缺失则回退）。显式 `environment` 或直接 `Idl.load()` 仍读包内 `idl.zip` |
+| `idl_path` | None。省略时，包内 Mac 档案路径配对 `idl/idl-158.0.8127.36.zip`（文件缺失则回退）。无参 `Browser()`、映射、`BrowserEnvironment` 和其它档案都读包内 `idl.zip`。显式路径优先。直接 `Idl.load()` 仍读包内 `idl.zip` |
 | `baseline_mismatch` | `warn`；实现或 Window 顺序与所选基线不匹配时警告，`error` 为严格校验 |
 
 `new_profile(proxy=..., trace=..., traceable=..., trace_callback=..., trace_scripts=...)` 可设置相应会话选项；`new_page(trace_scripts=...)` 也可覆盖脚本筛选，详见[运行跟踪](tracing.md)。网络与资源回调的线程限制见[资源加载](resource-loading.md)。

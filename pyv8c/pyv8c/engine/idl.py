@@ -41,9 +41,10 @@ PROFILE_PATH = PACKAGE_ROOT / "data" / "chrome-environment.json"
 def idl_path(platform=None):
     """The packaged IDL for *platform*, or this host when omitted.
 
-    ``Idl.load`` with no path still reads the baseline zip. A ``Browser`` calls this
-    only when both ``environment`` and ``idl_path`` are omitted. An unknown platform,
-    or a host file that is not packaged, is that same baseline.
+    ``Idl.load`` with no path still reads the baseline zip. A ``Browser`` pairs the
+    packaged Mac profile with the darwin archive when ``idl_path`` is omitted;
+    every other ``Browser`` reads the baseline zip. An unknown platform, or a
+    host file that is not packaged, is that same baseline.
     """
     name = sys.platform if platform is None else platform
     chosen = _HOST_IDLS.get(name, DEFAULT_IDL_PATH)
