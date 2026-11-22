@@ -211,15 +211,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y patchelf
           venv_dir="$(mktemp -d "$RUNNER_TEMP/pyv8c-ci-venv.XXXXXX")"
           audit_dir="$(mktemp -d "$RUNNER_TEMP/pyv8c-auditwheel.XXXXXX")"
           python -m venv "$venv_dir"
           python -m venv "$audit_dir"
+          echo "$audit_dir/bin" >> "$GITHUB_PATH"
           echo "$venv_dir/bin" >> "$GITHUB_PATH"
           echo "AUDITWHEEL=$audit_dir/bin/auditwheel" >> "$GITHUB_ENV"
-          "$audit_dir/bin/python" -m pip install 'auditwheel>=6.4,<7'
+          "$audit_dir/bin/python" -m pip install 'auditwheel>=6.4,<7' 'patchelf>=0.17,<0.19'
+          "$audit_dir/bin/patchelf" --version
           "$venv_dir/bin/python" -m pip install --upgrade pip build twine 'setuptools>=77' 'setuptools-rust>=1.10,<2' wheel "pytest>=8.4" "pytest-asyncio>=1.4,<2" pytest-timeout pytest-repeat pytest-xdist
       - name: Restore V8 build cache
         id: linux-v8-cache
