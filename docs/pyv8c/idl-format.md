@@ -8,7 +8,9 @@
 
 运行时默认读取 `pyv8c/pyv8c/idl/idl.zip`，归档中包含一个 JSON 文档，也可通过 Browser 的 `idl_path` 指定 ZIP 或 JSON。只接受当前格式版本 **10**，包内基线标记 Chromium **154.0.8030.0**；其他格式需重新生成。
 
-环境档案位于 `pyv8c/pyv8c/data/chrome-environment.json`，当前 source 记录的采集浏览器为 Chrome **156.0.8078.80**。IDL 的来源版本、环境档案版本、原生 V8 版本和测试使用的 Chrome 是不同信息，不能互相推算。环境档案还记录实际采集参数，应随结果一起核对。
+环境档案位于 `pyv8c/pyv8c/data/chrome-environment.json`，当前 source 记录的采集浏览器为 Chrome **156.0.8078.80**。省略 `environment` 时，`Browser` 从同一目录读取 `sys.platform` 对应的档案：`darwin` 为 `chrome-environment-darwin.json`。`chrome-environment.json` 仍是部分覆盖的底稿，也是采集器的默认输出。IDL 的来源版本、环境档案版本、原生 V8 版本和测试使用的 Chrome 是不同信息，不能互相推算。环境档案还记录实际采集参数，应随结果一起核对。
+
+`environment` 和 `idl_path` 都省略时，`Browser` 也按 `sys.platform` 选择 IDL。`darwin` 读取 `idl/idl-158.0.8127.36.zip`；文件缺失或其他平台仍读取包内 `idl.zip`。直接 `Idl.load()` 始终读取包内基线 **154.0.8030.0**。原生 V8 版本仍是 15.4.68。
 
 `source.preserved_overrides` 列出本次采集器未采集、但从原档案保留的显式配置；这些值不是本次 Chrome 会话的测量结果。
 

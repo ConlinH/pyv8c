@@ -10,7 +10,7 @@ import pytest
 from pyv8c.async_api import Browser
 from pyv8c.foundation import system_fonts
 from pyv8c.foundation import text as text_engine
-from pyv8c.foundation.environment import BrowserEnvironment
+from pyv8c.foundation.environment import PROFILE, BrowserEnvironment, profile_path
 from pyv8c.web.dom import layout
 
 TEXT = "mmmmmmmmmm"
@@ -47,9 +47,10 @@ def _latin_family():
 
 async def test_a_canvas_width_is_the_width_the_same_text_has_in_a_box():
     family = _latin_family()
-    measured = (await _measure(font=f'16px "{family}"'))
+    windows = BrowserEnvironment.from_file(PROFILE)
+    measured = (await _measure(environment=windows, font=f'16px "{family}"'))
     expected = layout.text_width(TEXT, {"font-size": "16px", "font-family": family},
-                                 BrowserEnvironment())
+                                 windows)
     assert measured == pytest.approx(expected, abs=0.5), (measured, expected)
 
 
@@ -70,15 +71,22 @@ async def test_a_canvas_follows_a_profile_that_carries_its_own_fonts():
 
 async def test_a_family_no_table_knows_uses_the_environment_default():
     """The configured browser default supplies the fallback for an unknown family."""
-    unknown = (await _measure(font='16px "Definitely Not A Font 123"'))
-    standard = (await _measure(font='16px sans-serif'))
+    windows = BrowserEnvironment.from_file(PROFILE)
+    record = layout._face_for(["sans-serif"], windows)
+    if system_fonts.file_for(record) is None:
+        pytest.skip("the profile default face is not installed")
+    unknown = (await _measure(environment=windows, font='16px "Definitely Not A Font 123"'))
+    standard = (await _measure(environment=windows, font='16px sans-serif'))
     assert unknown == pytest.approx(standard, abs=1e-9)
 
 
 async def test_canvas_default_font_uses_chrome_fractional_advance_precision():
     if not any(record.family == 'Noto Sans SC' and record.path for record in system_fonts.records()):
         pytest.skip('Noto Sans SC is not installed')
-    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    browser = (await Browser(
+        real_network=False, stub_logging='off',
+        environment=BrowserEnvironment.from_file(PROFILE),
+    ).__aenter__())
     try:
         page = browser.new_profile().new_page()
         assert page.evaluate('''(() => {
@@ -110,10 +118,15 @@ BOXES = """
 """
 
 
-async def _boxes(font, text=TEXT):
+async def _boxes(font, text=TEXT, environment=None):
     import json
 
-    browser = (await Browser(cache=False, stub_logging="off", real_network=False).__aenter__())
+    if environment is None:
+        environment = BrowserEnvironment.from_file(PROFILE)
+    browser = (await Browser(
+        cache=False, stub_logging="off", real_network=False,
+        environment=environment,
+    ).__aenter__())
     try:
         page = browser.new_profile().new_page()
         (await page.set_content("<body></body>", url="http://canvas.test/", wait_until="commit"))
@@ -124,8 +137,10 @@ async def _boxes(font, text=TEXT):
 
 async def test_the_boxes_come_from_the_face_that_was_measured_with():
     family = _latin_family()
-    answer = (await _boxes(f'16px "{family}"'))
-    record = layout._face_for([family], BrowserEnvironment())
+    # The family comes from this machine. Measure it with the host table, which names it.
+    host = BrowserEnvironment.from_file(profile_path())
+    answer = (await _boxes(f'16px "{family}"', environment=host))
+    record = layout._face_for([family], host)
     path = system_fonts.file_for(record)
     assert path is not None
     found = text_engine.metrics(path, index=record.index, size=16.0)

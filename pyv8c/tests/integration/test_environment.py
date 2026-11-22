@@ -4,6 +4,8 @@ pytest.importorskip("pyv8c.pyv8")
 
 from pyv8c import BrowserEnvironment
 from pyv8c.async_api import Browser
+from pyv8c.engine.idl import PACKAGE_ROOT, idl_path
+from pyv8c.foundation.environment import profile_path
 
 
 async def test_environment_defaults_and_mapping_overlay_are_immutable():
@@ -24,6 +26,44 @@ async def test_environment_defaults_and_mapping_overlay_are_immutable():
         custom.viewport = None
     with pytest.raises(ValueError):
         BrowserEnvironment({"geolocation.permission": "sometimes"})
+
+
+async def test_an_unconfigured_browser_loads_the_host_profile_whole():
+    from loguru import logger
+
+    host = BrowserEnvironment.from_file(profile_path())
+    chosen = idl_path().resolve()
+    messages = []
+    token = logger.add(lambda message: messages.append(str(message)), format="{message}")
+    browser = (await Browser(stub_logging="off", real_network=False).__aenter__())
+    try:
+        assert browser.environment.user_agent == host.user_agent
+        assert browser.environment.viewport.width == host.viewport.width
+        assert browser.environment.platform == host.platform
+        assert browser.idl_path == f"pyv8c:{chosen.relative_to(PACKAGE_ROOT).as_posix()}"
+        page = browser.new_profile().new_page()
+        assert page.evaluate("innerWidth") == host.viewport.width
+        assert not any("Window order" in item for item in messages)
+    finally:
+        (await browser.close())
+        logger.remove(token)
+
+
+async def test_a_partial_environment_keeps_the_windows_profile():
+    windows = BrowserEnvironment()
+    browser = (await Browser(
+        environment={"viewport.width": 800}, stub_logging="off", real_network=False,
+    ).__aenter__())
+    try:
+        assert browser.environment.viewport.width == 800
+        assert browser.environment.user_agent == windows.user_agent
+        assert browser.environment.platform == windows.platform
+        assert browser.idl_path == "pyv8c:idl/idl.zip"
+        assert browser.idl_info["idl"]["chromium_version"] == "154.0.8030.0"
+        page = browser.new_profile().new_page()
+        assert page.evaluate("[navigator.userAgent, innerWidth]") == [windows.user_agent, 800]
+    finally:
+        (await browser.close())
 
 
 async def test_environment_drives_navigator_viewport_and_screen():

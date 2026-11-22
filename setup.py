@@ -15,7 +15,8 @@ from build_support import BuildV8, ListV8Versions, PyV8BuildExt, ext_modules
 setup(
     packages=find_packages(where='pyv8c', include=['pyv8c', 'pyv8c.*']),
     package_dir={'': 'pyv8c'},
-    package_data={'pyv8c': ['data/*.json'], 'pyv8c.idl': ['idl.zip'],
+    package_data={'pyv8c': ['data/*.json'],
+                  'pyv8c.idl': ['idl.zip', 'idl-158.0.8127.36.zip'],
                   'pyv8c.pyv8': ['_pyv8.pyi', '__init__.pyi', 'py.typed', 'icudtl.dat']},
     include_package_data=False,
     ext_modules=ext_modules,

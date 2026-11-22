@@ -17,7 +17,8 @@ from pyv8c import pyv8  # patch target for native V8Context instrumentation
 
 from ..engine.bindings import Idl, Bindings
 from ..foundation.close_timing import close_phase
-from ..foundation.environment import BrowserEnvironment
+from ..engine.idl import Profile as IdlProfile, idl_path as packaged_idl_path
+from ..foundation.environment import BrowserEnvironment, profile_path
 from ..foundation.error_policy import control_exceptions
 from ..foundation.host_errors import HostStateError, LoadFailure
 from ..foundation.urls import origin_string, origin_tuple
@@ -419,9 +420,10 @@ class Browser:
         means another Browser.
 
         :param environment: flat "dotted key" dict or
-            :class:`~pyv8c.foundation.environment.BrowserEnvironment`; keys left
-            out come from the bundled Chrome profile.  Profiles and pages may
-            overlay it.
+            :class:`~pyv8c.foundation.environment.BrowserEnvironment`.  Omitted,
+            the packaged profile for this host is used whole, Window order
+            included.  A mapping still overlays the Windows profile, and keys
+            left out come from that file.  Profiles and pages may overlay it.
         :param real_network: assemble ``http_engine`` and ``ws_engine``; ``False``
             keeps this browser offline, and a ready engine handed to either of them
             is then refused rather than dropped.  The default engines are core
@@ -497,8 +499,10 @@ class Browser:
             return null, while keeping CPU Canvas 2D available.
         :param angle_library_dir: use ANGLE libraries from this directory instead
             of comfy-angle; for compatibility, specifying it also selects ANGLE.
-        :param idl_path: Chromium interface baseline JSON or ZIP to
-            use instead of the bundled one.
+        :param idl_path: Chromium interface baseline JSON or ZIP.  When this
+            and ``environment`` are both omitted, the host file from
+            :func:`pyv8c.engine.idl.idl_path` is used.  An explicit environment
+            with no path still reads the packaged ``idl.zip``.
         :param baseline_mismatch: ``"warn"`` (the default) logs a difference
             between hand-written implementations and the chosen baseline once and
             skips it, which is how another Chromium version's baseline is run;
@@ -543,7 +547,12 @@ class Browser:
         self.default_headers = dict(default_headers or {})
         self.trace = bool(trace)
         self.traceable = bool(traceable) or self.trace
-        self.environment = BrowserEnvironment.from_dict(environment)
+        if environment is None:
+            host_profile = profile_path()
+            self.environment = BrowserEnvironment.from_file(host_profile)
+        else:
+            host_profile = None
+            self.environment = BrowserEnvironment.from_dict(environment)
         self.expose_unimplemented = bool(expose_unimplemented)
         self.stub_logging = str(stub_logging or "off")
         self._startup_stats = {}
@@ -564,7 +573,16 @@ class Browser:
                 angle_library_dir = comfy_angle.get_lib_dir()
             from ..web.graphics.webgl.backends.angle import AngleBackend
             self._graphics_backend = AngleBackend(angle_library_dir)
-        snapshot = Idl.load(idl_path, timings=self._startup_stats)
+        if host_profile is not None and idl_path is None:
+            idl_path = packaged_idl_path()
+        if host_profile is None:
+            snapshot = Idl.load(idl_path, timings=self._startup_stats)
+        else:
+            loaded_profile = IdlProfile.load(host_profile)
+            if loaded_profile is None:
+                raise FileNotFoundError(
+                    f"the environment profile does not exist: {host_profile}")
+            snapshot = Idl.load(idl_path, loaded_profile, timings=self._startup_stats)
         loaded = time.perf_counter_ns()
         self.bindings = Bindings(
             snapshot, runtime=bootstrap_runtime(),

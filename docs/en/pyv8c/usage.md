@@ -166,7 +166,7 @@ The current time control estimates internal field dimensions using a 24-hour clo
 | `interface_overrides` | None; experimental replacement callbacks for interface members |
 | `webgl_backend` | `simulated`; WebGL backend, `angle` is experimental (see [ANGLE prototype](angle-prototype.md)) |
 | `angle_library_dir` | None; EGL/GLES library directory for ANGLE, resolved by `comfy-angle` when unset |
-| `idl_path` | None; by default reads the in-package `pyv8c/pyv8c/idl/idl.zip` |
+| `idl_path` | None. When `environment` is also omitted, the file follows `sys.platform`: `darwin` reads `idl/idl-158.0.8127.36.zip` (a missing file falls back). An explicit `environment`, or a direct `Idl.load()`, still reads the in-package `idl.zip` |
 | `baseline_mismatch` | `warn`; warns when the implementation or Window order does not match the selected baseline, `error` enables strict validation |
 
 `new_profile(proxy=..., trace=..., traceable=..., trace_callback=..., trace_scripts=...)` can set the corresponding session options; `new_page(trace_scripts=...)` can also override script filtering, see [Browser Tracing](tracing.md). For thread restrictions on network and resource callbacks, see [Resource Loading](resource-loading.md).

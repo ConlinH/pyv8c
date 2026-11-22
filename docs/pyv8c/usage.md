@@ -161,7 +161,7 @@ assert values["viewport.width"] == 1280
 | `interface_overrides` | None；接口成员实验性替代回调 |
 | `webgl_backend` | `simulated`；WebGL 后端，可选 `angle`（实验性，见 [ANGLE 实验后端](angle-prototype.md)） |
 | `angle_library_dir` | None；ANGLE 的 EGL/GLES 库目录，未指定时由 `comfy-angle` 解析 |
-| `idl_path` | None；默认读取包内 `pyv8c/pyv8c/idl/idl.zip` |
+| `idl_path` | None。`environment` 也省略时按 `sys.platform` 选：`darwin` 读 `idl/idl-158.0.8127.36.zip`（文件缺失则回退）。显式 `environment` 或直接 `Idl.load()` 仍读包内 `idl.zip` |
 | `baseline_mismatch` | `warn`；实现或 Window 顺序与所选基线不匹配时警告，`error` 为严格校验 |
 
 `new_profile(proxy=..., trace=..., traceable=..., trace_callback=..., trace_scripts=...)` 可设置相应会话选项；`new_page(trace_scripts=...)` 也可覆盖脚本筛选，详见[运行跟踪](tracing.md)。网络与资源回调的线程限制见[资源加载](resource-loading.md)。

@@ -1,5 +1,6 @@
 """Rendered shadow-tree geometry and trusted input."""
 from pyv8c.async_api import Browser
+from pyv8c.foundation.environment import PROFILE, BrowserEnvironment
 
 
 async def test_shadow_styles_layout_invalidation_and_document_hit_retargeting():
@@ -124,7 +125,11 @@ async def test_flex_cross_axis_center_moves_descendant_boxes():
 
 
 async def test_iframe_border_shorthand_and_frame_pointer_screen_coordinates():
-    browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
+    # screenX/screenY add the Windows profile's window origin.
+    browser = (await Browser(
+        real_network=False, stub_logging='off',
+        environment=BrowserEnvironment.from_file(PROFILE),
+    ).__aenter__())
     try:
         page = browser.new_profile().new_page()
         (await page.set_content('''<body style="margin:0"><iframe style="position:absolute;left:100px;

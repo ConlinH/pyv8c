@@ -8,7 +8,9 @@
 
 At runtime, `pyv8c/pyv8c/idl/idl.zip` is read by default; the archive contains one JSON document, and a ZIP or JSON can also be specified via the Browser's `idl_path`. Only the current format version **10** is accepted; the in-package baseline is marked Chromium **154.0.8030.0**; other formats must be regenerated.
 
-The environment profile is at `pyv8c/pyv8c/data/chrome-environment.json`, and the current `source` records the capture browser as Chrome **156.0.8078.80**. The IDL source version, environment profile version, native V8 version, and the Chrome used for testing are different pieces of information and cannot be inferred from one another. The environment profile also records actual capture parameters, which should be checked together with the results.
+The environment profile is at `pyv8c/pyv8c/data/chrome-environment.json`, and the current `source` records the capture browser as Chrome **156.0.8078.80**. When `environment` is omitted, `Browser` reads the profile for `sys.platform` from the same directory: on `darwin` that file is `chrome-environment-darwin.json`. `chrome-environment.json` remains the base for a partial overlay and the collector's default output. The IDL source version, environment profile version, native V8 version, and the Chrome used for testing are different pieces of information and cannot be inferred from one another. The environment profile also records actual capture parameters, which should be checked together with the results.
+
+When both `environment` and `idl_path` are omitted, `Browser` also selects the IDL for `sys.platform`. On `darwin` it reads `idl/idl-158.0.8127.36.zip`; a missing file, or any other platform, still reads the packaged `idl.zip`. A direct `Idl.load()` always reads the packaged baseline **154.0.8030.0**. The native V8 version remains 15.4.68.
 
 `source.preserved_overrides` lists explicit configurations not captured by this collector but retained from the original profile; these values are not measurement results of this Chrome session.
 

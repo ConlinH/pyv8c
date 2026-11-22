@@ -1,11 +1,17 @@
 """Font-size resolution against real DOM trees."""
 import pytest
 from pyv8c.async_api import Browser
+from pyv8c.foundation import system_fonts
+from pyv8c.foundation.environment import PROFILE, BrowserEnvironment
 
 
 @pytest.fixture
 async def page():
-    browser = (await Browser(cache=False, stub_logging="off").__aenter__())
+    # The rem case reads the Windows profile's default face. A host profile must not move it.
+    browser = (await Browser(
+        cache=False, stub_logging="off",
+        environment=BrowserEnvironment.from_file(PROFILE),
+    ).__aenter__())
     page = browser.new_profile().new_page()
     try:
         yield page
@@ -49,4 +55,9 @@ async def test_a_rem_size_reads_the_root_not_the_parent(page):
       return [getComputedStyle(el).fontSize, el.offsetHeight];
     })()""")
     # The profile's Noto Sans SC default produces the same 44px line box as Chrome.
+    # Without that file the measure falls back to a local face, so the line box is not 44.
+    if not any(record.family == "Noto Sans SC" and record.path
+               for record in system_fonts.records()):
+        assert answer[0] == "30px", answer
+        pytest.skip("Noto Sans SC is not installed")
     assert answer == ["30px", 44], answer
