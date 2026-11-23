@@ -50,6 +50,12 @@ concurrent Future 或 `*_async` 变体。
 
 `query_selector()` 与 `wait_for_selector()` 的 `deep=True` 是宿主特权查询：依次搜索本页 light DOM、各 shadow tree（含 closed）、再按 DOM 顺序递归子 frame，返回 tree order 首个匹配。`click()` / `dblclick()` / `hover()` 的 `deep=True` 使用同一解析，并把输入交给节点所属 Page 的鼠标；返回句柄仍受该 realm 的线程归属约束。组合子不跨 shadow 边界，`:host` / `::slotted` 未实现。详见[使用说明](usage.md)。
 
+## 持久化 Profile
+
+`browser.new_profile(user_data_dir=..., persist_session_cookies=False)` 在两套入口都是同步工厂。指定目录时，先获取独占锁，再恢复 Cookie 和 HTTP(S) `localStorage`。目录正在使用、数据库损坏或格式版本不受支持时抛出 `HostStateError`。省略目录时创建内存 Profile，`browser.new_page()` 的默认 Profile 也属于这一类。
+
+同一 Profile 的同源页面共享 `localStorage` 数据，各 Window 持有自己的包装对象。跨源导航切换数据源，旧对象仍指向原 origin。同步 `profile.flush()` 和异步 `await profile.flush()` 保证调用前的持久化变更已提交，内存 Profile 的 `flush()` 直接返回。关闭先收尾页面和网络，再保存。保存失败保留数据和目录锁，调用方可以重试 `close()`。进程异常退出后恢复最后一次成功提交的状态。
+
 ## 超时、取消和关闭
 
 秒为统一时间单位。超时预算包含操作启动、JS 执行和等待；同步入口进入

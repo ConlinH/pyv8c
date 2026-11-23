@@ -384,7 +384,7 @@ class Page:
         )
         window._frame_element = previous_window._frame_element
         window._window_name = self._window_name_of(previous_window, previous_realm)
-        for slot in ("history", "localStorage", "sessionStorage"):
+        for slot in ("history", "sessionStorage"):
             if slot in previous_window._features.cached_names:
                 window._features._cache(slot, previous_window._features.value(slot))
         self.window = window

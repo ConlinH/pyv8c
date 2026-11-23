@@ -72,6 +72,12 @@ Page that owns the node; the returned handle remains subject to that realm's
 thread ownership. Combinators do not cross a shadow boundary, and `:host` /
 `::slotted` are not implemented. See the [usage guide](usage.md).
 
+## Persistent Profiles
+
+`browser.new_profile(user_data_dir=..., persist_session_cookies=False)` is a synchronous factory in both APIs. Passing a directory acquires an exclusive lock and restores cookies and HTTP(S) `localStorage` before returning. A busy directory, corrupt database, or unsupported format raises `HostStateError`. Omitting the directory creates an in-memory profile, as does the default profile used by `browser.new_page()`.
+
+Same-origin pages within a profile share `localStorage` data, with a separate wrapper for each Window. Cross-origin navigation switches the backing area. Earlier wrappers retain their original origin. Sync `profile.flush()` and async `await profile.flush()` commit persistent changes made before the call. On an open in-memory profile, `flush()` returns immediately. Shutdown drains pages and the network before saving. A failed save retains pending data and the directory lock so the caller can retry `close()`. After abnormal process exit, the profile restores the last successful commit.
+
 ## Timeouts, Cancellation, and Shutdown
 
 Seconds are the uniform time unit. A timeout budget covers operation startup,

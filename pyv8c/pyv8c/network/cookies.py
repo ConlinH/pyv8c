@@ -6,13 +6,12 @@ rules, with a wire view and a script-visible view.
 """
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from threading import RLock
 from urllib.parse import urlsplit
 
-from ..foundation.logging import logger
 from ..foundation.sites import is_public_suffix, site_domain
 from ..foundation.urls import canonical_host
 
@@ -53,10 +52,26 @@ class Cookie:
 class CookieJar:
     """The context's single cookie store."""
 
-    def __init__(self):
+    def __init__(self, *, lock=None, on_change=None):
         self._cookies: dict[tuple[str, str, str], Cookie] = {}
-        self._lock = RLock()
+        self._lock = RLock() if lock is None else lock
+        self._on_change = on_change
         self._creation_index = 0
+
+    def snapshot(self, *, include_session=False):
+        """Copy cookies with their original expiry and ordering."""
+        with self._lock:
+            now = time.time()
+            return [replace(cookie) for cookie in self._cookies.values()
+                    if not self._expired(cookie, now)
+                    and (include_session or cookie.expires is not None)]
+
+    def _restore(self, cookies):
+        """Initialize the jar from validated records before opening the profile."""
+        with self._lock:
+            self._cookies = {(item.domain, item.path, item.name): replace(item) for item in cookies}
+            self._creation_index = max(
+                (item.creation_index for item in self._cookies.values()), default=0)
 
     def add_from_response(self, url, header):
         if not header: return
@@ -155,11 +170,17 @@ class CookieJar:
 
     def _purge_expired(self):
         now = time.time()
+        removed = False
         for key, cookie in list(self._cookies.items()):
-            if self._expired(cookie, now): del self._cookies[key]
+            if self._expired(cookie, now):
+                del self._cookies[key]
+                removed = True
+        if removed and self._on_change is not None:
+            self._on_change()
 
     def _store(self, parsed_url, name, value, *, domain, path, secure, host_only,
                http_only=False, same_site="", expires=None, max_age=None, source="script"):
+        if any(char in name or char in value for char in "\r\n\0"): return False
         if not self._allows_cookies(parsed_url): return False
         host = _canonical_host(parsed_url.hostname)
         if not host: return False
@@ -189,7 +210,8 @@ class CookieJar:
                 self._creation_index += 1
                 item = Cookie(name, value, domain, path, secure, host_only, http_only, same_site, expires, previous.creation_index if previous else self._creation_index)
                 changed = previous != item; self._cookies[key] = item
-        if changed: logger.debug("cookie changed: {}", self.header_for(parsed_url.geturl()))
+            if changed and self._on_change is not None:
+                self._on_change()
         return changed
 
     def set_from_document(self, url, assignment):
@@ -247,7 +269,11 @@ class CookieJar:
             return "; ".join(f"{cookie.name}={cookie.value}" for cookie in matched)
 
     def clear(self):
-        with self._lock: self._cookies.clear()
+        with self._lock:
+            if self._cookies:
+                self._cookies.clear()
+                if self._on_change is not None:
+                    self._on_change()
 
 
 __all__ = ["Cookie", "CookieJar"]

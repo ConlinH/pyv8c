@@ -703,6 +703,9 @@ class _ContextCapability:
     def cookie_jar(self):
         return self._owner._profile.cookies
 
+    def local_storage_area(self, origin):
+        return self._owner._profile._storage.local_storage_area(origin)
+
     @property
     def _databases(self):
         return self._owner._profile._databases

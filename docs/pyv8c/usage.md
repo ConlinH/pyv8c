@@ -52,6 +52,29 @@ asyncio.run(main())
 
 公开关闭操作属于 owner 线程；活跃 JS 的独立停止信号由内部控制通道处理。后台任务因匹配的关闭票据终止时不报告宿主故障；正在等待同步操作的宿主仍会收到 `pyv8.JavaScriptTerminated`。该异常继承 `BaseException`，不属于普通 JS 异常。需要分类处理时应显式捕获，真实超时和未知终止不能统一忽略。
 
+## 保存并复用登录状态
+
+为 `new_profile()` 指定目录后，pyv8c 会恢复 Cookie 和 HTTP(S) 源的 `localStorage`。同一个目录一次只能由一个 Profile 打开。为不同账号使用各自的目录。
+
+```python
+from pathlib import Path
+from pyv8c.sync_api import Browser
+
+with Browser() as browser:
+    with browser.new_profile(
+        user_data_dir=Path("userdata/account-a"),
+        persist_session_cookies=True,
+    ) as profile:
+        page = profile.new_page()
+        page.goto("https://example.com/")
+        # 在这里按站点要求执行登录。
+        profile.flush()
+```
+
+下一次用同一目录打开 Profile，页面首次请求就能使用仍有效且符合发送条件的 Cookie。默认只保存有过期时间的 Cookie，示例显式开启了会话 Cookie 恢复。异步版同样直接调用 `new_profile()`，需要立即保存时用 `await profile.flush()`。运行期间会合并写入，正常关闭会提交剩余变更。同步应用的后台保存随 Browser 事件循环推进，宿主线程空闲时可使用 `flush()` 确保状态落盘。
+
+SQLite 文件中的 Cookie 和站点存储可能含有登录凭据。请放在当前用户的私有目录中，避免提交到版本控制或分享数据库文件。保存范围为 Cookie 和 HTTP(S) `localStorage`，`sessionStorage` 仍随页面会话结束。
+
 ## 页面 API
 
 | 调用 | 契约 |

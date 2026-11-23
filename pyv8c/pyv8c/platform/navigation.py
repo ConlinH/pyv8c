@@ -136,6 +136,7 @@ class NavigationController:
             # Initial host content injection keeps installed globals/listeners.
             # Its explicit origin must still select the correct agent queue.
             page = self.page
+            page.window._rebind_initial_storage(page.origin)
             page.executor.after_callback()
             agent = page.execution_group.agent(page.origin)
             page.v8_context.set_microtask_queue(agent.microtasks)
