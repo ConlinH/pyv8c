@@ -137,6 +137,10 @@ class Profile(_Owned):
         self._driver.check()
         return self._driver.wrap(self._impl.new_page(**options), Page)
 
+    def flush(self):
+        """Commit this profile's pending cookies and local storage."""
+        self._driver.call(self._impl.flush)
+
     def start_devtools(self, page, *, options=None):
         self._driver.check()
         if not isinstance(page, Page) or page._driver is not self._driver:

@@ -21,6 +21,7 @@ dependencies = [
     "uniseg>=0.9",
     "tldextract>=5.3,<6",
     "idna>=3.6,<4",
+    "filelock>=3.16",
     "pycryptodome>=3.23,<4",
 ]
 

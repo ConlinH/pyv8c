@@ -168,6 +168,9 @@ jobs:
       - name: Test native crash smoke on installed wheel
         working-directory: ${{ runner.temp }}
         run: python -m pytest "${{ github.workspace }}/pyv8c/tests/native/test_native_smoke.py" -q
+      - name: Test persistent profiles on installed wheel
+        working-directory: ${{ runner.temp }}
+        run: python -I -m pytest -o pythonpath= "${{ github.workspace }}/pyv8c/tests/integration/test_profile_persistence.py" -q
       - name: Check architecture layering on installed wheel
         if: ${{ matrix.python == '3.12' }}
         run: python tools/check_policy.py --gates layers
@@ -283,6 +286,9 @@ jobs:
         shell: bash
         working-directory: ${{ runner.temp }}
         run: python -m pytest "$GITHUB_WORKSPACE/pyv8c/tests/native/test_native_smoke.py" -q
+      - name: Test persistent profiles on installed wheel
+        working-directory: ${{ runner.temp }}
+        run: python -I -m pytest -o pythonpath= "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_profile_persistence.py" -q
       - name: Test experimental ANGLE backend
         if: ${{ inputs.angle }}
         shell: bash
@@ -400,6 +406,9 @@ jobs:
       - name: Test native crash smoke on installed wheel
         working-directory: ${{ runner.temp }}
         run: python -m pytest "$GITHUB_WORKSPACE/pyv8c/tests/native/test_native_smoke.py" -q
+      - name: Test persistent profiles on installed wheel
+        working-directory: ${{ runner.temp }}
+        run: python -I -m pytest -o pythonpath= "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_profile_persistence.py" -q
       - name: Test experimental ANGLE backend
         if: ${{ inputs.angle }}
         shell: bash

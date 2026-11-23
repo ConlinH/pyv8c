@@ -57,6 +57,29 @@ asyncio.run(main())
 
 Public close APIs belong to the owner thread; independent stop signals use the internal control channel. A background task terminated by a matching shutdown ticket does not report a host failure; a host waiting on a synchronous operation still receives `pyv8.JavaScriptTerminated`. This exception inherits from `BaseException` and is not an ordinary JS exception. Catch it explicitly when classification is needed; real timeouts and unknown terminations must not be uniformly ignored.
 
+## Save and reuse a signed-in session
+
+Pass a directory to `new_profile()` to restore cookies and HTTP(S) `localStorage`. Only one profile can open a directory at a time. Use a separate directory for each account.
+
+```python
+from pathlib import Path
+from pyv8c.sync_api import Browser
+
+with Browser() as browser:
+    with browser.new_profile(
+        user_data_dir=Path("userdata/account-a"),
+        persist_session_cookies=True,
+    ) as profile:
+        page = profile.new_page()
+        page.goto("https://example.com/")
+        # Follow the site's sign-in flow here.
+        profile.flush()
+```
+
+When you reopen the directory, the first page request can use restored cookies that are still valid and eligible to be sent. By default, the profile saves cookies with an expiry. The example also opts in to restoring session cookies. With the async API, call `new_profile()` directly and use `await profile.flush()` to save immediately. Changes are batched during use, and normal shutdown commits any remaining changes. In sync applications, background saves run while the Browser loop is being driven. Call `flush()` before an idle period if you need the state on disk.
+
+The SQLite file can contain credentials in cookies and site storage. Keep it in a private directory owned by the current user, outside version control and shared folders. Persistence covers cookies and HTTP(S) `localStorage`. `sessionStorage` lasts for the current page session.
+
 ## Page APIs
 
 | Call | Contract |

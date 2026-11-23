@@ -22,7 +22,6 @@ from ..foundation.error_policy import control_exceptions
 from ..foundation.host_errors import HostStateError, LoadFailure
 from ..foundation.urls import origin_string, origin_tuple
 from ..network.assembly import assemble_backend
-from ..network.cookies import CookieJar
 from ..network.proxy import normalize_proxy
 from ..network.registry import KIND_METHODS, HttpTransport, WebSocketTransport
 from ..network.websocket_io import WebSocketIO
@@ -31,6 +30,7 @@ from .bootstrap import bootstrap_runtime
 from ..foundation.futures import consume_future
 from .runtime import Runtime, RuntimeState
 from .page import Page
+from .profile_storage import ProfileStorage
 from .resources.cache import ResourceCache
 from .resources.cors import PreflightCache
 
@@ -102,13 +102,14 @@ class Profile:
     except for a disk cache directory when one was configured.
     """
 
-    def __init__(self, browser, *, proxy=None, trace=None, traceable=None, trace_callback=None,
+    def __init__(self, browser, *, storage, proxy=None, trace=None, traceable=None, trace_callback=None,
                  trace_scripts=_TRACE_SCRIPTS_INHERIT, _engine_token=None):
         self.browser, self.pages = browser, []
         self._state_lock = threading.RLock()
         self._closing = False
         self._close_task = None
-        self.cookies = CookieJar()
+        self._storage = storage
+        self.cookies = storage.cookies
         #: Its own proxy setting, or the browser's while it was given none.
         self.proxy = browser.proxy if proxy is None else proxy
         #: Trace settings for this profile alone; ``None`` keeps the browser's.
@@ -297,6 +298,14 @@ class Profile:
         if task is not None:
             await asyncio.shield(task)
 
+    async def flush(self):
+        """Commit cookies and local storage changed before this call."""
+        kernel = self.browser._runtime
+        kernel.check_owner()
+        kernel.check_loop()
+        self._ensure_open()
+        await self._storage.flush()
+
     def _begin_close(self):
         kernel = self.browser._runtime
         kernel.check_thread()
@@ -347,6 +356,8 @@ class Profile:
                         setattr(self, name, None)
             if first_error is not None:
                 raise first_error
+            with close_phase(self, "profile-storage"):
+                await self._storage.close()
             self.closed = True
             self.resource_cache.clear_memory()
             self.preflight_cache.clear()
@@ -600,7 +611,9 @@ class Browser:
     def new_profile(self, *, proxy: str | None = None, trace: bool | None = None,
                     traceable: bool | None = None,
                     trace_callback: Callable | None = None,
-                    trace_scripts=_TRACE_SCRIPTS_INHERIT) -> Profile:
+                    trace_scripts=_TRACE_SCRIPTS_INHERIT,
+                    user_data_dir: str | os.PathLike[str] | None = None,
+                    persist_session_cookies: bool = False) -> Profile:
         """Create an isolated profile: its own cookies, blobs and network stack.
 
         :param proxy: where this profile's traffic goes, overriding
@@ -615,6 +628,10 @@ class Browser:
             browser's callback.
         :param trace_scripts: override the browser's source-URL patterns;
             omitted inherits them, while ``None`` removes the filter.
+        :param user_data_dir: optionally restore cookies and local storage from
+            an exclusively held directory, before returning the profile.
+        :param persist_session_cookies: also restore and save session cookies;
+            requires a user data directory.
         :returns: the new :class:`Profile`, appended to :attr:`profiles`.
         :raises InvalidStateError: the browser is closed.
         :raises ValueError: the proxy value is not an ``http``/``https`` URL.
@@ -625,6 +642,10 @@ class Browser:
                 raise HostStateError("Browser is closed or closing")
         if trace_callback is not None and not callable(trace_callback):
             raise TypeError("trace_callback must be callable or None")
+        if not isinstance(persist_session_cookies, bool):
+            raise TypeError("persist_session_cookies must be a bool")
+        if persist_session_cookies and user_data_dir is None:
+            raise ValueError("persist_session_cookies requires user_data_dir")
         ready = []
         if self.real_network:
             for role, method in KIND_METHODS.items():
@@ -642,12 +663,16 @@ class Browser:
                 if self._ready_engine_reserved:
                     raise HostStateError('A ready network engine can serve only one profile; use a factory for additional profiles')
                 self._ready_engine_reserved = True
+        storage = None
         try:
             if uses_ready: _claim_ready_engines(ready, token)
+            storage = ProfileStorage(self._runtime.loop, user_data_dir, persist_session_cookies)
             profile = self._create_profile(proxy=None if proxy is None else normalize_proxy(proxy),
                               trace=trace, traceable=traceable, trace_callback=trace_callback,
-                              trace_scripts=trace_scripts, _engine_token=token)
+                              trace_scripts=trace_scripts, storage=storage, _engine_token=token)
         except BaseException:
+            if storage is not None:
+                storage.release()
             _release_ready_engines(token)
             if uses_ready:
                 with self._state_lock: self._ready_engine_reserved = False
@@ -658,7 +683,9 @@ class Browser:
                 self.profiles.append(profile)
         if not accepted:
             profile._retire_pages()
+            storage.release()
             raise HostStateError("Browser is closed or closing")
+        storage.schedule()
         return profile
 
     def _create_profile(self, **kwargs):
