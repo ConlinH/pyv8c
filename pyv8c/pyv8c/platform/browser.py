@@ -24,7 +24,9 @@ from ..foundation.host_errors import HostStateError, LoadFailure
 from ..foundation.urls import origin_string, origin_tuple
 from ..network.assembly import assemble_backend
 from ..network.proxy import normalize_proxy
-from ..network.registry import KIND_METHODS, HttpTransport, WebSocketTransport
+from ..network.registry import (
+    KIND_METHODS, HttpEngineName, HttpTransport, WebSocketEngineName, WebSocketTransport,
+)
 from ..network.websocket_io import WebSocketIO
 from ..network.websockets import WebSocketsTransport
 from .bootstrap import bootstrap_runtime
@@ -415,9 +417,9 @@ class Browser:
                  resource_interceptor: Callable | None = None,
                  threaded_loaders: bool = False,
                  frame_rate: float = 60.0,
-                 http_engine: Literal["cronet", "curl_cffi"] | HttpTransport | Callable | None = "curl_cffi",
+                 http_engine: Literal["cronet", "curl_cffi"] | HttpEngineName | HttpTransport | Callable | None = "curl_cffi",
                  http_options: dict | None = None,
-                 ws_engine: Literal["websockets"] | WebSocketTransport | Callable | None = "websockets",
+                 ws_engine: Literal["websockets"] | WebSocketEngineName | WebSocketTransport | Callable | None = "websockets",
                  ws_options: dict | None = None,
                  proxy: str | None = None,
                  default_headers: dict | None = None,
