@@ -12,6 +12,7 @@ from email.utils import parsedate_to_datetime
 from threading import RLock
 from urllib.parse import urlsplit
 
+from ..foundation.logging import logger
 from ..foundation.sites import is_public_suffix, site_domain
 from ..foundation.urls import canonical_host
 
@@ -212,6 +213,8 @@ class CookieJar:
                 changed = previous != item; self._cookies[key] = item
             if changed and self._on_change is not None:
                 self._on_change()
+        if changed:
+            logger.debug("cookie changed")
         return changed
 
     def set_from_document(self, url, assignment):

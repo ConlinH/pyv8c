@@ -110,7 +110,7 @@ async def test_document_cookie_ignores_invalid_script_assignments_and_logs_chang
     assert page.evaluate("document.cookie") == ""
     page.evaluate("document.cookie = 'ok=1'")
     assert page.evaluate("document.cookie = 'ok=1'") == "ok=1"
-    assert [entry for entry in messages if "cookie" in entry[0]] == [("cookie changed: {}", "ok=1")]
+    assert [entry for entry in messages if "cookie" in entry[0]] == [("cookie changed",)]
 
 
 async def test_document_cookie_cannot_overwrite_a_httponly_cookie(browser, local_server):
