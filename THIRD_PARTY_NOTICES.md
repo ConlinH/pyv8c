@@ -46,12 +46,13 @@ V8 源码树各子目录下的 `LICENSE` 文件包含更细的第三方信息，
 
 ## 2. Chromium / Blink Web IDL 基线
 
-- **组件**：`pyv8c/pyv8c/idl/idl.zip` 及 `idls/`、`docs/` 中由 Chromium Web IDL 定义生成的接口规格；`CHROMIUM_VERSION` 记录基线版本。
-- **基线版本**：Chromium 154.0.8030.0。
+- **组件**：默认包内 `pyv8c/pyv8c/idl/idl.zip`，以及 `idls/`、`docs/` 中由 Chromium Web IDL 定义生成的接口规格。`CHROMIUM_VERSION` 记录默认基线。
+- **基线版本**：默认 `idl.zip` 为 Chromium 154.0.8030.0。
+- **可选档案**：`pyv8c/pyv8c/idl/idl-158.0.8127.36.zip` 与 `pyv8c/idls/158.0.8127.36.zip` 是 Chromium 158.0.8127.36 的同类 IDL 提取，随包分发。只有调用方传入打包的 Mac 环境档案、且未另给 `idl_path` 时才使用。许可与版权和默认基线相同。
 - **许可**：BSD 3-Clause "New" or "Revised" License（`BSD-3-Clause`）。
 - **版权**：Copyright 2015 The Chromium Authors；其他文件可能携带各自的版权声明。
 - **上游原文**：<https://chromium.googlesource.com/chromium/src/+/main/LICENSE>
-- **固定版本原文**：[CHROMIUM-LICENSE.txt](third_party_licenses/CHROMIUM-LICENSE.txt)，来自 Chromium 154.0.8030.0。
+- **固定版本原文**：[CHROMIUM-LICENSE.txt](third_party_licenses/CHROMIUM-LICENSE.txt)，来自 Chromium 154.0.8030.0。158 档案沿用同一份许可文本。
 
 这里的 IDL 数据是从 Chromium/Blink 接口定义提取、整理出的规格信息；保留上游版权和许可声明供下游核对。
 
@@ -73,7 +74,8 @@ V8 源码树各子目录下的 `LICENSE` 文件包含更细的第三方信息，
 
 ## 4. Chrome 运行时环境档案
 
-- **组件**：`pyv8c/pyv8c/data/chrome-environment.json`（schema 4），记录从本机 Chrome 156.0.8078.80 采集的接口与属性观测值，用于决定 Window 自有属性顺序等环境行为。
+- **组件**：`pyv8c/pyv8c/data/chrome-environment.json`（schema 4），记录从本机 Chrome 156.0.8078.80 采集的接口与属性观测值，用于决定 Window 自有属性顺序等环境行为。无参 Browser 整份使用这份档案。
+- **Darwin 档案**：`pyv8c/pyv8c/data/chrome-environment-darwin.json` 是从本机 Chrome 158.0.8127.36 采集的同类观测。无参 Browser 不读取它；调用方把该路径传给 `environment` 时整份使用。
 - **性质**：对公开运行时行为的事实性观测数据，不包含 Chrome 的实现代码。
 - **注意**：`Chrome`、`Chromium`、`V8`、`Google` 均为各自权利人的商标或标识；本项目与 Google 及 Chromium 项目无关联、未获背书。上述 BSD-3-Clause 第 3 条禁止借其名义为衍生产品背书。
 
