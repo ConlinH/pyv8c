@@ -1,4 +1,7 @@
 """Policies come from real document responses and apply to their script sinks."""
+import base64
+import hashlib
+
 import pytest
 
 pytest.importorskip('pyv8c.pyv8')
@@ -117,3 +120,16 @@ async def test_meta_policy_applies_to_subsequent_eval(page):
       <script>try{eval('1')}catch(e){window.blocked=e.name}</script></body>''',
       url='https://policy.test/')
     assert page.evaluate('blocked') == 'EvalError'
+
+
+@pytest.mark.parametrize('algorithm', ['sha256', 'sha384', 'sha512'])
+@pytest.mark.parametrize('directive', ['script-src', 'script-src-elem', 'default-src'])
+@pytest.mark.parametrize('tampered', [False, True])
+async def test_inline_script_obeys_hash_from_meta(page, algorithm, directive, tampered):
+    source = '\nwindow.hashResult = "雪😃";\n'
+    digest = base64.b64encode(hashlib.new(algorithm, source.encode('utf-8')).digest()).decode('ascii')
+    actual = source + (' ' if tampered else '')
+    await page.set_content(f'''<!doctype html><head>
+      <meta http-equiv="Content-Security-Policy" content="{directive} 'unsafe-inline' '{algorithm}-{digest}'">
+      </head><body><script>{actual}</script></body>''', url='https://policy.test/')
+    assert page.evaluate('globalThis.hashResult === "雪😃"') is (not tampered)

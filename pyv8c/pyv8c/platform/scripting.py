@@ -108,7 +108,7 @@ class ScriptController:
             return False
         if not getattr(node, 'attributes', {}).get('src'):
             nonce = str(getattr(node, 'attributes', {}).get('nonce', ''))
-            if not self.page.navigation.content_policy.allows_inline(nonce):
+            if not self.page.navigation.content_policy.allows_inline(nonce, source_text=source):
                 return False
         if getattr(node, "_script_executed", False):
             return True
