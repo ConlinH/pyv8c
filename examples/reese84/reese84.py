@@ -1,86 +1,97 @@
-"""reese84：本地跑挑战脚本拿到 Cookie，再查一次业务接口。"""
-
+"""用 pyv8c 获取 Reese84 Cookie，再查询 Nevada 注册代理信息。"""
+import argparse
 import asyncio
-import time
 from pathlib import Path
+import sys
+import time
 from urllib.parse import parse_qs, urlsplit
 
-from loguru import logger
-from pyv8c.async_api import Browser
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'pyv8c'))
 
-logger.remove()
-logger.add(Path(__file__).parent.joinpath("reese84.log"), level="DEBUG", mode='w')
+from loguru import logger
+from pyv8c import pyv8
+from pyv8c.async_api import Browser
 
 ORIGIN = 'https://orion.nv.gov'
 URL = ORIGIN + '/portal/public/#/public/nvsos/en/CaseXscreen?screen=external-GenericFilingsSearch&tabRoute=agent'
 SDK_PATH = '/sworthe-which-welcolmembling-those-That-th-edgem'
 API_URL = ORIGIN + '/core/api/_q/v1/nv-sos/public/CRAEntities'
-USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'
-              ' Chrome/150.0.0.0 Safari/537.36')
-KEYWORD = 'NORTHWEST'
-TIMEOUT = 45.0
+DEFAULT_PROXY = 'http://127.0.0.1:6696'
 
 
-def intercept(url, request):
-    """只放行挑战流程需要的请求；文档换成只带挑战脚本的那一版。"""
-    parsed, method = urlsplit(url), request.get('method', 'GET').upper()
-    allowed = parsed.hostname == 'orion.nv.gov' and (
-        (parsed.path == '/portal/public/' and method == 'GET') or
-        (parsed.path == SDK_PATH and method in ('GET', 'POST')) or
-        (parsed.path == '/_Incapsula_Resource' and method == 'GET'
-         and ('SWJIYLWA' in parse_qs(parsed.query) or 'SWKMTFSR' in parse_qs(parsed.query))))
-    if not allowed:
-        print('×', method, parsed.path)
-        return False
-    print('✓', method, parsed.path)
+def trim_resources(url, request):
+    target, method = urlsplit(url), request.get('method', 'GET').upper()
+    if target.scheme not in {'http', 'https'}:
+        return None
+    allowed = target.hostname == 'orion.nv.gov' and (
+        (target.path == '/portal/public/' and method == 'GET')
+        or (target.path == SDK_PATH and method in {'GET', 'POST'})
+        or (target.path == '/_Incapsula_Resource' and method == 'GET'
+            and {'SWJIYLWA', 'SWKMTFSR'}.intersection(parse_qs(target.query)))
+    )
+    return None if allowed else False
 
 
-async def wait_for_cookie(profile, url, seconds=TIMEOUT):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        header = profile.cookies.header_for(url)
-        for part in header.split('; '):
-            if part.startswith('reese84=') and part[8:]:
-                return header
-        (await asyncio.sleep(0.2))
-    raise RuntimeError('没有拿到新的 reese84 Cookie，看看 reese84.log 里的 SDK 报错')
-
-
-def search_body(keyword, page_number=1, page_size=25):
+def search_body(keyword):
     params = {'agentName': keyword, 'registeredAgentType': '', 'craId': '', 'nvBusinessId': '',
               'craEntityNumber': '', 'agentStatus': '', 'filingNo': '', 'submit1': False,
               'searchDumy': True, 'restrictedAndProhibitedWords': '', 'totalRecordCount': '',
               'searchType': 'STARTS_WITH', 'searchTerm': ''}
     return {'data': {}, 'origin': '', 'origin_key': 'CaseX',
             'gridInput': {'params': {'parameters': params.copy()}, 'persistPrevParams': False},
-            'parameters': params, 'pageNo': page_number, 'pageSize': page_size, 'sortBy': {}}
+            'parameters': params, 'pageNo': 1, 'pageSize': 25, 'sortBy': {}}
 
 
-async def main():
-    started = time.time()
-
-    async with Browser(
-        resource_interceptor=intercept,
-        cache=False,
-        http_engine='curl_cffi',
+async def run(*, keyword='NORTHWEST', proxy=DEFAULT_PROXY, timeout=60):
+    started = time.monotonic()
+    logger.info('查询 {}（代理：{}）', keyword, proxy or '直连')
+    async with asyncio.timeout(timeout), Browser(
+        proxy=proxy, cache=False, resource_interceptor=trim_resources,
         http_options={'impersonate': 'chrome150', 'timeout': 20},
-        # proxy="http://127.0.0.1:7890"
     ) as browser:
         profile = browser.new_profile()
         page = profile.new_page()
-
-        (await page.goto(URL))
-        cookies = (await wait_for_cookie(profile, API_URL))
-
-        response = (await page.net.post(API_URL, json=search_body(KEYWORD), timeout=20))
-        print(response.text)
+        await page.goto(URL, wait_until='domcontentloaded', timeout=timeout)
+        while not any(part.startswith('reese84=') and part[8:]
+                      for part in profile.cookies.header_for(API_URL).split('; ')):
+            await page.sleep(.2)
+        logger.info('Reese84 Cookie 已就绪，请求业务接口')
+        reese84 = next(part for part in profile.cookies.header_for(API_URL).split('; ')
+                       if part.startswith('reese84=') and part[8:])
+        logger.info('{}', reese84)
+        response = await page.net.post(API_URL, json=search_body(keyword), timeout=20)
+        if response.status != 200:
+            raise RuntimeError(f'查询接口 HTTP {response.status}: {response.text[:200]}')
         data = response.json()
-
-    print('cookies: ', cookies)
-    print('api: ', response.status, 'code', data.get('code'), 'total', data.get('totalItemCount'))
-    print('agents: ', [item.get('agentname') for item in data.get('items', [])][:5])
-    print(time.time() - started)
+        if not isinstance(data, dict) or not isinstance(data.get('items'), list):
+            raise RuntimeError('查询接口未返回 items 列表')
+        return {'data': data, 'elapsed': round(time.monotonic() - started, 2)}
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--keyword', default='NORTHWEST')
+    parser.add_argument('--proxy', default=DEFAULT_PROXY, help='代理地址；传 none 表示直连')
+    parser.add_argument('--timeout', type=float, default=60)
+    args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error('--timeout 必须为正数')
+    proxy = None if args.proxy.lower() in {'none', ''} else args.proxy
+    logger.remove()
+    logger.add(sys.stdout, level='INFO')
+    try:
+        result = await run(keyword=args.keyword, proxy=proxy, timeout=args.timeout)
+    except (Exception, pyv8.JSException, pyv8.JavaScriptTerminated) as error:
+        logger.error('查询失败：{}: {}', type(error).__name__, error)
+        return 1
+    data = result['data']
+    logger.success('查询成功，code={}，total={}（耗时 {}s）',
+                   data.get('code'), data.get('totalItemCount'), result['elapsed'])
+    for item in data['items'][:5]:
+        logger.info('{}', item.get('agentname'))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(asyncio.run(main()))

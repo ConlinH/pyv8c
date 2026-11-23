@@ -1,189 +1,130 @@
-"""Generate fresh DataDome interstitial parameters, submit once, verify the homepage."""
-from __future__ import annotations
-
+"""用 pyv8c 生成 payload、plv3，提交一次并打印响应中的 datadome 值。"""
 import argparse
 import asyncio
-from datetime import datetime, timezone
-import hashlib
-import json
 from pathlib import Path
 import re
 import sys
 from threading import Event
 import time
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'pyv8c'))
 
 from loguru import logger
-
+from pyv8c import NetworkResponse, pyv8, register_transport
 from pyv8c.async_api import Browser
-from pyv8c.platform.resources.request_headers import browser_headers
+from pyv8c.network.curl_cffi import CurlCffiTransport
 
 URL = 'https://www.neimanmarcus.com/'
+DEFAULT_PROXY = 'http://127.0.0.1:6696'
 CHALLENGE_HOSTS = {'ct.captcha-delivery.com', 'geo.captcha-delivery.com',
                    'static.captcha-delivery.com'}
+REQUIRED = ('payload', 'plv3')
 
 
-def write_json(path, data):
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+def datadome_value(response):
+    if response.status != 200:
+        raise RuntimeError(f'Interstitial HTTP {response.status}: {response.text[:200]}')
+    try:
+        data = response.json()
+    except ValueError as error:
+        content_type = next((value for name, value in response.headers.items()
+                             if name.lower() == 'content-type'), '(missing)')
+        raise RuntimeError(f'Interstitial 返回非 JSON：HTTP 200，Content-Type={content_type}') from error
+    if not isinstance(data, dict):
+        raise RuntimeError('Interstitial 响应不是 JSON 对象：HTTP 200')
+    assignment = data.get('cookie')
+    if not isinstance(assignment, str):
+        raise RuntimeError('响应缺少 DataDome Cookie')
+    name, separator, value = assignment.split(';', 1)[0].partition('=')
+    if name.strip() != 'datadome' or not separator or not value.strip():
+        raise RuntimeError('响应缺少非空 DataDome Cookie')
+    return value.strip()
 
 
-async def run(proxy=None, output=None, timeout=60):
-    """生成一次 interstitial 参数并提交，返回带状态与产物路径的 state。"""
-    output = Path(output) if output else Path(__file__).with_name('output') / (
-        datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid4().hex[:8])
-    output.mkdir(parents=True, exist_ok=False)
-    ready = Event()
-    state = {'success': False, 'target': URL, 'sdk': {}, 'flow': []}
-    captured = {}
-    phase = 'generating'
-    page = None
+async def run(*, proxy=DEFAULT_PROXY, timeout=60):
     started = time.monotonic()
-
-    def note(method, url, status):
-        state['flow'].append({'method': method, 'url': url, 'status': status,
-                              'elapsed_ms': round((time.monotonic() - started) * 1000)})
-        parts = urlsplit(url)
-        logger.info('{} {}{} -> {}', method, parts.hostname, parts.path, status)
+    ready = Event()
+    captured = {}
 
     def intercept(url, request):
-        nonlocal phase
-        parts = urlsplit(url)
-        if phase != 'generating':
-            return False
-        if parts.scheme in ('blob', 'data'):
+        target = urlsplit(url)
+        if target.scheme not in {'http', 'https'}:
             return None
-        if not (parts.hostname in CHALLENGE_HOSTS or
-                (parts.hostname == 'www.neimanmarcus.com' and parts.path == '/')):
+        if ready.is_set() or not (target.hostname in CHALLENGE_HOSTS or url == URL):
             return False
         method = request.get('method', 'GET').upper()
-        if method == 'POST' and parts.hostname == 'geo.captcha-delivery.com' and parts.path == '/interstitial/':
+        if method == 'POST' and target.hostname == 'geo.captcha-delivery.com' and target.path == '/interstitial/':
             body = request.get('body') or ''
             if isinstance(body, bytes):
                 body = body.decode('utf-8')
-            params = parse_qs(body, keep_blank_values=True)
-            required = ('cid', 'hash', 'referer', 'url', 's', 'e', 'env', 'userEnv',
-                        'seed', 'b', 'dm', 'payload', 'plv3', 'ps')
-            missing = [key for key in required if len(params.get(key, [])) != 1 or not params[key][0]]
-            logger.debug('captured interstitial body: {} chars', len(body))
-            captured.update(url=url, body=body, headers=dict(request.get('headers') or {}), params=params)
-            if missing:
-                captured['error'] = 'The SDK did not generate: ' + ', '.join(missing)
-            phase = 'captured'
+            captured.update(url=url, body=body, headers=dict(request.get('headers') or {}))
             ready.set()
-            # Pause at the outgoing boundary. The host submits these exact bytes
-            # once below; this local refusal is never sent to the website.
-            return {'status': 400, 'headers': {'content-type': 'application/json'},
-                    'body': '{"error":"request captured for host submission"}'}
-        if parts.path.startswith('/captcha/'):
-            captured['error'] = 'The site switched from the interstitial to a captcha.'
+            # 保留原案例的提交边界：拦下这次请求，再由宿主原样发送一次。
+            return {'status': 400, 'body': '{"error":"request captured"}',
+                    'headers': {'content-type': 'application/json'}}
+        if target.path.startswith('/captcha/'):
+            captured['error'] = '站点改为交互验证码，本例仅处理 interstitial'
             ready.set()
             return False
-        response = page.profile.network_backend.request_sync(page.net.build(
-            method, url, headers=request.get('headers'),
-            data=request.get('body'), timeout=min(timeout, 25)))
-        note(method, url, response.status)
-        if parts.hostname == 'ct.captcha-delivery.com':
-            state['sdk'][url] = {'bytes': len(response.content),
-                                  'sha256': hashlib.sha256(response.content).hexdigest()}
-        if parts.hostname == 'geo.captcha-delivery.com' and parts.path == '/interstitial/':
-            (output / 'challenge.html').write_bytes(response.content)
-        if parts.hostname == 'www.neimanmarcus.com':
-            state['initial_status'] = response.status
-            (output / 'initial.html').write_bytes(response.content)
-            if response.status == 200:
-                captured['already_accessible'] = response
-                phase = 'captured'
-                ready.set()
-                return {'status': 200, 'headers': {'content-type': 'text/html'},
-                        'body': '<!doctype html><title>Initial response captured</title>'}
-            if response.status != 403 or not re.search(r'\bvar\s+dd\s*=', response.text):
-                captured['error'] = f'Expected the dd interstitial bootstrap, received HTTP {response.status}.'
-                ready.set()
-        return {'status': response.status, 'headers': response.headers, 'body': response.body}
 
-    try:
-        async with Browser(
-            proxy=proxy, cache=False, resource_interceptor=intercept,
-            http_options={'impersonate': 'chrome150', 'timeout': min(timeout, 25)},
-            stub_logging='off',
-        ) as browser:
-            context = browser.new_profile()
-            page = context.new_page()
-            await page.goto(URL, timeout=min(timeout, 60), wait_until='domcontentloaded')
-            while not ready.is_set():
-                await asyncio.sleep(.1)
-                if time.monotonic() - started >= timeout:
-                    raise TimeoutError('The local SDK did not generate the interstitial request before timeout.')
-            if captured.get('error'):
-                raise RuntimeError(captured['error'])
-            if 'already_accessible' in captured:
-                response = captured['already_accessible']
-                state['generated_parameters'] = False
-            else:
-                params = captured['params']
-                write_json(output / 'parameters.json', {key: values[0] for key, values in params.items()})
-                (output / 'request.form').write_text(captured['body'], encoding='utf-8')
-                state.update(generated_parameters=True, payload_chars=len(params['payload'][0]),
-                             plv3_chars=len(params['plv3'][0]))
-                logger.info('Generated payload={} chars, plv3={} chars',
-                            state['payload_chars'], state['plv3_chars'])
-                phase = 'submitting'
-                response = await page.net.request(
-                    'POST', captured['url'], data=captured['body'],
-                    headers=captured['headers'], timeout=min(timeout, 25))
-                note('POST', captured['url'], response.status)
-                state['interstitial_status'] = response.status
-                data = response.json()
-                write_json(output / 'interstitial-response.json', data)
-                state['view'] = data.get('view') if isinstance(data, dict) else None
-                if response.status != 200 or not isinstance(data, dict) or data.get('view') != 'redirect':
-                    raise RuntimeError(f'Interstitial rejected: HTTP {response.status}, view={state["view"]!r}.')
-                assignment = data.get('cookie', '')
-                if not isinstance(assignment, str) or not assignment.startswith('datadome='):
-                    raise RuntimeError('The redirect response contains no datadome cookie.')
-                cookie = assignment.split(';', 1)[0]
-                context.cookies.set_from_document(URL, assignment)
-                if cookie not in context.cookies.header_for(URL).split('; '):
-                    raise RuntimeError('The returned cookie was not stored for the target domain.')
-                headers = browser_headers(page.environment, destination='document', mode='navigate',
-                                          method='GET', url=URL, current_url=URL, http_version=2)
-                response = await page.net.request(
-                    'GET', URL, headers=headers, referer=URL, timeout=min(timeout, 25))
-                note('GET', URL, response.status)
-            state.update(home_status=response.status, html_bytes=len(response.content))
-            (output / 'home.html').write_bytes(response.content)
-            if response.status != 200 or 'data-reactroot' not in response.text:
-                raise RuntimeError(f'Homepage verification failed: HTTP {response.status}.')
-            state['success'] = True
-            logger.info('Homepage verified: HTTP 200, {} bytes; artifacts: {}', len(response.content), output)
-            return state
-    except Exception as exc:
-        state['error'] = f'{type(exc).__name__}: {exc}'
-        raise
-    finally:
-        phase = 'closed'
-        state['elapsed_ms'] = round((time.monotonic() - started) * 1000)
-        write_json(output / 'result.json', state)
+    class Transport(CurlCffiTransport):
+        async def _single_call(self, request):
+            response = await super()._single_call(request)
+            if request.url == URL and not ready.is_set():
+                if response.status == 200:
+                    captured['error'] = '首页未下发 interstitial，无法生成当次 payload 和 plv3'
+                    ready.set()
+                    return NetworkResponse(url=URL, body='<!doctype html><title>Initial response captured</title>',
+                                           headers={'content-type': 'text/html'})
+                if response.status != 403 or not re.search(r'\bvar\s+dd\s*=', response.text):
+                    captured['error'] = f'未收到 dd interstitial，HTTP {response.status}'
+                    ready.set()
+            return response
+
+    register_transport('datadome-demo', Transport, proxy=True)
+    async with asyncio.timeout(timeout), Browser(
+        proxy=proxy, cache=False, resource_interceptor=intercept,
+        http_engine='datadome-demo',
+        http_options={'impersonate': 'chrome150', 'timeout': 20},
+    ) as browser:
+        profile = browser.new_profile()
+        page = profile.new_page()
+        await page.goto(URL, wait_until='domcontentloaded', timeout=timeout)
+        while not ready.is_set():
+            await page.sleep(.1)
+        if captured.get('error'):
+            raise RuntimeError(captured['error'])
+        params = parse_qs(captured['body'], keep_blank_values=True)
+        missing = [name for name in REQUIRED if len(params.get(name, [])) != 1 or not params[name][0]]
+        if missing:
+            raise RuntimeError('缺少 SDK 参数：' + ', '.join(missing))
+        payload, plv3 = params['payload'][0], params['plv3'][0]
+        logger.info('payload: {}', payload)
+        logger.info('plv3: {}', plv3)
+        response = await page.net.post(captured['url'], data=captured['body'],
+                                       headers=captured['headers'], timeout=20)
+        datadome = datadome_value(response)
+        logger.info('datadome: {}', datadome)
+        return {'payload': payload, 'plv3': plv3, 'datadome': datadome,
+                'elapsed': round(time.monotonic() - started, 2)}
 
 
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--proxy', default='http://127.0.0.1:7890')
-    parser.add_argument('--output-dir', type=Path, help='A new directory for this run\'s private artifacts.')
+    parser.add_argument('--proxy', default=DEFAULT_PROXY, help='代理地址；传 none 表示直连')
     parser.add_argument('--timeout', type=float, default=60)
     args = parser.parse_args()
     if args.timeout <= 0:
-        parser.error('--timeout must be positive')
+        parser.error('--timeout 必须为正数')
+    proxy = None if args.proxy.lower() in {'none', ''} else args.proxy
     logger.remove()
-    logger.add(sys.stderr, level='INFO', format='{time:HH:mm:ss} | {level} | {message}')
+    logger.add(sys.stdout, level='INFO', filter=lambda record: record['name'] == __name__)
     try:
-        await run(args.proxy, args.output_dir, args.timeout)
-    except Exception as exc:
-        logger.error('{}: {}', type(exc).__name__, str(exc))
+        await run(proxy=proxy, timeout=args.timeout)
+    except (Exception, pyv8.JSException, pyv8.JavaScriptTerminated) as error:
+        logger.error('运行失败：{}: {}', type(error).__name__, error)
         return 1
     return 0
 

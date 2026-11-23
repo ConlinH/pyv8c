@@ -21,7 +21,7 @@ from pyv8c.sync_api import Browser
 
 
 URL = 'https://steamdb.info/login/'
-DEFAULT_PROXY = 'http://127.0.0.1:7890'
+DEFAULT_PROXY = 'http://127.0.0.1:6696'
 CHECKBOX = 'input[type="checkbox"]'
 
 
@@ -66,6 +66,7 @@ def run(*, proxy=DEFAULT_PROXY, timeout=120):
                 if current != last_title:
                     logger.info('页面 title 变为 {!r}', current)
                     last_title = current
+                    logger.info('Cookie: {}', page.profile.cookies.header_for(URL))
                     logger.info('已成功加载目标页面，可使用page.net.get/post/xhr/fetch等接口直接获取目标数据')
                     return {'elapsed': round(time.monotonic() - started, 2)}
             except pyv8.JavaScriptTerminated:

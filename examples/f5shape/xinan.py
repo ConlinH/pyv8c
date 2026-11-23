@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import replace
-from datetime import date, timedelta
 from pathlib import Path
 import json
 import re
@@ -21,15 +19,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'pyv8c'))
 
 from loguru import logger
-from pyv8c import register_transport
+from pyv8c import pyv8, register_transport
 from pyv8c.async_api import Browser
 from pyv8c.network.curl_cffi import CurlCffiTransport
 
 BASE = 'https://www.southwest.com'
 API = BASE + '/api/air-booking/v1/air-booking/page/air/booking/shopping'
 SHAPE_HEADERS = tuple(f'Ee30zvqlwf-{s}' for s in 'ABCDFZ')
-DEFAULT_PROXY = 'http://127.0.0.1:7890'
-DEFAULT_DATE = (date.today() + timedelta(days=1)).isoformat()  # 明天
+DEFAULT_PROXY = 'http://127.0.0.1:6696'
+DEFAULT_DATE = '2026-11-30'
 
 
 def show_flights(flights):
@@ -74,15 +72,15 @@ async def run(*, date=DEFAULT_DATE, origin='ISP', destination='BUR',
         return None if keep else False
 
     class Transport(CurlCffiTransport):
-        def _call(self, request):
-            request = replace(request, timeout=25)
+        async def _single_call(self, request):
             if request.url == API:
                 headers = {k.lower(): v for k, v in request.headers.items()}
                 missing = [name for name in SHAPE_HEADERS if not headers.get(name.lower())]
                 if missing:
                     raise RuntimeError(f'缺少 Shape 请求头：{", ".join(missing)}')
-                logger.info('Shape 头已就绪：{}', ', '.join(SHAPE_HEADERS))
-            response = super()._call(request)
+                for name in SHAPE_HEADERS:
+                    logger.info('Shape {}: {}', name, headers[name.lower()])
+            response = await super()._single_call(request)
             if request.url == page_url:
                 bootstrap = re.search(
                     r'''src=["']([^"']*/swa-ui/bootstrap/[^"']+/data\.js)["']''', response.text)
@@ -101,7 +99,8 @@ async def run(*, date=DEFAULT_DATE, origin='ISP', destination='BUR',
             return response
 
     register_transport('southwest-demo', Transport, proxy=True)
-    async with Browser(
+    logger.info('查询 {} {} → {}（代理：{}）', date, origin, destination, proxy or '直连')
+    async with asyncio.timeout(timeout), Browser(
         proxy=proxy, http_engine='southwest-demo',
         http_options={'impersonate': 'chrome150', 'timeout': 25},
         cache=False, resource_interceptor=intercept,
@@ -132,19 +131,21 @@ async def run(*, date=DEFAULT_DATE, origin='ISP', destination='BUR',
 
 async def main():
     parser = argparse.ArgumentParser(description='在 pyv8c 中查询 Southwest 单程航班。')
-    parser.add_argument('--date', default=DEFAULT_DATE, help='出发日期 YYYY-MM-DD；默认明天')
+    parser.add_argument('--date', default=DEFAULT_DATE, help=f'出发日期 YYYY-MM-DD；默认 {DEFAULT_DATE}')
     parser.add_argument('--origin', default='ISP')
     parser.add_argument('--destination', default='BUR')
     parser.add_argument('--proxy', default=DEFAULT_PROXY, help='代理地址；传 none 表示直连')
     parser.add_argument('--timeout', type=float, default=60)
     args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error('--timeout 必须为正数')
     proxy = None if args.proxy.lower() in {'none', ''} else args.proxy
     logger.remove()
     logger.add(sys.stdout, level='INFO')
     try:
         flights = await run(date=args.date, origin=args.origin,
                             destination=args.destination, proxy=proxy, timeout=args.timeout)
-    except Exception as error:
+    except (Exception, pyv8.JSException, pyv8.JavaScriptTerminated) as error:
         logger.error('查询失败：{}: {}', type(error).__name__, error)
         return 1
     logger.success('查询成功，共 {} 个航班方案（时间为各机场当地时间）', len(flights))
