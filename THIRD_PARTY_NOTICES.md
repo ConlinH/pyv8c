@@ -70,6 +70,8 @@ V8 源码树各子目录下的 `LICENSE` 文件包含更细的第三方信息，
 
 该数据文件由 V8 构建链带入；外部数据或不同构建可能使用其他版本，应携带该构建实际使用的许可文件。
 
+构建 V8 时还要打上 `pyv8/patches/icu-thread-datetime.patch`。补丁只给 `TimeZone::createDefault` 和 `Locale::getDefault` 增加线程局部覆盖，不替换 `icudtl.dat`，也不改 ICU 版本。许可仍是上面的 ICU 许可。
+
 ---
 
 ## 4. Chrome 运行时环境档案
@@ -105,6 +107,10 @@ V8 源码树各子目录下的 `LICENSE` 文件包含更细的第三方信息，
 | Pillow | MIT-CMU | 13.0.0 | Canvas 像素后端 |
 | comfy-angle | BSD-3-Clause（ANGLE）/ MIT（Electron 组件） | 0.1.1 | 实验性 WebGL 后端；wheel 内含 `electron-LICENSE` 与 `LICENSES.chromium.html`，以其为准 |
 | playwright | Apache-2.0 | 1.64.1 | 仅 `reference` extra，用于本机 Chrome 对照 |
+| geoip2 | Apache-2.0 | 5.4.0 | 可选 `geoip` extra。版本取自本机 `.venv` 的 `License-Expression`，不是 `.venv315` |
+| maxminddb | Apache-2.0 | 3.3.0 | `geoip2` 的传递依赖。版本同样取自本机 `.venv` |
+
+`GeoLite2-City.mmdb` 不进仓库，也不打进 wheel。未提供 `geoip_db` 或 `PYV8C_GEOIP_DB` 时，`Browser(geoip=True)` 在第一次 `new_profile()` 把它下载到用户缓存。该数据由 MaxMind 创建。使用时保留署名：This product includes GeoLite2 data created by MaxMind, available from <https://www.maxmind.com>.
 
 ### 仅开发 / 测试
 
