@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import pickle
 import time
@@ -29,8 +30,34 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 #: offline extractor.  The sidecar ``idl.json`` and the ``.pyv8ccache`` beside it are caches this
 #: reader writes on first use, and ``.gitignore`` keeps both out of a release.
 DEFAULT_IDL_PATH = PACKAGE_ROOT / "idl" / "idl.zip"
+_HOST_IDLS = {
+    "win32": DEFAULT_IDL_PATH,
+    "darwin": DEFAULT_IDL_PATH.with_name("idl-158.0.8127.36.zip"),
+}
 #: The profile a collection run writes; the surface is a section of it.
 PROFILE_PATH = PACKAGE_ROOT / "data" / "chrome-environment.json"
+
+
+def idl_path(platform=None):
+    """The packaged IDL for *platform*, or this host when omitted.
+
+    ``Idl.load`` with no path still reads the baseline zip. A ``Browser`` pairs the
+    packaged Mac profile with the darwin archive when ``idl_path`` is omitted;
+    every other ``Browser`` reads the baseline zip. An unknown platform, or a
+    host file that is not packaged, is that same baseline.
+    """
+    name = sys.platform if platform is None else platform
+    chosen = _HOST_IDLS.get(name, DEFAULT_IDL_PATH)
+    if chosen.is_file():
+        return chosen
+    return DEFAULT_IDL_PATH
+
+
+def _document_label(target):
+    """A path inside this package stays ``pyv8c:``; anything else is absolute."""
+    if target.is_relative_to(PACKAGE_ROOT):
+        return f"pyv8c:{target.relative_to(PACKAGE_ROOT).as_posix()}"
+    return str(target)
 
 
 #: What an interface borrows from ``Array.prototype``, as the bits ``IdlSpec.array`` installs.
@@ -553,10 +580,9 @@ class Idl:
         """The document at *path*, narrowed by *profile*: the shipped one unless told otherwise."""
         if path is None:
             target = DEFAULT_IDL_PATH
-            label = f"pyv8c:{target.relative_to(PACKAGE_ROOT).as_posix()}" if target.is_relative_to(PACKAGE_ROOT) else str(target)
         else:
             target = Path(path).expanduser().resolve()
-            label = str(target)
+        label = _document_label(target)
         if not target.is_file():
             raise FileNotFoundError(f"the IDL document does not exist: {target}")
         (label, digest, metadata, interfaces), load_timings = _read_file(target, label)

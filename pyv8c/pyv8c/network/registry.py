@@ -2,13 +2,19 @@
 import inspect
 from collections.abc import Callable
 from concurrent.futures import Future
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NewType, Protocol, runtime_checkable
 
 from .cookies import CookieJar
 from .models import NetworkRequest, NetworkResponse, NetworkUnavailableError, RequestHandle
 
 KIND_METHODS = {"http": "submit_request", "ws": "websocket"}
 KINDS = tuple(KIND_METHODS)
+
+#: A name returned by :func:`register_transport`. Distinct from the built-in
+#: library names ``curl_cffi`` and ``cronet``, which stay plain strings.
+HttpEngineName = NewType("HttpEngineName", str)
+#: A name returned by :func:`register_ws_transport`.
+WebSocketEngineName = NewType("WebSocketEngineName", str)
 
 
 @runtime_checkable
@@ -126,25 +132,31 @@ def _kind(value: str) -> str:
 
 def register_transport(name: str, factory: Callable[..., Any], *,
                        option_keys: Callable[[], frozenset[str] | None] | None = None,
-                       proxy: bool = False) -> None:
+                       proxy: bool = False) -> HttpEngineName:
     """Make *factory* available as an HTTP engine name.
 
-    *option_keys* is lazy and ``None`` leaves the engine unvalidated;
-    interruption is registered by the engine for each submission.
+    The return value is what ``Browser(http_engine=...)`` accepts for this
+    registration. A plain string in that parameter is only ``curl_cffi`` or
+    ``cronet``. *option_keys* is lazy and ``None`` leaves the engine
+    unvalidated; interruption is registered by the engine for each submission.
     """
-    _register("http", name, factory, option_keys, proxy)
+    return HttpEngineName(_register("http", name, factory, option_keys, proxy))
 
 
 def register_ws_transport(name: str, factory: Callable[..., Any], *,
                           option_keys: Callable[[], frozenset[str] | None] | None = None,
-                          proxy: bool = False) -> None:
-    """Make *factory* available as a WebSocket engine name; see :func:`register_transport`."""
-    _register("ws", name, factory, option_keys, proxy)
+                          proxy: bool = False) -> WebSocketEngineName:
+    """Make *factory* available as a WebSocket engine name; see :func:`register_transport`.
+
+    The return value is what ``Browser(ws_engine=...)`` accepts for this
+    registration. A plain string in that parameter is only ``websockets``.
+    """
+    return WebSocketEngineName(_register("ws", name, factory, option_keys, proxy))
 
 
 def _register(kind: str, name: str, factory: Callable[..., Any],
               option_keys: Callable[[], frozenset[str] | None] | None,
-              proxy: bool = False) -> None:
+              proxy: bool = False) -> str:
     key = str(name).strip()
     if not key:
         raise ValueError("a transport name must not be empty")
@@ -158,6 +170,7 @@ def _register(kind: str, name: str, factory: Callable[..., Any],
     else:
         _OPTION_KEYS[kind][key] = option_keys
     _ACCEPTS_PROXY[kind][key] = bool(proxy)
+    return key
 
 
 def transport_names(kind: str = "http") -> tuple[str, ...]:
@@ -244,7 +257,9 @@ register_ws_transport("websockets", _websockets, option_keys=_websockets_keys, p
 
 __all__ = [
     "KINDS",
+    "HttpEngineName",
     "HttpTransport",
+    "WebSocketEngineName",
     "WebSocketTransport",
     "accepted_option_keys",
     "accepts_proxy",

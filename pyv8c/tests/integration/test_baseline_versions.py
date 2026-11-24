@@ -5,7 +5,7 @@ import pytest
 from pyv8c import pyv8
 
 from pyv8c.async_api import Browser
-from pyv8c.engine.idl import IDL_VERSION, Idl
+from pyv8c.engine.idl import DEFAULT_IDL_PATH, IDL_VERSION, Idl
 
 
 def _document():
@@ -39,6 +39,9 @@ async def test_default_baseline_is_bundled_and_describes_snapshot():
     browser = (await Browser(stub_logging="off").__aenter__())
     try:
         assert browser.idl_path == "pyv8c:idl/idl.zip"
+        loaded = Idl.load(profile=None)
+        assert loaded.metadata["chromium_version"] == "154.0.8030.0"
+        assert browser.idl_info["idl"]["chromium_version"] == loaded.metadata["chromium_version"]
         info = browser.idl_info
         assert info["interface_count"] > 1000
         assert len(info["sha256"]) == 64
@@ -118,7 +121,7 @@ async def test_baseline_parent_cycle_is_rejected_when_browser_is_created(tmp_pat
 async def test_two_browsers_keep_generated_classes_and_templates_isolated(tmp_path):
     custom = tmp_path / "custom.json"
     _custom_baseline(custom)
-    default_browser = (await Browser(stub_logging="off").__aenter__())
+    default_browser = (await Browser(idl_path=DEFAULT_IDL_PATH, stub_logging="off").__aenter__())
     custom_browser = (await Browser(idl_path=custom, stub_logging="off").__aenter__())
     try:
         assert default_browser.bindings.class_for("DOMQuad") is not custom_browser.bindings.class_for("DOMQuad")

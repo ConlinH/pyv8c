@@ -8,12 +8,17 @@ from __future__ import annotations
 import pytest
 
 from pyv8c.async_api import Browser
+from pyv8c.foundation.environment import PROFILE, BrowserEnvironment
 from pyv8c.web.dom import layout
 
 
 @pytest.fixture(scope="module")
 async def page():
-    browser = (await Browser(cache=False, stub_logging="off", real_network=False).__aenter__())
+    # Line boxes were read from the Windows profile's faces. The host profile must not move them.
+    browser = (await Browser(
+        cache=False, stub_logging="off", real_network=False,
+        environment=BrowserEnvironment.from_file(PROFILE),
+    ).__aenter__())
     page = browser.new_profile().new_page()
     try:
         yield page

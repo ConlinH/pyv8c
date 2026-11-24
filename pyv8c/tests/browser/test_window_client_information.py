@@ -2,6 +2,7 @@ import pytest
 
 pyv8 = pytest.importorskip("pyv8c.pyv8")
 from pyv8c.async_api import Browser
+from pyv8c.foundation.environment import PROFILE, BrowserEnvironment
 
 
 async def test_client_information_aliases_navigator():
@@ -15,7 +16,11 @@ async def test_client_information_aliases_navigator():
 
 async def test_client_hints_reach_a_worker():
     """A worker global gets the same hints, through the feature that owns them."""
-    browser = (await Browser(stub_logging="off").__aenter__())
+    # The brand string below is the Windows profile's GREASE, not the host Chrome's.
+    browser = (await Browser(
+        stub_logging="off",
+        environment=BrowserEnvironment.from_file(PROFILE),
+    ).__aenter__())
     try:
         page = browser.new_profile().new_page()
         (await page.set_content("<body></body>", url="https://secure.test/", wait_until="commit"))

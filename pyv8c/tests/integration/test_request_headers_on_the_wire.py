@@ -21,6 +21,7 @@ pytest.importorskip("curl_cffi", reason="the curl_cffi engine is not installed")
 pytestmark = pytest.mark.native
 
 from pyv8c.async_api import Browser
+from pyv8c.foundation.environment import PROFILE, BrowserEnvironment
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 from _shared_web_pages import PAGE, PNG
@@ -159,7 +160,10 @@ async def wire():
         same_origin = f"http://127.0.0.1:{servers[0].server_port}"
         cross_origin = f"http://127.0.0.1:{servers[1].server_port}"
         ws = f"ws://127.0.0.1:{sockets.port}/socket"
-        browser = (await Browser(real_network=True, stub_logging="off").__aenter__())
+        browser = (await Browser(
+            real_network=True, stub_logging="off",
+            environment=BrowserEnvironment.from_file(PROFILE),
+        ).__aenter__())
         try:
             page = browser.new_profile().new_page()
             (await page.goto(f"{same_origin}/page", wait_until="load"))

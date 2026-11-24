@@ -1,6 +1,12 @@
 """WebSocket owner events, buffering and asynchronous transport teardown."""
 import asyncio
+import datetime
+import importlib.util
+import socket
+import ssl
+import threading
 from collections import deque
+from pathlib import Path
 
 import pytest
 from websockets.asyncio.client import ClientConnection
@@ -9,6 +15,8 @@ from websockets.exceptions import ConnectionClosed
 
 from pyv8c.foundation.tasks import TaskSource
 from pyv8c.network import websockets as transport_module
+from pyv8c.network.proxy import PROXY_OPTION
+from pyv8c.network.websocket_io import WebSocketIO
 from pyv8c.network.websockets import WebSocketsTransport, _Socket
 
 
@@ -304,3 +312,119 @@ async def test_slow_owner_applies_receive_backpressure_in_order(monkeypatch, lim
             assert socket._pending_reads == socket._pending_read_bytes == 0
     finally:
         await asyncio.to_thread(engine.close)
+
+
+def test_connect_kwargs_keep_a_caller_connection_class():
+    marker = type("Marker", (), {})
+    engine = WebSocketsTransport(options={"create_connection": marker})
+    try:
+        kwargs = engine._connect_kwargs("wss://example.test/socket", None)
+    finally:
+        engine.close()
+    assert kwargs["create_connection"] is marker
+
+
+def test_connect_kwargs_use_a_connection_that_tolerates_an_unopened_handshake():
+    engine = WebSocketsTransport()
+    try:
+        kind = engine._connect_kwargs("wss://example.test/socket", None)["create_connection"]
+    finally:
+        engine.close()
+    assert issubclass(kind, ClientConnection)
+    assert kind is not ClientConnection
+
+
+def _recording_proxy():
+    path = Path(__file__).resolve().parents[1] / "integration" / "proxy_harness.py"
+    spec = importlib.util.spec_from_file_location("pyv8c_test_proxy_harness", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.RecordingProxy()
+
+
+def _self_signed_context(directory):
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=1)).sign(key, hashes.SHA256()))
+    cert_path, key_path = directory / "cert.pem", directory / "key.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    return context
+
+
+class _TlsPort:
+    """One localhost TLS listener. The client is expected to reject the certificate."""
+
+    def __init__(self, context):
+        self._socket = socket.socket()
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(1)
+        self.port = self._socket.getsockname()[1]
+        self._thread = threading.Thread(target=self._serve, args=(context,), daemon=True)
+        self._thread.start()
+
+    def close(self):
+        self._socket.close()
+        self._thread.join(timeout=2)
+
+    def _serve(self, context):
+        try:
+            client, _address = self._socket.accept()
+        except OSError:
+            return
+        try:
+            tls = context.wrap_socket(client, server_side=True)
+            tls.recv(1)
+            tls.close()
+        except OSError:
+            pass
+        finally:
+            client.close()
+
+
+async def test_a_proxied_wss_certificate_failure_stays_a_certificate_error(monkeypatch, tmp_path):
+    pytest.importorskip("cryptography")
+    callback_errors = []
+    original_start = WebSocketIO.start
+
+    def start(self):
+        loop = original_start(self)
+        loop.set_exception_handler(lambda _loop, context: callback_errors.append(context))
+        return loop
+
+    monkeypatch.setattr(WebSocketIO, "start", start)
+    proxy = _recording_proxy()
+    server = _TlsPort(_self_signed_context(tmp_path))
+    tasks, errors = RecordingTasks(), []
+    engine = WebSocketsTransport(options={PROXY_OPTION: proxy.url})
+    try:
+        socket = engine.websocket(
+            tasks, f"wss://127.0.0.1:{server.port}/", [],
+            {"error": lambda _socket, error: errors.append(error), "close": lambda *_args: None},
+        )
+        async with asyncio.timeout(5):
+            await asyncio.wrap_future(socket.completion)
+        tasks.drain()
+        assert proxy.tunnels == [f"127.0.0.1:{server.port}"]
+        assert callback_errors == []
+        error, = errors
+        assert isinstance(error, ssl.SSLCertVerificationError)
+    finally:
+        await asyncio.to_thread(engine.close)
+        proxy.close()
+        server.close()

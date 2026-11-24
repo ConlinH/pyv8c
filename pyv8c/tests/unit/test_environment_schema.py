@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from pyv8c.foundation import environment as environment_module
 from pyv8c.foundation.environment import (
     COLLECTED_KEYS,
     ENVELOPE_KEYS,
@@ -11,6 +12,7 @@ from pyv8c.foundation.environment import (
     SCHEMA_VERSION,
     BrowserEnvironment,
     extension_resource,
+    profile_path,
 )
 
 WINDOWS_CHROME = (
@@ -33,6 +35,21 @@ def test_every_key_is_declared_once_and_its_default_is_valid():
             field.validate(field.default)
     assert set(COLLECTED_KEYS) <= set(names)
     assert not set(ENVELOPE_KEYS) & set(names)
+
+
+def test_profile_path_follows_the_host():
+    assert profile_path("win32") == PROFILE
+    darwin = PROFILE.with_name("chrome-environment-darwin.json")
+    assert profile_path("darwin") == darwin
+    assert darwin.is_file()
+    assert profile_path("linux") == PROFILE
+    assert BrowserEnvironment().user_agent == BrowserEnvironment.from_file(PROFILE).user_agent
+
+
+def test_profile_path_falls_back_when_the_host_file_is_missing(monkeypatch, tmp_path):
+    missing = tmp_path / "chrome-environment-darwin.json"
+    monkeypatch.setattr(environment_module, "_HOST_PROFILES", {"darwin": missing})
+    assert profile_path("darwin") == PROFILE
 
 
 def test_the_defaults_are_the_shipped_profile():

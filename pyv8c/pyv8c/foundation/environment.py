@@ -1,16 +1,21 @@
 """Immutable browser environment: one flat table of dotted keys.
 
 The defaults are a profile collected from a real Chrome
-(``data/chrome-environment.json``), so an unconfigured browser presents what that
-browser reported; a caller overrides any key by name, and the keys that follow
-``user_agent`` move with it.  The profile's ``bindings`` section belongs to the engine, so this
-module skips it like the other envelope keys.
+(``data/chrome-environment.json``). ``BrowserEnvironment`` and any partial mapping
+overlay that Windows profile. A ``Browser`` with no environment reads that same
+Windows file whole. ``profile_path`` names a packaged file for a platform, or
+this host when the platform is omitted; pass that path as ``environment`` to
+load it. On darwin the packaged file is ``chrome-environment-darwin.json`` when
+it is present. A caller overrides any key by name, and the keys that follow
+``user_agent`` move with it. The profile's ``bindings`` section belongs to the
+engine, so this module skips it like the other envelope keys.
 """
 from __future__ import annotations
 
 import json
 import math
 import re
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
 from pathlib import Path
@@ -31,6 +36,25 @@ def environment_of(services):
 #: Keys of a profile that are not settings: the envelope, and what another layer reads.
 ENVELOPE_KEYS = ("schema", "source", "bindings")
 PROFILE = Path(__file__).parents[1] / "data" / "chrome-environment.json"
+_HOST_PROFILES = {
+    "win32": PROFILE,
+    "darwin": PROFILE.with_name("chrome-environment-darwin.json"),
+}
+
+
+def profile_path(platform=None):
+    """The packaged environment for *platform*, or this host when omitted.
+
+    An unknown platform, or a host file that is not packaged, is the Windows profile.
+    ``Browser`` does not call this. Pass the path it returns as ``environment``
+    to load that file whole.
+    """
+    name = sys.platform if platform is None else platform
+    chosen = _HOST_PROFILES.get(name, PROFILE)
+    if chosen.is_file():
+        return chosen
+    return PROFILE
+
 
 #: The brands whose version is the browser's own major version; the rest are GREASE entries Chrome
 #: renames each release, so they are read from the profile rather than spelled here.
@@ -870,6 +894,7 @@ class BrowserEnvironment:
 
 __all__ = [
     "BrowserEnvironment", "Field", "FIELDS", "SCHEMA_VERSION", "COLLECTED_KEYS", "PROFILE",
+    "profile_path",
     "ViewportView", "ScreenView", "GeolocationView", "ConnectionView", "BatteryView",
     "StorageView", "QuotaView", "BluetoothView", "ClientHintsView", "Brand", "PluginView",
     "MimeTypeView", "WebGLView", "KeyboardView", "MediaView", "SpeechView", "PermissionsView",
