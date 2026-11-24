@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -75,6 +76,15 @@ public:
     v8::Isolate* isolate() const { return isolate_; }
     bool set_wasm_response_handler(PyObject* handler);
     PyObject* wasm_response_handler() const { return wasm_response_handler_; }
+
+    void set_host_datetime(const std::string& timezone, const std::string& locale) {
+        host_timezone_ = timezone;
+        host_locale_ = locale;
+        host_datetime_configured_ = true;
+    }
+    bool host_datetime_configured() const { return host_datetime_configured_; }
+    const std::string& host_timezone() const { return host_timezone_; }
+    const std::string& host_locale() const { return host_locale_; }
 
     void retain_v8_handle();
     void release_v8_handle();
@@ -181,6 +191,9 @@ private:
     static void callback_data_collected(const v8::WeakCallbackInfo<CallbackData>& info);
     static void shared_callback_collected(const v8::WeakCallbackInfo<CallbackData>& info);
     bool disposed_;
+    bool host_datetime_configured_ = false;
+    std::string host_timezone_;
+    std::string host_locale_;
 };
 
 #endif

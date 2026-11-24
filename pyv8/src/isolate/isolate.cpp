@@ -1,4 +1,5 @@
 #include "bridge_base.h"
+#include "datetime.h"
 #include "entry.h"
 #include "runtime.h"
 
@@ -14,6 +15,7 @@ static void isolate_dealloc(isolate_c* self);
 static PyObject* isolate_close(isolate_c* self, PyObject* args);
 static PyObject* isolate_context(isolate_c* self, PyObject* args, PyObject* kwargs);
 static PyObject* isolate_gc(isolate_c* self, PyObject* args);
+static PyObject* isolate_set_host_datetime(isolate_c* self, PyObject* args, PyObject* kwargs);
 static PyObject* isolate_get_closed(isolate_c* self, void* closure);
 static PyObject* isolate_get_external_memory(isolate_c* self, void* closure);
 static PyObject* isolate_get_live_v8_handles(isolate_c* self, void* closure);
@@ -27,6 +29,8 @@ static PyMethodDef isolate_methods[] = {
     {"context", (PyCFunction)PythonBoundary<isolate_context>::call, METH_VARARGS | METH_KEYWORDS,
      "create a Context owned by this isolate"},
     {"gc", (PyCFunction)PythonBoundary<isolate_gc>::call, METH_NOARGS, "request a full V8 garbage collection"},
+    {"set_host_datetime", (PyCFunction)PythonBoundary<isolate_set_host_datetime>::call,
+     METH_VARARGS | METH_KEYWORDS, "set this isolate's IANA time zone and BCP 47 language"},
     {"_foreground_version", (PyCFunction)PythonBoundary<isolate_foreground_version>::call, METH_NOARGS, nullptr},
     {"_foreground_wait", (PyCFunction)PythonBoundary<isolate_foreground_wait>::call, METH_O, nullptr},
     {"_foreground_deadline", (PyCFunction)PythonBoundary<isolate_foreground_deadline>::call, METH_NOARGS, nullptr},
@@ -205,6 +209,43 @@ isolate_gc(isolate_c* self, PyObject* args)
     IN_ISOLATE(state);
     isolate->LowMemoryNotification();
     PYV8_RETURN_NONE;
+}
+
+static PyObject*
+isolate_set_host_datetime(isolate_c* self, PyObject* args, PyObject* kwargs)
+{
+    const char* timezone = nullptr;
+    const char* locale = nullptr;
+    static const char* keywords[] = {"timezone", "locale", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ss", (char**)keywords, &timezone, &locale))
+        return nullptr;
+    IsolateState* state = isolate_state_from_python((PyObject*)self);
+    if (state == nullptr)
+        return nullptr;
+
+    char canonical_zone[128];
+    char canonical_locale[128];
+    if (pyv8_icu_canonicalize_timezone(timezone, canonical_zone, static_cast<int>(sizeof(canonical_zone))) != 0) {
+        PyErr_Format(PyExc_ValueError, "unknown time zone: %s", timezone);
+        return nullptr;
+    }
+    if (pyv8_icu_canonicalize_locale(locale, canonical_locale, static_cast<int>(sizeof(canonical_locale))) != 0) {
+        PyErr_Format(PyExc_ValueError, "invalid language tag: %s", locale);
+        return nullptr;
+    }
+    const bool configured = state->host_datetime_configured();
+    if (configured && state->host_timezone() == canonical_zone && state->host_locale() == canonical_locale)
+        return Py_BuildValue("ss", canonical_zone, canonical_locale);
+    const bool locale_changed = !configured || state->host_locale() != canonical_locale;
+
+    IN_ISOLATE(state);
+    state->set_host_datetime(canonical_zone, canonical_locale);
+    pyv8_refresh_thread_datetime(state);
+    if (locale_changed)
+        isolate->LocaleConfigurationChangeNotification();
+    // kRedetect would adopt the host zone and erase the override just applied.
+    isolate->DateTimeConfigurationChangeNotification(Isolate::TimeZoneDetection::kSkip);
+    return Py_BuildValue("ss", canonical_zone, canonical_locale);
 }
 
 static PyObject*

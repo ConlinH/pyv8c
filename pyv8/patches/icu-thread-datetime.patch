@@ -1,0 +1,210 @@
+--- a/third_party/icu/source/i18n/timezone.cpp
++++ b/third_party/icu/source/i18n/timezone.cpp
+@@ -565,12 +565,31 @@
+ 
+     DEFAULT_ZONE = default_zone;
+ }
++
++namespace {
++
++// Per-thread default. createDefault clones it when set; DEFAULT_ZONE stays the
++// host zone, so another thread is left alone.
++struct PyV8ThreadZone {
++    TimeZone* zone = nullptr;
++    ~PyV8ThreadZone() { delete zone; }
++    PyV8ThreadZone() = default;
++    PyV8ThreadZone(const PyV8ThreadZone&) = delete;
++    PyV8ThreadZone& operator=(const PyV8ThreadZone&) = delete;
++};
+ 
++thread_local PyV8ThreadZone pyv8_thread_zone;
++
++}  // namespace
++
+ // -------------------------------------
+ 
+ TimeZone* U_EXPORT2
+ TimeZone::createDefault()
+ {
++    if (pyv8_thread_zone.zone != nullptr) {
++        return pyv8_thread_zone.zone->clone();
++    }
+     umtx_initOnce(gDefaultZoneInitOnce, initDefault);
+     {
+         Mutex lock(&gDefaultZoneMutex);
+@@ -1722,7 +1741,89 @@
+     return id;
+ }
+ 
++static bool pyv8_zone_chars_ok(const char* input, int32_t& length) {
++    length = 0;
++    if (input == nullptr) {
++        return false;
++    }
++    for (const char* p = input; *p != 0; ++p) {
++        const unsigned char c = static_cast<unsigned char>(*p);
++        if (c <= 0x20 || c >= 0x7f) {
++            return false;
++        }
++        if (++length >= 128) {
++            return false;
++        }
++    }
++    return length > 0;
++}
+ 
++// System zone ids only. Etc/UTC and Etc/GMT are published as "UTC", matching V8.
++extern "C" int pyv8_icu_canonicalize_timezone(const char* input, char* output, int output_size) {
++    int32_t length = 0;
++    if (output == nullptr || output_size <= 1 || !pyv8_zone_chars_ok(input, length)) {
++        return -1;
++    }
++    UnicodeString canonical;
++    UErrorCode status = U_ZERO_ERROR;
++    UBool isSystemID = false;
++    TimeZone::getCanonicalID(UnicodeString(input, length, US_INV), canonical, isSystemID, status);
++    if (U_FAILURE(status) || !isSystemID || canonical.isEmpty() || canonical.isBogus()) {
++        return -1;
++    }
++    if (canonical.compare(UNKNOWN_ZONE_ID, UNKNOWN_ZONE_ID_LENGTH) == 0) {
++        return -1;
++    }
++    static const char16_t etc_utc[] = {0x45, 0x74, 0x63, 0x2f, 0x55, 0x54, 0x43, 0}; /* Etc/UTC */
++    static const char16_t etc_gmt[] = {0x45, 0x74, 0x63, 0x2f, 0x47, 0x4d, 0x54, 0}; /* Etc/GMT */
++    static const char16_t utc_id[] = {0x55, 0x54, 0x43, 0}; /* UTC */
++    if (canonical.compare(etc_utc, 7) == 0 || canonical.compare(etc_gmt, 7) == 0 ||
++            canonical.compare(utc_id, 3) == 0) {
++        if (output_size < 4) {
++            return -1;
++        }
++        output[0] = 'U';
++        output[1] = 'T';
++        output[2] = 'C';
++        output[3] = 0;
++        return 0;
++    }
++    const int32_t canon_len = canonical.length();
++    if (canon_len <= 0 || canon_len >= output_size) {
++        return -1;
++    }
++    const char16_t* buf = canonical.getBuffer();
++    for (int32_t i = 0; i < canon_len; ++i) {
++        if (buf[i] < 0x20 || buf[i] >= 0x7f) {
++            return -1;
++        }
++        output[i] = static_cast<char>(buf[i]);
++    }
++    output[canon_len] = 0;
++    return 0;
++}
++
++extern "C" int pyv8_icu_set_thread_timezone(const char* iana) {
++    delete pyv8_thread_zone.zone;
++    pyv8_thread_zone.zone = nullptr;
++    if (iana == nullptr || iana[0] == 0) {
++        return 0;
++    }
++    TimeZone* created = TimeZone::createTimeZone(UnicodeString(iana, -1, US_INV));
++    if (created == nullptr) {
++        return -1;
++    }
++    UnicodeString got;
++    created->getID(got);
++    if (got.isEmpty() || got.compare(UNKNOWN_ZONE_ID, UNKNOWN_ZONE_ID_LENGTH) == 0) {
++        delete created;
++        return -1;
++    }
++    pyv8_thread_zone.zone = created;
++    return 0;
++}
++
++
+ U_NAMESPACE_END
+ 
+ #endif /* #if !UCONFIG_NO_FORMATTING */
+--- a/third_party/icu/source/common/locid.cpp
++++ b/third_party/icu/source/common/locid.cpp
+@@ -2146,10 +2146,25 @@
+     /* Free our current storage */
+     payload.setToBogus();
+ }
++
++namespace {
++
++// Thread override of Locale::getDefault. An inactive thread keeps the process default.
++struct PyV8ThreadLocale {
++    bool active = false;
++    Locale locale;
++};
++
++thread_local PyV8ThreadLocale pyv8_thread_locale;
+ 
++}  // namespace
++
+ const Locale& U_EXPORT2
+ Locale::getDefault()
+ {
++    if (pyv8_thread_locale.active) {
++        return pyv8_thread_locale.locale;
++    }
+     {
+         Mutex lock(&gDefaultLocaleMutex);
+         if (gDefaultLocale != nullptr) {
+@@ -2916,5 +2931,57 @@
+ 
+ Locale::Iterator::~Iterator() = default;
+ 
++extern "C" int pyv8_icu_canonicalize_locale(const char* input, char* output, int output_size) {
++    if (input == nullptr || output == nullptr || output_size <= 1 || input[0] == 0) {
++        return -1;
++    }
++    int32_t length = 0;
++    for (const char* p = input; *p != 0; ++p) {
++        const unsigned char c = static_cast<unsigned char>(*p);
++        if (c <= 0x20 || c >= 0x7f) {
++            return -1;
++        }
++        if (++length >= 128) {
++            return -1;
++        }
++    }
++    char canonical[256];
++    UErrorCode status = U_ZERO_ERROR;
++    const int32_t canon_len = uloc_canonicalize(
++        input, canonical, static_cast<int32_t>(sizeof(canonical)), &status);
++    if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING || canon_len <= 0) {
++        return -1;
++    }
++    char language[ULOC_LANG_CAPACITY];
++    status = U_ZERO_ERROR;
++    const int32_t language_len = uloc_getLanguage(
++        canonical, language, static_cast<int32_t>(sizeof(language)), &status);
++    if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING ||
++            language_len <= 0 || language[0] == 0) {
++        return -1;
++    }
++    status = U_ZERO_ERROR;
++    const int32_t tag_len = uloc_toLanguageTag(canonical, output, output_size, true, &status);
++    if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING ||
++            tag_len <= 0 || tag_len >= output_size) {
++        return -1;
++    }
++    return 0;
++}
++
++extern "C" int pyv8_icu_set_thread_locale(const char* tag) {
++    if (tag == nullptr || tag[0] == 0) {
++        pyv8_thread_locale.active = false;
++        return 0;
++    }
++    Locale parsed(tag);
++    if (parsed.isBogus() || parsed.getLanguage()[0] == 0) {
++        return -1;
++    }
++    pyv8_thread_locale.locale = parsed;
++    pyv8_thread_locale.active = true;
++    return 0;
++}
++
+ //eof
+ U_NAMESPACE_END

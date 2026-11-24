@@ -474,3 +474,69 @@ async def test_persistent_cache_partitions_request_headers_and_bypasses_credenti
         assert len(calls) == 6
     finally:
         (await browser.close())
+
+
+_CLOCK = """
+(() => {
+    const winter = new Date(Date.UTC(2026, 0, 15, 12));
+    const summer = new Date(Date.UTC(2026, 6, 15, 12));
+    return [winter.getTimezoneOffset(), winter.toString(), summer.getTimezoneOffset(),
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+            Intl.DateTimeFormat().resolvedOptions().locale];
+})()
+"""
+
+
+async def test_two_browsers_keep_independent_time_zones_and_languages():
+    first = (await Browser(
+        environment={"timezone": "Asia/Shanghai", "languages": ["zh-CN", "zh"]},
+        stub_logging="off",
+        real_network=False,
+    ).__aenter__())
+    second = (await Browser(
+        environment={"timezone": "America/New_York", "languages": ["en-US", "en"]},
+        stub_logging="off",
+        real_network=False,
+    ).__aenter__())
+    try:
+        page_a = first.new_profile().new_page()
+        page_b = second.new_profile().new_page()
+        (await page_a.set_content("<body></body>", url="https://secure.test/", wait_until="commit"))
+        (await page_b.set_content("<body></body>", url="https://secure.test/", wait_until="commit"))
+        assert page_a.evaluate(_CLOCK) == [
+            -480, "Thu Jan 15 2026 20:00:00 GMT+0800 (中国标准时间)", -480,
+            "Asia/Shanghai", "zh-CN",
+        ]
+        assert page_b.evaluate(_CLOCK) == [
+            300, "Thu Jan 15 2026 07:00:00 GMT-0500 (Eastern Standard Time)", 240,
+            "America/New_York", "en-US",
+        ]
+        page_b.evaluate("""(() => {
+            window.__worker = 'pending';
+            const source = new Blob([
+                "const winter = new Date(Date.UTC(2026, 0, 15, 12));" +
+                "postMessage(JSON.stringify([winter.getTimezoneOffset(), winter.toString()," +
+                " Intl.DateTimeFormat().resolvedOptions().locale]));"
+            ], {type: 'text/javascript'});
+            const worker = new Worker(URL.createObjectURL(source));
+            worker.onmessage = event => window.__worker = event.data;
+            worker.onerror = event => window.__worker = 'error:' + event.message;
+        })()""")
+        (await page_b.wait_for("window.__worker !== 'pending'", timeout=10))
+        assert page_b.evaluate("window.__worker") == (
+            '[300,"Thu Jan 15 2026 07:00:00 GMT-0500 (Eastern Standard Time)","en-US"]'
+        )
+        assert page_a.evaluate(_CLOCK)[0] == -480
+        assert page_a.evaluate("Intl.DateTimeFormat().resolvedOptions().locale") == "zh-CN"
+    finally:
+        (await second.close())
+        (await first.close())
+
+
+async def test_invalid_page_timezone_is_rejected():
+    browser = (await Browser(stub_logging="off", real_network=False).__aenter__())
+    try:
+        with pytest.raises(ValueError, match="unknown time zone"):
+            browser.new_profile().new_page(environment={"timezone": "Not/AZone"})
+    finally:
+        (await browser.close())

@@ -138,6 +138,8 @@ assert values["viewport.width"] == 1280
 
 Common configuration includes `user_agent`, `platform`, `language`, `languages`, `timezone`, `webdriver`, `hardware_concurrency`, `device_memory`, as well as `viewport.*`, `screen.*`, `client_hints.*`, `media.*`, `permissions.*`, and others. Not every string is valid; unknown keys and invalid values are rejected during validation.
 
+`timezone` is an IANA time zone and `language` is a BCP 47 language tag. Each top-level page and each Worker keeps its own pair, including one created after another. An iframe uses the time zone and language of its page. `Intl` without an explicit locale uses `language`. The weekday and month in `Date()` stay English abbreviations, and the long time-zone name in parentheses follows the language. Aliases are canonicalized; for example, `US/Eastern` becomes `America/New_York`. An empty or unrecognized time zone or language raises `ValueError` when the page or Worker is created.
+
 `to_dict()` returns the explicit configuration, and `resolved()` returns the fully resolved values; `overlay()` creates a new environment with overrides applied, while `from_file()` and `to_file()` work with JSON files. Changing environment values does not automatically provide real hardware, permissions, or media decoding capabilities.
 
 `form_controls.submit_label` and `form_controls.reset_label` configure the browser UI text for submit and reset buttons when `value` is not explicitly specified, and are used to compute button dimensions. This text is determined by the browser UI language and may differ from `navigator.language`; the bundled profile uses the Chinese labels from local Chrome. They do not change the `value` attribute of input elements.

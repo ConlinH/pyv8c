@@ -178,6 +178,7 @@ class WorkerRealm:
         session.realm = self.services
         session.prepare("Worker")
         self.isolate = pyv8.Isolate(thread_bound=True)
+        self.isolate.set_host_datetime(config.environment.timezone, config.environment.language)
         from ..web.fetch.response import wasm_response_payload
         self.isolate._set_wasm_response_handler(wasm_response_payload)
         self.microtasks = pyv8.MicrotaskQueue(self.isolate)
@@ -279,6 +280,11 @@ class PageRealm:
     def _initialize(self):
         page = self.page
         browser = page.profile.browser
+        # An iframe shares its parent's isolate, so its own environment must not
+        # replace the time zone and language already installed for that isolate.
+        if page.parent_page is None:
+            page.execution_group.isolate.set_host_datetime(
+                page.environment.timezone, page.environment.language)
         binding_started = time.perf_counter_ns()
         self.binding_session.prepare("Window")
         plan = self.binding_session.bindings.plan("Window")

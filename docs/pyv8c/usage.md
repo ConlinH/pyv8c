@@ -133,6 +133,8 @@ assert values["viewport.width"] == 1280
 
 常用配置包括 `user_agent`、`platform`、`language`、`languages`、`timezone`、`webdriver`、`hardware_concurrency`、`device_memory`，以及 `viewport.*`、`screen.*`、`client_hints.*`、`media.*`、`permissions.*` 等。不是任意字符串都有效，未知键和不合法值会被校验。
 
+`timezone` 使用 IANA 时区名，`language` 使用 BCP 47 语言标签。每个顶层页面和每个 Worker 各自持有一份；后创建的页面或 Worker 保持自己的时区和语言。iframe 使用所属页面的时区和语言。未指定区域的 `Intl` 采用 `language`。`Date()` 的星期和月份保持英文缩写，括号中的长时区名随语言变化。别名会规范成规范名，例如 `US/Eastern` 会变成 `America/New_York`。空字符串以及无法识别的时区或语言，在创建页面或 Worker 时抛出 `ValueError`。
+
 `to_dict()` 返回显式配置，`resolved()` 返回解析后的完整值；`overlay()` 创建覆盖后的新环境，`from_file()`、`to_file()` 用于 JSON 文件。修改环境值不会自动提供真实硬件、权限或媒体解码能力。
 
 `form_controls.submit_label` 和 `form_controls.reset_label` 分别配置提交与重置按钮未显式指定 `value` 时的浏览器界面文字，用于计算按钮尺寸。这些文字由浏览器界面语言决定，可以不同于 `navigator.language`；随包档案使用本机 Chrome 的中文标签。它们不会改变输入元素的 `value` 属性。
