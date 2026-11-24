@@ -7,7 +7,7 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import MappingProxyType
@@ -49,6 +49,124 @@ def _profile_file(environment):
     if isinstance(environment, (str, os.PathLike)):
         return Path(environment).expanduser()
     return None
+
+
+def _geoip_caller_keys(environment):
+    """Keys the caller wrote, which a GeoIP overlay must not replace.
+
+    A profile path is the file, not a caller overlay: its time zone and
+    languages are replaced. A mapping or ``BrowserEnvironment`` lists the
+    keys that caller set, and those win.
+    """
+    if isinstance(environment, BrowserEnvironment):
+        return frozenset(environment.to_dict())
+    if isinstance(environment, Mapping):
+        return frozenset(environment)
+    return frozenset()
+
+
+def _public_ip_through(engine):
+    """The body of one ipify GET on ``engine``'s own session.
+
+    Credentials are omitted, so a ``Set-Cookie`` from the lookup does not enter
+    the page jar. The engine already carries this profile's proxy and the
+    browser's ``http_options``. Transport errors stay ``OSError``. Anything else
+    becomes one. A non-200 status is ``OSError`` as well. The body is not checked
+    here; ``apply_geoip`` rejects a value that is not a public address.
+    """
+    from ..foundation.geoip import _IPIFY
+    from ..network.models import NetworkRequest, RequestHandle
+
+    request = NetworkRequest(url=_IPIFY, method="GET", credentials="omit")
+    try:
+        response = engine.submit_request(request, RequestHandle(), lambda: None).result()
+    except OSError:
+        raise
+    except Exception as error:
+        raise OSError("could not look up the public IP") from error
+    status = getattr(response, "status", None)
+    if status != 200:
+        raise OSError(f"public IP lookup returned HTTP {status}")
+    body = getattr(response, "text", "")
+    if not isinstance(body, str):
+        body = "" if body is None else str(body)
+    return body.strip()
+
+
+_DATABASE_TIMEOUT = 120
+_REDIRECT_LIMIT = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def _response_bytes(response):
+    body = getattr(response, "body", b"")
+    if isinstance(body, bytes):
+        return body
+    if isinstance(body, bytearray):
+        return bytes(body)
+    if isinstance(body, memoryview):
+        return body.tobytes()
+    return b""
+
+
+def _response_header(response, name):
+    headers = getattr(response, "headers", None) or {}
+    try:
+        pairs = headers.items()
+    except AttributeError:
+        return ""
+    for key, value in pairs:
+        if str(key).lower() != name:
+            continue
+        if isinstance(value, (list, tuple)):
+            return "" if not value else str(value[0]).strip()
+        return "" if value is None else str(value).strip()
+    return ""
+
+
+def _submit_download(engine, request):
+    from ..network.models import RequestHandle
+
+    try:
+        return engine.submit_request(request, RequestHandle(), lambda: None).result()
+    except OSError:
+        raise
+    except Exception as error:
+        raise OSError("could not download the GeoIP database") from error
+
+
+def _download_database(engine, url):
+    """The gzip body of the city database, read on ``engine`` starting at ``url``.
+
+    The transport does not follow redirects, so this follows at most five
+    ``Location`` hops on the same session. This request times out after 120
+    seconds. The address lookup keeps the session timeout.
+    """
+    from urllib.parse import urljoin
+
+    from ..network.models import NetworkRequest
+
+    current = url
+    for _hop in range(_REDIRECT_LIMIT + 1):
+        request = NetworkRequest(
+            url=current,
+            method="GET",
+            credentials="omit",
+            redirect="manual",
+            timeout=_DATABASE_TIMEOUT,
+        )
+        response = _submit_download(engine, request)
+        status = getattr(response, "status", None)
+        if status not in _REDIRECT_STATUSES:
+            if status != 200:
+                raise OSError(f"GeoIP database download returned HTTP {status}")
+            return _response_bytes(response)
+        location = _response_header(response, "location")
+        if not location:
+            raise OSError(
+                f"GeoIP database download returned HTTP {status} without a location")
+        current = urljoin(current, location)
+    raise OSError("GeoIP database download followed too many redirects")
 
 
 def _packaged_idl_for(profile):
@@ -157,10 +275,13 @@ class Profile:
                 if isinstance(self.network_backend.ws, WebSocketsTransport):
                     self.network_backend.ws._share_io(browser._websocket_io)
                 self.network_backend.cookies = self.cookies
+                browser._resolve_pending_geoip(self.network_backend.http)
             except BaseException:
                 _cleanup_failed_engines(engines, browser, token)
                 _release_ready_engines(token)
                 raise
+        elif browser._geoip_pending is not None:
+            raise TypeError("geoip=True requires an HTTP engine")
         self._ready_engine_token = token
         self._blob_urls = {}
         self._blob_origins = {}
@@ -422,6 +543,8 @@ class Browser:
                  ws_engine: Literal["websockets"] | WebSocketEngineName | WebSocketTransport | Callable | None = "websockets",
                  ws_options: dict | None = None,
                  proxy: str | None = None,
+                 geoip: bool | str | None = None,
+                 geoip_db: str | os.PathLike | None = None,
                  default_headers: dict | None = None,
                  traceable: bool = False,
                  trace: bool = False,
@@ -486,6 +609,23 @@ class Browser:
             out, traffic goes directly even when the environment names a proxy;
             ``""`` asks for the same thing explicitly.  A profile may override
             it with :meth:`new_profile`, and SOCKS is not supported.
+        :param geoip: ``None`` leaves the environment unchanged and does not use
+            the network. ``True`` looks the exit address up on the first
+            profile's HTTP session, the same session, proxy and ``http_options``
+            the page uses, and overlays the time zone, languages, coordinates
+            and WebRTC host address that address maps to. A later profile does
+            not look it up again. A public IP string is resolved while this
+            browser is built and does not send a request. ``False`` and any
+            other type are rejected. ``True`` with no HTTP engine is rejected.
+            Keys the caller already set win. A profile path is not one of those
+            keys, so its time zone and languages are replaced.
+        :param geoip_db: path to a GeoLite2-City.mmdb the caller supplies. When
+            omitted, ``PYV8C_GEOIP_DB`` is read. When both are absent,
+            ``geoip=True`` downloads a full database into the local cache on
+            the first profile, through that profile's HTTP session. An IP
+            string uses an existing cache file and does not download. Ignored
+            when ``geoip`` is ``None``. The database is not packaged. Install
+            ``pyv8c[geoip]`` for the reader.
         :param default_headers: headers every ``page.net`` request starts from.
         :param trace: start each page with tracing on.
         :param trace_callback: receives trace events instead of Loguru.
@@ -584,6 +724,24 @@ class Browser:
                     f"the environment profile does not exist: {profile_file}")
             if idl_path is None:
                 idl_path = _packaged_idl_for(profile_file)
+        self._geoip_pending = None
+        if geoip is True:
+            if not self.real_network or self.http_engine is None:
+                raise TypeError("geoip=True requires an HTTP engine")
+            from ..foundation.geoip import _geoip2, supplied_database
+            path = supplied_database(geoip_db)
+            _geoip2()
+            self._geoip_pending = (path, _geoip_caller_keys(environment))
+        elif geoip is not None:
+            from ..foundation.geoip import apply_geoip, database_for_ip
+            db = database_for_ip(geoip_db) if isinstance(geoip, str) else geoip_db
+            self.environment = apply_geoip(
+                self.environment,
+                geoip,
+                geoip_db=db,
+                proxy=self.proxy,
+                caller_keys=_geoip_caller_keys(environment),
+            )
         self.expose_unimplemented = bool(expose_unimplemented)
         self.stub_logging = str(stub_logging or "off")
         self._startup_stats = {}
@@ -651,6 +809,28 @@ class Browser:
         if os.environ.get("PYV8C_STARTUP_STATS", "1") != "0":
             self._startup_stats.update(values)
 
+    def _resolve_pending_geoip(self, http):
+        """Resolve a pending ``geoip=True`` through this profile's HTTP engine.
+
+        A missing caller path downloads the city database on this session first.
+        Success overlays the browser environment and clears the pending lookup.
+        Failure leaves both as they were, so the next profile can try again.
+        """
+        pending = self._geoip_pending
+        if pending is None:
+            return
+        if http is None:
+            raise TypeError("geoip=True requires an HTTP engine")
+        path, caller_keys = pending
+        from ..foundation.geoip import apply_geoip, ensure_database
+
+        if path is None:
+            path = ensure_database(lambda url: _download_database(http, url))
+        ip = _public_ip_through(http)
+        self.environment = apply_geoip(
+            self.environment, ip, geoip_db=path, caller_keys=caller_keys)
+        self._geoip_pending = None
+
     def new_profile(self, *, proxy: str | None = None, trace: bool | None = None,
                     traceable: bool | None = None,
                     trace_callback: Callable | None = None,
@@ -663,7 +843,11 @@ class Browser:
             :attr:`proxy` for it alone: left out it keeps the browser's setting,
             a URL sends it through that proxy instead, and ``""`` sends it
             directly even when the browser has one.  Profiles of one browser may
-            therefore leave by different exits at the same time.
+            therefore leave by different exits at the same time.  When a GeoIP
+            lookup is still pending, this profile uses its own HTTP session to
+            fetch the city database when no path was given, then asks for the
+            exit address and keeps the result.  A later profile does not look
+            it up again.
         :param trace: report trace events for this profile alone; ``None`` keeps
             the browser setting.
         :param traceable: let its pages switch tracing on later, same defaulting.

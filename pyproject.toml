@@ -54,6 +54,9 @@ benchmark = ["psutil>=5.9"]
 # The reference browser for tests/repros.  It drives the Chrome already installed on
 # the machine (PYV8C_CHROME points it elsewhere); nothing else is downloaded.
 reference = ["playwright>=1.40"]
+# Local MaxMind lookups for Browser(geoip=...). A missing path is downloaded into
+# the user cache on the first profile. The database is not vendored.
+geoip = ["geoip2>=4.8"]
 
 [tool.black]
 line-length = 100

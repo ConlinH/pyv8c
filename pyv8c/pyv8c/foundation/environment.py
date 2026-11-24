@@ -90,6 +90,17 @@ def _optional_number(value):
     return None if value is None else _number(value)
 
 
+def _optional_text(value):
+    """An optional string: absent, or a non-empty string. An empty string is refused."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("must be a string")
+    if value == "":
+        raise ValueError("must not be empty")
+    return value
+
+
 def _tokens(value):
     if value is None:
         return None
@@ -412,6 +423,8 @@ FIELDS: tuple[Field, ...] = (
     Field("geolocation.latitude", _optional_number),
     Field("geolocation.longitude", _optional_number),
     Field("geolocation.accuracy", _optional_number),
+    #: Host ICE candidate address. Absent means gathering reports no candidate.
+    Field("webrtc.ip", _optional_text),
     Field("connection.effective_type", _enum("slow-2g", "2g", "3g", "4g"), True),
     Field("connection.rtt", _integer, True),
     Field("connection.downlink", _number, True),

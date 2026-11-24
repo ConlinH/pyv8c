@@ -135,6 +135,8 @@ assert values["viewport.width"] == 1280
 
 `timezone` 使用 IANA 时区名，`language` 使用 BCP 47 语言标签。每个顶层页面和每个 Worker 各自持有一份；后创建的页面或 Worker 保持自己的时区和语言。iframe 使用所属页面的时区和语言。未指定区域的 `Intl` 采用 `language`。`Date()` 的星期和月份保持英文缩写，括号中的长时区名随语言变化。别名会规范成规范名，例如 `US/Eastern` 会变成 `America/New_York`。空字符串以及无法识别的时区或语言，在创建页面或 Worker 时抛出 `ValueError`。
 
+按 IP 写入时区、语言和位置：`Browser(geoip=True)` 在第一次 `new_profile()` 时，用这个 Profile 的 HTTP session 请求 `https://api.ipify.org`。这次请求和页面共用同一个 session，所以 `http_options` 里的 `verify`、`impersonate`、`timeout`、`retry` 一并生效，代理用的是这个 Profile 的代理；没有代理时查的是该 session 的直连出口。请求的 `credentials` 是 `omit`，ipify 返回的 Set-Cookie 不会写进页面 cookie。之后的 `new_profile()` 不再查询。`geoip` 也可以是公网 IP 字符串，那样在构造 `Browser` 时查库，不发请求。默认 `geoip=None` 不访问网络。没有 HTTP 引擎（`real_network=False`，或没有配置 `http_engine`）时，`geoip=True` 直接报错。数据库不随包发布。调用方可以用 `geoip_db` 或环境变量 `PYV8C_GEOIP_DB` 指向自己的 GeoLite2-City.mmdb；两者都没给时，`geoip=True` 在第一次 `new_profile()` 用同一个 HTTP session 从公开镜像下载完整库的 gzip，解压后写入本机缓存。缓存路径是 `$XDG_CACHE_HOME/pyv8c/GeoLite2-City.mmdb`，未设置 `XDG_CACHE_HOME` 时是 `~/.cache/pyv8c/GeoLite2-City.mmdb`。30 天内的文件直接复用；过期则尝试更新，更新失败仍用旧文件；没有文件且下载失败则报错。这次下载超时 120 秒，并在同一个 session 上跟随最多 5 次跳转。IP 字符串仍在构造时查库且不下载，有缓存用缓存，没有则报错。需要可选依赖 `pyv8c[geoip]`。GeoLite 数据由 MaxMind 创建，见 https://www.maxmind.com 。查到的 `timezone`、`languages`、`language`、经纬度、`geolocation.accuracy` 和 `webrtc.ip` 写进浏览器环境，页面继承。写入经纬度时会把 `geolocation.permission` 设为 `granted`，否则页面读不到坐标。调用方已经写过的同名字段保持不变；档案文件里的时区和语言会被这次结果盖掉。第一次 `new_profile(proxy=...)` 用的就是这个 Profile 的代理；查完之后再换代理不会重新查询，要换出口就另开一个 `Browser`，或把 IP 直接传给 `geoip`。缺文件、未安装 `pyv8c[geoip]`、地址不是公网 IP、库中没有记录、记录缺时区或国家没有语言表项，都会直接报错。`webrtc.ip` 有值时，ICE 在收集完成前多报一条 `typ host` 候选，SDP 里的 `c=` 仍是 `0.0.0.0`。
+
 `to_dict()` 返回显式配置，`resolved()` 返回解析后的完整值；`overlay()` 创建覆盖后的新环境，`from_file()`、`to_file()` 用于 JSON 文件。修改环境值不会自动提供真实硬件、权限或媒体解码能力。
 
 `form_controls.submit_label` 和 `form_controls.reset_label` 分别配置提交与重置按钮未显式指定 `value` 时的浏览器界面文字，用于计算按钮尺寸。这些文字由浏览器界面语言决定，可以不同于 `navigator.language`；随包档案使用本机 Chrome 的中文标签。它们不会改变输入元素的 `value` 属性。
@@ -152,6 +154,8 @@ assert values["viewport.width"] == 1280
 | `http_engine` / `ws_engine` | `curl_cffi` / `websockets`；引擎名、实例、工厂或 None。HTTP 可选 `cronet`，WebSocket 只有 `websockets` 一个内建名字 |
 | `http_options` / `ws_options` | 各引擎配置，创建 Profile 时校验 |
 | `proxy` | None；未设置时直连，Profile 可覆盖 |
+| `geoip` | None；`True` 在第一次 `new_profile()` 用该 Profile 的 HTTP session 查询出口 IP，并覆盖时区、语言、经纬度和 WebRTC IP。之后的 Profile 不再查。IP 字符串在构造时查库、不发请求。没有 HTTP 引擎时报错。失败即报错。调用方显式字段优先 |
+| `geoip_db` | None；GeoLite2-City.mmdb 路径，否则读 `PYV8C_GEOIP_DB`。都没有时，`geoip=True` 下载到本机缓存。需要可选依赖 `pyv8c[geoip]` |
 | `default_headers` | 宿主 `page.net` 请求的默认头 |
 | `resource_loader` / `resource_interceptor` | None；资源来源和拦截回调 |
 | `threaded_loaders` | False；是否将宿主回调放入有界线程池 |

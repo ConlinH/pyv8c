@@ -11,6 +11,7 @@ from pyv8c import pyv8
 from ...idl import interface
 from ...foundation.arguments import (MISSING, dictionary, dom_string, integer, is_nullish,
                                      missing_error)
+from ...foundation.environment import environment_of
 from ..page_errors import InvalidStateError, PageTypeError, dom_exception
 from ..page_errors import js_error_value
 from .utils import promise_receiver_error
@@ -154,6 +155,38 @@ def _invalid_peer_receiver(method):
     return promise
 
 
+_HOST_PRIORITY = 2122262783
+_HOST_PORT = 49152
+
+
+def _host_candidate_line(address):
+    """One host UDP candidate. The address is not wrapped in brackets, IPv6 included."""
+    return f"candidate:1 1 udp {_HOST_PRIORITY} {address} {_HOST_PORT} typ host"
+
+
+def _optional_candidate_text(value):
+    if is_nullish(value):
+        return None
+    return str(dom_string(value))
+
+
+def _optional_candidate_int(value):
+    if is_nullish(value):
+        return None
+    return int(value)
+
+
+def _configured_webrtc_ip(services):
+    """The environment's host address, or ``None`` when gathering should stay empty."""
+    environment = environment_of(services)
+    if environment is None:
+        return None
+    value = environment.resolved().get("webrtc.ip")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def _offer_sdp():
     """The description Chrome writes for a connection with one data channel.
 
@@ -185,6 +218,63 @@ def _offer_sdp():
         "a=sctp-port:5000",
         "a=max-message-size:262144",
     )) + "\r\n"
+
+
+@interface('RTCIceCandidate', None)
+class RTCIceCandidate:
+    """One ICE candidate. Members this class does not define stay baseline stubs."""
+
+    def __init__(self, candidate_init=MISSING, *_extra, **_kw):
+        options = {} if is_nullish(candidate_init) or candidate_init is MISSING \
+            else dictionary(candidate_init)
+        candidate = options.get("candidate")
+        self._candidate = "" if is_nullish(candidate) else str(dom_string(candidate))
+        self._sdp_mid = _optional_candidate_text(options.get("sdpMid"))
+        self._sdp_m_line_index = _optional_candidate_int(options.get("sdpMLineIndex"))
+        self._address = _optional_candidate_text(options.get("address"))
+        self._port = _optional_candidate_int(options.get("port"))
+        self._protocol = _optional_candidate_text(options.get("protocol"))
+        self._type = _optional_candidate_text(options.get("type"))
+
+    def get_candidate(self):
+        return self._candidate
+
+    def get_sdpMid(self):
+        return pyv8.Null if self._sdp_mid is None else self._sdp_mid
+
+    def get_sdpMLineIndex(self):
+        return pyv8.Null if self._sdp_m_line_index is None else self._sdp_m_line_index
+
+    def get_address(self):
+        return pyv8.Null if self._address is None else self._address
+
+    def get_port(self):
+        return pyv8.Null if self._port is None else self._port
+
+    def get_protocol(self):
+        return pyv8.Null if self._protocol is None else self._protocol
+
+    def get_type(self):
+        return pyv8.Null if self._type is None else self._type
+
+    def fn_toJSON(self, *_extra):
+        return {
+            "candidate": self._candidate,
+            "sdpMid": self.get_sdpMid(),
+            "sdpMLineIndex": self.get_sdpMLineIndex(),
+        }
+
+
+def _host_candidate(address):
+    return RTCIceCandidate({
+        "candidate": _host_candidate_line(address),
+        "sdpMid": "0",
+        "sdpMLineIndex": 0,
+        "address": address,
+        "port": _HOST_PORT,
+        "protocol": "udp",
+        "type": "host",
+    })
 
 
 @interface('RTCSessionDescription', None)
@@ -336,8 +426,8 @@ class RTCPeerConnection(EventTarget):
     def fn_setLocalDescription(self=None, description=MISSING, *_extra):
         """Applying a description moves the state, then gathering starts and ends.
 
-        There is no transport, so gathering completes with no candidates: what a browser
-        with interfaces adds here is the one part pyv8c cannot report.
+        There is no transport. Gathering still completes, and reports one host
+        candidate first when the environment names ``webrtc.ip``.
         """
         invalid = promise_receiver_error(self, RTCPeerConnection, 'setLocalDescription')
         if invalid is not None:
@@ -355,10 +445,20 @@ class RTCPeerConnection(EventTarget):
         return _settled_promise(self._services, None)
 
     def _gathering_steps(self):
-        """The events Chrome fires once a description is in place, in its order."""
+        """The events Chrome fires once a description is in place, in its order.
+
+        A configured host address is one candidate between gathering and complete.
+        The empty candidate still marks the end, and the SDP ``c=`` line stays
+        ``0.0.0.0``.
+        """
         self._dispatch_event(Event("signalingstatechange"))
         self._ice_gathering_state = "gathering"
         self._dispatch_event(Event("icegatheringstatechange"))
+        address = _configured_webrtc_ip(self._services)
+        if address is not None:
+            self._dispatch_event(RTCPeerConnectionIceEvent(
+                "icecandidate",
+                {"isTrusted": True, "candidate": _host_candidate(address)}))
         self._ice_gathering_state = "complete"
         self._dispatch_event(Event("icegatheringstatechange"))
         self._dispatch_event(RTCPeerConnectionIceEvent("icecandidate",
@@ -385,4 +485,4 @@ _install_handler_slots(RTCPeerConnection, _PEER_HANDLERS)
 
 
 __all__ = ["RTCRtpReceiver", "RTCDataChannel", "RTCPeerConnection",
-           "RTCSessionDescription", "RTCPeerConnectionIceEvent"]
+           "RTCIceCandidate", "RTCSessionDescription", "RTCPeerConnectionIceEvent"]

@@ -47,6 +47,7 @@ CORE_CLASSES = (
     ('RTCDataChannel', 'pyv8c.web.bom.webrtc', 'RTCDataChannel', None),
     ('RTCPeerConnection', 'pyv8c.web.bom.webrtc', 'RTCPeerConnection', None),
     ('RTCSessionDescription', 'pyv8c.web.bom.webrtc', 'RTCSessionDescription', None),
+    ('RTCIceCandidate', 'pyv8c.web.bom.webrtc', 'RTCIceCandidate', None),
     ('RTCPeerConnectionIceEvent', 'pyv8c.web.bom.webrtc', 'RTCPeerConnectionIceEvent', None),
     ('DOMMatrixReadOnly', 'pyv8c.web.dom.matrix', 'DOMMatrixReadOnly', None),
     ('DOMMatrix', 'pyv8c.web.dom.matrix', 'DOMMatrix', None),
