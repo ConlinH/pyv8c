@@ -240,7 +240,7 @@ isolate_set_host_datetime(isolate_c* self, PyObject* args, PyObject* kwargs)
 
     IN_ISOLATE(state);
     state->set_host_datetime(canonical_zone, canonical_locale);
-    pyv8_refresh_thread_datetime(state);
+    pyv8_apply_thread_datetime(state);
     if (locale_changed)
         isolate->LocaleConfigurationChangeNotification();
     // kRedetect would adopt the host zone and erase the override just applied.

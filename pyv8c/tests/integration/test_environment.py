@@ -373,7 +373,8 @@ async def test_worker_inherits_page_environment_snapshot():
         environment={"user_agent": "Runtime UA", "languages": ["en-US"], "max_touch_points": 0},
     ).__aenter__())
     try:
-        page = browser.new_profile().new_page(environment={"user_agent": "Worker UA", "languages": ["ja-JP"], "max_touch_points": 2})
+        profile = browser.new_profile(environment={"languages": ["ja-JP"]})
+        page = profile.new_page(environment={"user_agent": "Worker UA", "max_touch_points": 2})
         (await page.set_content("<body></body>", url="https://example.test/", wait_until="commit"))
         page.evaluate("const worker = new Worker('https://example.test/worker.js'); worker.onmessage = event => globalThis.workerEnvironment = event.data; worker.postMessage(null);")
         (await page.wait_for("typeof workerEnvironment !== 'undefined'", timeout=10))
@@ -533,10 +534,74 @@ async def test_two_browsers_keep_independent_time_zones_and_languages():
         (await first.close())
 
 
-async def test_invalid_page_timezone_is_rejected():
+async def test_invalid_profile_timezone_is_rejected_when_creating_a_page():
     browser = (await Browser(stub_logging="off", real_network=False).__aenter__())
     try:
         with pytest.raises(ValueError, match="unknown time zone"):
-            browser.new_profile().new_page(environment={"timezone": "Not/AZone"})
+            browser.new_profile(environment={"timezone": "Not/AZone"}).new_page()
     finally:
         (await browser.close())
+
+
+async def test_profile_datetime_defaults_share_one_process():
+    async with Browser(real_network=False) as browser:
+        cn = browser.new_profile(environment={"timezone": "Asia/Shanghai", "languages": ["zh-CN"]})
+        us = browser.new_profile(environment={"timezone": "America/New_York", "languages": ["en-US"]})
+        shanghai = cn.new_page()
+        ny = us.new_page()
+        with pytest.raises(ValueError, match="Browser.new_profile"):
+            cn.new_page(environment={"timezone": "UTC"})
+        with pytest.raises(ValueError, match="Browser.new_profile"):
+            us.new_page(environment={"language": "ja-JP"})
+        with pytest.raises(ValueError, match="Browser.new_profile"):
+            us.new_page(environment={"languages": ["en-US", "ja-JP"]})
+        for _ in range(3):
+            assert shanghai.evaluate(_CLOCK)[0::3] == [-480, "Asia/Shanghai"]
+            assert ny.evaluate(_CLOCK)[0::3] == [300, "America/New_York"]
+        assert shanghai.evaluate("""
+            const d = new Date('2026-01-15T12:00:00Z');
+            const options = Object.freeze({timeZone: 'UTC', hour: 'numeric', hourCycle: 'h23'});
+            const intl = new Intl.DateTimeFormat('en-GB', options);
+            [intl.resolvedOptions().locale, intl.resolvedOptions().timeZone, intl.format(d),
+             d.toLocaleTimeString('en-GB', options), d.getHours(), d.getUTCHours(), d instanceof Date,
+             navigator.language]
+        """) == ["en-GB", "UTC", "12", "12", 20, 12, True, "zh-CN"]
+        assert ny.evaluate("""
+            ['2026-03-08T06:59:00Z', '2026-03-08T07:00:00Z',
+             '2026-11-01T05:59:00Z', '2026-11-01T06:00:00Z'].map(value => {
+                const d = new Date(value);
+                return [d.getHours(), d.getMinutes(), d.getTimezoneOffset()];
+             })
+        """) == [[1, 59, 300], [3, 0, 240], [1, 59, 240], [1, 0, 300]]
+        await ny.set_content("""
+            <iframe srcdoc="<script>
+                globalThis.clock = [new Date('2026-01-15T12:00:00Z').getTimezoneOffset(),
+                    Intl.DateTimeFormat().resolvedOptions().locale]
+            </script>"></iframe>
+        """, url="https://secure.test/")
+        await ny.wait_for("Boolean(document.querySelector('iframe').contentWindow.clock)", timeout=5)
+        assert ny.evaluate("document.querySelector('iframe').contentWindow.clock") == [300, "en-US"]
+        for page in (shanghai, ny):
+            await page.set_content("<body></body>", url="https://secure.test/")
+            page.evaluate("""
+                globalThis.workerClock = null;
+                const script = new Blob([`
+                    onmessage = () => {
+                        const d = new Date('2026-01-15T12:00:00Z');
+                        const intl = Intl.DateTimeFormat().resolvedOptions();
+                        postMessage([d.getTimezoneOffset(), intl.timeZone, intl.locale]);
+                    };
+                `], {type: 'text/javascript'});
+                globalThis.clockWorker = new Worker(URL.createObjectURL(script));
+                clockWorker.onmessage = e => workerClock = e.data;
+            """)
+        for _ in range(2):
+            for page in (shanghai, ny):
+                page.evaluate("workerClock = null; clockWorker.postMessage(null)")
+            for page, expected in (
+                (shanghai, [-480, "Asia/Shanghai", "zh-CN"]),
+                (ny, [300, "America/New_York", "en-US"]),
+            ):
+                await page.wait_for("workerClock !== null", timeout=5)
+                assert page.evaluate("workerClock") == expected
+                assert page.evaluate("Intl.DateTimeFormat().resolvedOptions().locale") == expected[2]

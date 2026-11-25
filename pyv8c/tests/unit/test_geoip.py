@@ -188,27 +188,27 @@ def _cached(tmp_path, payload, mtime):
     return path
 
 
-def test_fresh_cache_skips_the_download(tmp_path):
+async def test_fresh_cache_skips_the_download(tmp_path):
     path = _cached(tmp_path, b"cached", 1_000_000)
 
-    def fetch(_url):
+    async def fetch(_url):
         raise AssertionError("downloaded")
 
-    found = ensure_database(fetch, directory=tmp_path, now=1_000_000 + geoip._MAX_AGE_SECONDS)
+    found = await ensure_database(fetch, directory=tmp_path, now=1_000_000 + geoip._MAX_AGE_SECONDS)
     assert found == path
     assert path.read_bytes() == b"cached"
 
 
-def test_stale_cache_is_replaced_by_the_download(monkeypatch, tmp_path):
+async def test_stale_cache_is_replaced_by_the_download(monkeypatch, tmp_path):
     path = _cached(tmp_path, b"old", 1_000_000)
     seen = []
     monkeypatch.setattr(geoip, "_accept_database", lambda _path: None)
 
-    def fetch(url):
+    async def fetch(url):
         seen.append(url)
         return gzip.compress(b"new")
 
-    found = ensure_database(
+    found = await ensure_database(
         fetch, directory=tmp_path, now=1_000_000 + geoip._MAX_AGE_SECONDS + 1)
     assert seen == [geoip._DATABASE_URL]
     assert found == path
@@ -216,50 +216,50 @@ def test_stale_cache_is_replaced_by_the_download(monkeypatch, tmp_path):
     assert [item.name for item in tmp_path.iterdir()] == ["GeoLite2-City.mmdb"]
 
 
-def test_stale_refresh_failure_keeps_the_old_file(tmp_path):
+async def test_stale_refresh_failure_keeps_the_old_file(tmp_path):
     path = _cached(tmp_path, b"old", 1_000_000)
 
-    def fetch(_url):
+    async def fetch(_url):
         raise OSError("down")
 
-    found = ensure_database(
+    found = await ensure_database(
         fetch, directory=tmp_path, now=1_000_000 + geoip._MAX_AGE_SECONDS + 1)
     assert found == path
     assert path.read_bytes() == b"old"
 
 
-def test_missing_download_failure_raises_and_writes_nothing(tmp_path):
-    def fetch(_url):
+async def test_missing_download_failure_raises_and_writes_nothing(tmp_path):
+    async def fetch(_url):
         raise OSError("down")
 
     with pytest.raises(OSError, match="down"):
-        ensure_database(fetch, directory=tmp_path, now=0)
+        await ensure_database(fetch, directory=tmp_path, now=0)
     assert list(tmp_path.iterdir()) == []
 
 
-def test_bad_gzip_does_not_replace_a_stale_file(tmp_path):
+async def test_bad_gzip_does_not_replace_a_stale_file(tmp_path):
     path = _cached(tmp_path, b"old", 1_000_000)
 
-    def fetch(_url):
+    async def fetch(_url):
         return b"not gzip"
 
-    found = ensure_database(
+    found = await ensure_database(
         fetch, directory=tmp_path, now=1_000_000 + geoip._MAX_AGE_SECONDS + 1)
     assert found.read_bytes() == b"old"
     assert [item.name for item in tmp_path.iterdir()] == ["GeoLite2-City.mmdb"]
 
 
-def test_invalid_database_is_discarded(monkeypatch, tmp_path):
+async def test_invalid_database_is_discarded(monkeypatch, tmp_path):
     def reject(_path):
         raise OSError("invalid")
 
     monkeypatch.setattr(geoip, "_accept_database", reject)
 
-    def fetch(_url):
+    async def fetch(_url):
         return gzip.compress(b"nope")
 
     with pytest.raises(OSError, match="invalid"):
-        ensure_database(fetch, directory=tmp_path, now=0)
+        await ensure_database(fetch, directory=tmp_path, now=0)
     assert list(tmp_path.iterdir()) == []
 
 

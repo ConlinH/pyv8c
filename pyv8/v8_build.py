@@ -22,6 +22,7 @@ DEPOT_TOOLS_GIT_URL = (
     "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
 )
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
+ICU_DATETIME_PATCH = Path(__file__).resolve().parent / "patches" / "icu-thread-datetime.patch"
 
 
 class V8BuildError(RuntimeError):
@@ -587,6 +588,7 @@ class V8BuildConfig:
             "version": self.version,
             "target_cpu": self.target_cpu,
             "gn_args": self.gn_args,
+            "icu_datetime_patch_sha256": file_sha256(ICU_DATETIME_PATCH),
         }
 
     def _can_reuse_build(self) -> bool:
@@ -1100,7 +1102,7 @@ class V8BuildConfig:
             raise V8BuildError(
                 f"V8 output directory must be inside the checkout when building: {self.output_dir}"
             ) from exc
-        with self._source_compatibility_patches():
+        with self._icu_datetime_patch(), self._source_compatibility_patches():
             self._run(
                 self._depot_python_command(
                     "gn", "gen", str(output_relative), f"--args={self.gn_args}"
@@ -1120,6 +1122,22 @@ class V8BuildConfig:
                 cwd=self.v8_home,
                 env=env,
             )
+
+    @contextmanager
+    def _icu_datetime_patch(self):
+        patch = ["git", "apply", "--whitespace=nowarn"]
+        self._run([*patch, "--check", ICU_DATETIME_PATCH], cwd=self.v8_home)
+        paths = (
+            self.v8_home / "third_party/icu/source/i18n/timezone.cpp",
+            self.v8_home / "third_party/icu/source/common/locid.cpp",
+        )
+        originals = {path: path.read_bytes() for path in paths}
+        try:
+            self._run([*patch, ICU_DATETIME_PATCH], cwd=self.v8_home)
+            yield
+        finally:
+            for path, original in originals.items():
+                path.write_bytes(original)
 
     @contextmanager
     def _source_compatibility_patches(self):

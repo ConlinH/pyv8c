@@ -12,6 +12,7 @@ include pyv8/v8_build.py
 include pyv8/build_support.py
 include pyv8/bootstrap.py
 include pyv8/build.env.example
+include pyv8/patches/icu-thread-datetime.patch
 recursive-include pyv8/src *.cpp *.h *.def
 recursive-include pyv8c/pyv8c *.py *.pyi py.typed *.json *.zip
 recursive-include pyv8c/native Cargo.toml Cargo.lock *.rs *.cpp *.md

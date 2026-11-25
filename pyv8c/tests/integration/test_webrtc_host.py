@@ -1,4 +1,5 @@
 """A configured webrtc.ip is one host candidate. GeoIP wiring does not use the network."""
+import asyncio
 import gzip
 import json
 import os
@@ -171,8 +172,8 @@ async def test_geoip_true_uses_the_profile_session_once(monkeypatch, tmp_path):
         stub_logging="off",
     ).__aenter__()
     try:
-        browser.new_profile()
-        browser.new_profile()
+        await browser.new_profile_async()
+        await browser.new_profile_async()
     finally:
         await browser.close()
 
@@ -208,12 +209,12 @@ async def test_geoip_probe_failure_retries_on_the_next_profile(monkeypatch, tmp_
     ).__aenter__()
     try:
         with pytest.raises(OSError, match="HTTP 500"):
-            browser.new_profile()
+            await browser.new_profile_async()
         assert calls == []
         assert browser._geoip_pending is not None
         assert browser.profiles == []
         status[0] = 200
-        browser.new_profile()
+        await browser.new_profile_async()
     finally:
         await browser.close()
 
@@ -276,8 +277,11 @@ class _QueuedEngine:
         self.seen.append(request)
         status, body, headers = self.responses.pop(0)
         future = Future()
-        future.set_result(NetworkResponse(
-            url=request.url, status=status, body=body, headers=headers))
+        budget = remaining()
+        if request.timeout is not None:
+            assert 0 < budget <= request.timeout
+        response = NetworkResponse(url=request.url, status=status, body=body, headers=headers)
+        asyncio.get_running_loop().call_soon(future.set_result, response)
         return future
 
     def close(self):
@@ -287,6 +291,23 @@ class _QueuedEngine:
 def _patch_cache(monkeypatch, directory):
     monkeypatch.setattr("pyv8c.foundation.geoip.cache_directory", lambda: directory)
     monkeypatch.setattr("pyv8c.foundation.geoip._accept_database", lambda _path: None)
+
+
+async def test_geoip_download_deadline_cancels_stalled_transport(monkeypatch):
+    from pyv8c.platform import browser as platform_browser
+
+    handles = []
+
+    class StalledEngine:
+        def submit_request(self, request, handle, remaining):
+            assert 0 < remaining() <= 0.050001
+            handles.append(handle)
+            return Future()
+
+    monkeypatch.setattr(platform_browser, "_DATABASE_TIMEOUT", 0.05)
+    with pytest.raises(TimeoutError):
+        await platform_browser._download_database(StalledEngine(), _DATABASE_URL)
+    assert len(handles) == 1 and handles[0].cancelled
 
 
 async def test_geoip_true_downloads_once_into_the_cache(monkeypatch, tmp_path):
@@ -306,8 +327,8 @@ async def test_geoip_true_downloads_once_into_the_cache(monkeypatch, tmp_path):
     browser = await Browser(
         geoip=True, http_engine=factory, ws_engine=None, stub_logging="off").__aenter__()
     try:
-        browser.new_profile()
-        browser.new_profile()
+        await browser.new_profile_async()
+        await browser.new_profile_async()
     finally:
         await browser.close()
 
@@ -348,7 +369,7 @@ async def test_fresh_cache_is_not_downloaded_again(monkeypatch, tmp_path):
     browser = await Browser(
         geoip=True, http_engine=factory, ws_engine=None, stub_logging="off").__aenter__()
     try:
-        browser.new_profile()
+        await browser.new_profile_async()
     finally:
         await browser.close()
 
@@ -372,7 +393,7 @@ async def test_stale_refresh_failure_keeps_the_cached_file(monkeypatch, tmp_path
     browser = await Browser(
         geoip=True, http_engine=factory, ws_engine=None, stub_logging="off").__aenter__()
     try:
-        browser.new_profile()
+        await browser.new_profile_async()
     finally:
         await browser.close()
 
@@ -395,14 +416,14 @@ async def test_missing_download_retries_on_the_next_profile(monkeypatch, tmp_pat
         geoip=True, http_engine=factory, ws_engine=None, stub_logging="off").__aenter__()
     try:
         with pytest.raises(OSError, match="HTTP 500"):
-            browser.new_profile()
+            await browser.new_profile_async()
         assert calls == []
         assert browser._geoip_pending is not None
         assert browser.profiles == []
         assert list(tmp_path.iterdir()) == []
         responses.append((200, gzip.compress(b"city-db"), {}))
         responses.append((200, "1.1.1.1", {}))
-        browser.new_profile()
+        await browser.new_profile_async()
     finally:
         await browser.close()
 
@@ -424,7 +445,7 @@ async def test_too_many_database_redirects_stay_pending(monkeypatch, tmp_path):
         geoip=True, http_engine=factory, ws_engine=None, stub_logging="off").__aenter__()
     try:
         with pytest.raises(OSError, match="too many redirects"):
-            browser.new_profile()
+            await browser.new_profile_async()
         assert calls == []
         assert browser._geoip_pending is not None
         assert len(seen) == 6

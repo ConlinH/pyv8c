@@ -10,6 +10,7 @@ instead of leaving the profile's own time zone in place.
 """
 from __future__ import annotations
 
+import asyncio
 import gzip
 import ipaddress
 import os
@@ -149,7 +150,7 @@ def _install_database(payload, path):
     return path
 
 
-def ensure_database(fetch, *, directory=None, now=None, max_age=_MAX_AGE_SECONDS):
+async def ensure_database(fetch, *, directory=None, now=None, max_age=_MAX_AGE_SECONDS):
     """Return a city database, calling ``fetch`` with the gzip URL when needed.
 
     ``fetch`` returns the response body. A file younger than ``max_age`` seconds
@@ -161,7 +162,8 @@ def ensure_database(fetch, *, directory=None, now=None, max_age=_MAX_AGE_SECONDS
     if path.is_file() and _is_fresh(path, now=moment, max_age=max_age):
         return path
     try:
-        return _install_database(fetch(_DATABASE_URL), path)
+        payload = await fetch(_DATABASE_URL)
+        return await asyncio.to_thread(_install_database, payload, path)
     except Exception:
         if path.is_file():
             return path

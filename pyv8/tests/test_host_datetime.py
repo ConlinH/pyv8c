@@ -94,6 +94,33 @@ class TestHostDatetime(unittest.TestCase):
             del context
             self._close_isolates(isolate)
 
+    def test_deeply_nested_isolates_restore_datetime_on_each_exit(self):
+        isolates = [pyv8.Isolate() for _ in range(9)]
+        contexts = []
+        try:
+            for index, isolate in enumerate(isolates):
+                zone = "America/New_York" if index % 2 == 0 else "Asia/Shanghai"
+                isolate.set_host_datetime(zone, "en-US")
+                contexts.append(isolate.context(object))
+            read = f"{_WINTER}.getTimezoneOffset()"
+            observed = []
+
+            def visit(index):
+                context = contexts[index]
+                observed.append(context.exec_js(read))
+                if index + 1 < len(contexts):
+                    context.exec_js("nextLevel()")
+                observed.append(context.exec_js(read))
+
+            for index in range(len(contexts) - 1):
+                contexts[index].expose(nextLevel=lambda index=index: visit(index + 1))
+            visit(0)
+            expected = [300, -480] * 4 + [300]
+            assert observed == expected + expected[::-1]
+        finally:
+            contexts.clear()
+            self._close_isolates(*isolates)
+
     def test_unconfigured_isolate_keeps_the_host_zone(self):
         bare = pyv8.Context(object)
         unconfigured = pyv8.Isolate()

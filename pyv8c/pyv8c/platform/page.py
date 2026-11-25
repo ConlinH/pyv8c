@@ -148,7 +148,10 @@ class Page:
         )
         self.origin = profile._blob_origins.get(str(url), self.origin)
         self._opaque_origin = origin is not None and self.origin[0] == "opaque"
-        self.environment = profile.browser.environment.overlay(environment)
+        self.environment = profile.environment.overlay(environment)
+        if any(getattr(self.environment, key) != getattr(profile.environment, key)
+               for key in ("timezone", "language", "languages")):
+            raise ValueError("Set timezone and language on Browser.new_profile(), not on a Page")
         self.resource_interceptor = profile.browser.resource_interceptor
         # Overriding the browser default here leaves the other pages' setting alone.
         self._trace = profile.trace if trace is None else bool(trace)

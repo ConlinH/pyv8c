@@ -69,14 +69,10 @@ jobs:
           $gnOverride = if ($null -ne $env:PYV8_GN_ARGS) { $env:PYV8_GN_ARGS } else { '' }
           $gnArgs = [Text.Encoding]::UTF8.GetBytes($gnOverride)
           $gnHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($gnArgs)).ToLowerInvariant()
-          $cachePrefix = "v8-v3-${{ runner.os }}-${{ env.PYV8_TARGET_CPU }}-$($sdk.Name)-$gnHash-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}"
+          $cachePrefix = "v8-v3-${{ runner.os }}-${{ env.PYV8_TARGET_CPU }}-$($sdk.Name)-$gnHash-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py', 'pyv8/patches/icu-thread-datetime.patch') }}"
           $cacheKey = "$cachePrefix-$imageVersion"
-          # Caches saved before this change put the image before the SDK. Keep the
-          # old exact key as a fallback so the first run can still reuse them.
-          $legacyKey = "v8-v3-${{ runner.os }}-${{ env.PYV8_TARGET_CPU }}-$imageVersion-$($sdk.Name)-$gnHash-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}"
           "validated-cache-prefix=$cacheKey-validated-" >> $env:GITHUB_OUTPUT
           "cache-prefix=$cachePrefix" >> $env:GITHUB_OUTPUT
-          "legacy-key=$legacyKey" >> $env:GITHUB_OUTPUT
           Write-Host "Selected Windows SDK $($sdk.Name) on image $imageVersion"
       # The image version is a suffix so a runner image bump falls back to the
       # last cache built with the same SDK, GN args and V8 sources instead of
@@ -97,7 +93,6 @@ jobs:
           restore-keys: |
             ${{ steps.sdk.outputs.validated-cache-prefix }}
             ${{ steps.sdk.outputs.cache-prefix }}-
-            ${{ steps.sdk.outputs.legacy-key }}
       - name: Validate restored V8 outputs
         id: validate-v8-cache
         run: python pyv8/tools/validate_v8_cache.py --restore
@@ -168,9 +163,9 @@ jobs:
       - name: Test native crash smoke on installed wheel
         working-directory: ${{ runner.temp }}
         run: python -m pytest "${{ github.workspace }}/pyv8c/tests/native/test_native_smoke.py" -q
-      - name: Test persistent profiles on installed wheel
+      - name: Test profile persistence and datetime isolation on installed wheel
         working-directory: ${{ runner.temp }}
-        run: python -I -m pytest -o pythonpath= "${{ github.workspace }}/pyv8c/tests/integration/test_profile_persistence.py" -q
+        run: python -I -m pytest -o pythonpath= "${{ github.workspace }}/pyv8c/tests/integration/test_profile_persistence.py" "${{ github.workspace }}/pyv8c/tests/integration/test_environment.py::test_profile_datetime_defaults_share_one_process" -q
       - name: Check architecture layering on installed wheel
         if: ${{ matrix.python == '3.12' }}
         run: python tools/check_policy.py --gates layers
@@ -207,8 +202,7 @@ jobs:
           python -c 'import sys; assert sys.version_info[:2] == (3, 12)'
           df -h "$GITHUB_WORKSPACE"
           test -n "${ImageVersion:-}"
-          echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
-          echo "validated-cache-prefix=linux-v8-v2-x64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-$ImageVersion-validated-" >> "$GITHUB_OUTPUT"
+          echo "validated-cache-prefix=linux-v8-v2-x64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py', 'pyv8/patches/icu-thread-datetime.patch') }}-$ImageVersion-validated-" >> "$GITHUB_OUTPUT"
           echo "v8-version=$(tr -d '\r\n' < pyv8/V8_VERSION)" >> "$GITHUB_OUTPUT"
       - name: Create build environment
         shell: bash
@@ -237,8 +231,7 @@ jobs:
           key: ${{ steps.linux-environment.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ${{ steps.linux-environment.outputs.validated-cache-prefix }}
-            linux-v8-v2-x64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-
-            linux-v8-v2-x64-${{ steps.linux-environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
+            linux-v8-v2-x64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py', 'pyv8/patches/icu-thread-datetime.patch') }}-
       - name: Validate restored V8 outputs
         id: validate-v8-cache
         run: python pyv8/tools/validate_v8_cache.py --restore
@@ -286,9 +279,9 @@ jobs:
         shell: bash
         working-directory: ${{ runner.temp }}
         run: python -m pytest "$GITHUB_WORKSPACE/pyv8c/tests/native/test_native_smoke.py" -q
-      - name: Test persistent profiles on installed wheel
+      - name: Test profile persistence and datetime isolation on installed wheel
         working-directory: ${{ runner.temp }}
-        run: python -I -m pytest -o pythonpath= "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_profile_persistence.py" -q
+        run: python -I -m pytest -o pythonpath= "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_profile_persistence.py" "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_environment.py::test_profile_datetime_defaults_share_one_process" -q
       - name: Test experimental ANGLE backend
         if: ${{ inputs.angle }}
         shell: bash
@@ -340,8 +333,7 @@ jobs:
           python --version
           df -h .
           test -n "${ImageVersion:-}"
-          echo "image=$ImageVersion" >> "$GITHUB_OUTPUT"
-          echo "validated-cache-prefix=macos-v8-arm64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-$ImageVersion-validated-" >> "$GITHUB_OUTPUT"
+          echo "validated-cache-prefix=macos-v8-arm64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py', 'pyv8/patches/icu-thread-datetime.patch') }}-$ImageVersion-validated-" >> "$GITHUB_OUTPUT"
           echo "v8-version=$(tr -d '\r\n' < pyv8/V8_VERSION)" >> "$GITHUB_OUTPUT"
       - name: Install build and test tools
         run: python -m pip install --upgrade pip build twine 'setuptools>=77' 'setuptools-rust>=1.10,<2' wheel "pytest>=8.4" "pytest-asyncio>=1.4,<2" pytest-timeout pytest-repeat pytest-xdist
@@ -356,8 +348,7 @@ jobs:
           key: ${{ steps.environment.outputs.validated-cache-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ${{ steps.environment.outputs.validated-cache-prefix }}
-            macos-v8-arm64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}-
-            macos-v8-arm64-${{ steps.environment.outputs.image }}-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py') }}
+            macos-v8-arm64-${{ hashFiles('pyv8/V8_VERSION', 'pyv8/v8_build.py', 'pyv8/patches/icu-thread-datetime.patch') }}-
       - name: Validate restored V8 outputs
         id: validate-v8-cache
         run: python pyv8/tools/validate_v8_cache.py --restore
@@ -406,9 +397,9 @@ jobs:
       - name: Test native crash smoke on installed wheel
         working-directory: ${{ runner.temp }}
         run: python -m pytest "$GITHUB_WORKSPACE/pyv8c/tests/native/test_native_smoke.py" -q
-      - name: Test persistent profiles on installed wheel
+      - name: Test profile persistence and datetime isolation on installed wheel
         working-directory: ${{ runner.temp }}
-        run: python -I -m pytest -o pythonpath= "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_profile_persistence.py" -q
+        run: python -I -m pytest -o pythonpath= "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_profile_persistence.py" "$GITHUB_WORKSPACE/pyv8c/tests/integration/test_environment.py::test_profile_datetime_defaults_share_one_process" -q
       - name: Test experimental ANGLE backend
         if: ${{ inputs.angle }}
         shell: bash

@@ -34,7 +34,6 @@ private:
     std::optional<v8::Locker> locker_;
     bool entered_;
     bool nested_;
-    bool datetime_pushed_;
     PyObject* python_owner_;
 };
 

@@ -96,10 +96,12 @@ class Browser:
 
     def new_profile(self, **options):
         self._driver.check()
-        return self._driver.wrap(self._impl.new_profile(**options), Profile)
+        return self._driver.wrap(self._driver.call(self._impl.new_profile_async, **options), Profile)
 
     def new_page(self, **options):
         self._driver.check()
+        if self._impl._geoip_pending is not None:
+            self._impl._default_profile = self._driver.call(self._impl.new_profile_async)
         return self._driver.wrap(self._impl.new_page(**options), Page)
 
     def close(self):
@@ -119,6 +121,10 @@ class Profile(_Owned):
     @property
     def browser(self):
         return self._browser
+
+    @property
+    def environment(self):
+        return self._impl.environment
 
     @property
     def pages(self):

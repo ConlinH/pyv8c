@@ -8,6 +8,33 @@ import pytest
 from tests.test_v8_build import v8_build
 
 
+def test_icu_patch_is_temporary_and_part_of_build_identity(tmp_path, monkeypatch):
+    monkeypatch.delenv('GIT_CONFIG_COUNT', raising=False)
+    (tmp_path / 'V8_VERSION').write_text('15.4.68')
+    config = v8_build.V8BuildConfig.from_environment(tmp_path, {})
+    paths = ('third_party/icu/source/i18n/timezone.cpp', 'third_party/icu/source/common/locid.cpp')
+    patch_file = tmp_path / 'icu.patch'
+    hunks = []
+    for name in paths:
+        source = config.v8_home / name
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'original\n')
+        hunks.append(f'--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-original\n+patched\n')
+    patch_file.write_bytes(''.join(hunks).encode())
+    monkeypatch.setattr(v8_build, 'ICU_DATETIME_PATCH', patch_file)
+    stamp = config._stamp_data()
+    with pytest.raises(RuntimeError, match='build failed'):
+        with config._icu_datetime_patch():
+            assert all((config.v8_home / name).read_bytes() == b'patched\n' for name in paths)
+            raise RuntimeError('build failed')
+    assert all((config.v8_home / name).read_bytes() == b'original\n' for name in paths)
+    patch_file.write_bytes(b'incompatible\n')
+    assert config._stamp_data() != stamp
+    with pytest.raises(v8_build.V8BuildError, match='git apply'):
+        with config._icu_datetime_patch():
+            pytest.fail('invalid patch reached build')
+
+
 def test_selected_windows_sdk_is_applied_temporarily(tmp_path, monkeypatch):
     (tmp_path / 'V8_VERSION').write_text('15.4.68')
     config = v8_build.V8BuildConfig.from_environment(tmp_path, {})

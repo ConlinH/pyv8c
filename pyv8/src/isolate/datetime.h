@@ -14,10 +14,6 @@ int pyv8_icu_canonicalize_locale(const char* input, char* output, int output_siz
 int pyv8_icu_set_thread_locale(const char* tag);
 }
 
-// Fixed depth so a push after Isolate::Enter cannot throw and leak the lock.
-// A full stack returns false and leaves the current override in place.
-bool pyv8_push_thread_datetime(IsolateState* state);
-void pyv8_pop_thread_datetime();
-void pyv8_refresh_thread_datetime(IsolateState* state);
+void pyv8_apply_thread_datetime(IsolateState* state);
 
 #endif

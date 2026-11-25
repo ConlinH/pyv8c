@@ -47,7 +47,6 @@ IsolateLockScope::IsolateLockScope(IsolateState* state, bool try_only)
       isolate_(nullptr),
       entered_(false),
       nested_(false),
-      datetime_pushed_(false),
       python_owner_(nullptr)
 {
     if (state == current_isolate_state()) {
@@ -126,9 +125,7 @@ IsolateLockScope::IsolateLockScope(IsolateState* state, bool try_only)
     context_install_access_check(isolate_);
     ++state_->entry_depth;
     active_isolate_state = state_;
-    // An unconfigured isolate clears the thread override, so it cannot keep
-    // the previous isolate's zone. Push cannot throw: Enter has no destructor.
-    datetime_pushed_ = pyv8_push_thread_datetime(state_);
+    pyv8_apply_thread_datetime(state_);
 }
 
 IsolateLockScope::~IsolateLockScope()
@@ -142,12 +139,7 @@ IsolateLockScope::~IsolateLockScope()
         v8::HandleScope handle_scope(isolate_);
         state_->drain_deferred();
     }
-    // Drain still sees this isolate's zone. Pop before Exit restores the
-    // previous frame, or the host default when this entry was the outermost.
-    if (datetime_pushed_) {
-        pyv8_pop_thread_datetime();
-        datetime_pushed_ = false;
-    }
+    pyv8_apply_thread_datetime(previous_);
     active_isolate_state = previous_;
     if (entered_)
     {

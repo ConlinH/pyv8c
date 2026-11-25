@@ -65,7 +65,7 @@ def _geoip_caller_keys(environment):
     return frozenset()
 
 
-def _public_ip_through(engine):
+async def _public_ip_through(engine):
     """The body of one ipify GET on ``engine``'s own session.
 
     Credentials are omitted, so a ``Set-Cookie`` from the lookup does not enter
@@ -75,11 +75,11 @@ def _public_ip_through(engine):
     here; ``apply_geoip`` rejects a value that is not a public address.
     """
     from ..foundation.geoip import _IPIFY
-    from ..network.models import NetworkRequest, RequestHandle
+    from ..network.models import NetworkRequest
 
     request = NetworkRequest(url=_IPIFY, method="GET", credentials="omit")
     try:
-        response = engine.submit_request(request, RequestHandle(), lambda: None).result()
+        response = await _submit_geoip(engine, request, lambda: None)
     except OSError:
         raise
     except Exception as error:
@@ -124,18 +124,22 @@ def _response_header(response, name):
     return ""
 
 
-def _submit_download(engine, request):
+async def _submit_geoip(engine, request, remaining):
     from ..network.models import RequestHandle
 
+    budget = remaining()
+    if budget is not None and budget <= 0:
+        raise TimeoutError("GeoIP request deadline expired")
+    handle = RequestHandle()
     try:
-        return engine.submit_request(request, RequestHandle(), lambda: None).result()
-    except OSError:
+        async with asyncio.timeout(budget):
+            return await asyncio.wrap_future(engine.submit_request(request, handle, remaining))
+    except (asyncio.CancelledError, TimeoutError):
+        handle.cancel()
         raise
-    except Exception as error:
-        raise OSError("could not download the GeoIP database") from error
 
 
-def _download_database(engine, url):
+async def _download_database(engine, url):
     """The gzip body of the city database, read on ``engine`` starting at ``url``.
 
     The transport does not follow redirects, so this follows at most five
@@ -147,6 +151,11 @@ def _download_database(engine, url):
     from ..network.models import NetworkRequest
 
     current = url
+    deadline = time.monotonic() + _DATABASE_TIMEOUT
+
+    def remaining():
+        return max(0.0, deadline - time.monotonic())
+
     for _hop in range(_REDIRECT_LIMIT + 1):
         request = NetworkRequest(
             url=current,
@@ -155,7 +164,12 @@ def _download_database(engine, url):
             redirect="manual",
             timeout=_DATABASE_TIMEOUT,
         )
-        response = _submit_download(engine, request)
+        try:
+            response = await _submit_geoip(engine, request, remaining)
+        except OSError:
+            raise
+        except Exception as error:
+            raise OSError("could not download the GeoIP database") from error
         status = getattr(response, "status", None)
         if status not in _REDIRECT_STATUSES:
             if status != 200:
@@ -246,8 +260,9 @@ class Profile:
     """
 
     def __init__(self, browser, *, storage, proxy=None, trace=None, traceable=None, trace_callback=None,
-                 trace_scripts=_TRACE_SCRIPTS_INHERIT, _engine_token=None):
+                 trace_scripts=_TRACE_SCRIPTS_INHERIT, _engine_token=None, environment=None):
         self.browser, self.pages = browser, []
+        self._initializing_geoip = browser._geoip_pending is not None
         self._state_lock = threading.RLock()
         self._closing = False
         self._close_task = None
@@ -275,13 +290,11 @@ class Profile:
                 if isinstance(self.network_backend.ws, WebSocketsTransport):
                     self.network_backend.ws._share_io(browser._websocket_io)
                 self.network_backend.cookies = self.cookies
-                browser._resolve_pending_geoip(self.network_backend.http)
             except BaseException:
                 _cleanup_failed_engines(engines, browser, token)
                 _release_ready_engines(token)
                 raise
-        elif browser._geoip_pending is not None:
-            raise TypeError("geoip=True requires an HTTP engine")
+        self.environment = browser.environment.overlay(environment)
         self._ready_engine_token = token
         self._blob_urls = {}
         self._blob_origins = {}
@@ -371,6 +384,8 @@ class Profile:
         """
         self.browser._runtime.check_owner()
         self._ensure_open()
+        if self._initializing_geoip:
+            raise HostStateError("Profile GeoIP initialization is pending")
         selected_scripts = (self.trace_scripts if trace_scripts is _TRACE_SCRIPTS_INHERIT
                             else _trace_script_patterns(trace_scripts))
         page = self._create_page(trace=trace, trace_scripts=selected_scripts,
@@ -725,6 +740,7 @@ class Browser:
             if idl_path is None:
                 idl_path = _packaged_idl_for(profile_file)
         self._geoip_pending = None
+        self._geoip_lock = asyncio.Lock()
         if geoip is True:
             if not self.real_network or self.http_engine is None:
                 raise TypeError("geoip=True requires an HTTP engine")
@@ -809,34 +825,62 @@ class Browser:
         if os.environ.get("PYV8C_STARTUP_STATS", "1") != "0":
             self._startup_stats.update(values)
 
-    def _resolve_pending_geoip(self, http):
-        """Resolve a pending ``geoip=True`` through this profile's HTTP engine.
+    def _profile_environment_options(self, environment):
+        if isinstance(environment, BrowserEnvironment):
+            environment = environment.to_dict()
+        elif isinstance(environment, Mapping):
+            environment = dict(environment)
+        if environment is not None:
+            resolved = self.environment.overlay(environment)
+            if "languages" in environment and "language" not in environment:
+                environment["language"] = resolved.languages[0]
+        return environment
 
-        A missing caller path downloads the city database on this session first.
-        Success overlays the browser environment and clears the pending lookup.
-        Failure leaves both as they were, so the next profile can try again.
-        """
-        pending = self._geoip_pending
-        if pending is None:
-            return
-        if http is None:
-            raise TypeError("geoip=True requires an HTTP engine")
-        path, caller_keys = pending
-        from ..foundation.geoip import apply_geoip, ensure_database
+    async def new_profile_async(self, **options):
+        """Create a Profile, awaiting first-use GeoIP network initialization."""
+        self._runtime.check_owner()
+        self._runtime.check_loop()
+        async with self._geoip_lock:
+            pending = self._geoip_pending
+            if pending is None:
+                return self.new_profile(**options)
+            options["environment"] = self._profile_environment_options(options.get("environment"))
+            profile = self._new_profile(**options)
+            try:
+                backend = profile.network_backend
+                if backend is None or backend.http is None:
+                    raise TypeError("geoip=True requires an HTTP engine")
+                path, caller_keys = pending
+                from ..foundation.geoip import apply_geoip, ensure_database
 
-        if path is None:
-            path = ensure_database(lambda url: _download_database(http, url))
-        ip = _public_ip_through(http)
-        self.environment = apply_geoip(
-            self.environment, ip, geoip_db=path, caller_keys=caller_keys)
-        self._geoip_pending = None
+                if path is None:
+                    path = await ensure_database(lambda url: _download_database(backend.http, url))
+                ip = await _public_ip_through(backend.http)
+                environment = await asyncio.to_thread(
+                    apply_geoip, self.environment, ip, geoip_db=path, caller_keys=caller_keys)
+                profile._ensure_open()
+                profile.environment = environment.overlay(options.get("environment"))
+                self.environment = environment
+                self._geoip_pending = None
+                profile._initializing_geoip = False
+                return profile
+            except BaseException:
+                await profile.close()
+                raise
 
-    def new_profile(self, *, proxy: str | None = None, trace: bool | None = None,
+    def new_profile(self, **options):
+        if self._geoip_pending is not None:
+            raise HostStateError("Use await browser.new_profile_async() for the first GeoIP Profile")
+        options["environment"] = self._profile_environment_options(options.get("environment"))
+        return self._new_profile(**options)
+
+    def _new_profile(self, *, proxy: str | None = None, trace: bool | None = None,
                     traceable: bool | None = None,
                     trace_callback: Callable | None = None,
                     trace_scripts=_TRACE_SCRIPTS_INHERIT,
                     user_data_dir: str | os.PathLike[str] | None = None,
-                    persist_session_cookies: bool = False) -> Profile:
+                    persist_session_cookies: bool = False,
+                    environment: dict | BrowserEnvironment | None = None) -> Profile:
         """Create an isolated profile: its own cookies, blobs and network stack.
 
         :param proxy: where this profile's traffic goes, overriding
@@ -859,6 +903,7 @@ class Browser:
             an exclusively held directory, before returning the profile.
         :param persist_session_cookies: also restore and save session cookies;
             requires a user data directory.
+        :param environment: defaults for this profile's pages, overlaid on the browser.
         :returns: the new :class:`Profile`, appended to :attr:`profiles`.
         :raises InvalidStateError: the browser is closed.
         :raises ValueError: the proxy value is not an ``http``/``https`` URL.
@@ -896,7 +941,8 @@ class Browser:
             storage = ProfileStorage(self._runtime.loop, user_data_dir, persist_session_cookies)
             profile = self._create_profile(proxy=None if proxy is None else normalize_proxy(proxy),
                               trace=trace, traceable=traceable, trace_callback=trace_callback,
-                              trace_scripts=trace_scripts, storage=storage, _engine_token=token)
+                              trace_scripts=trace_scripts, storage=storage, _engine_token=token,
+                              environment=environment)
         except BaseException:
             if storage is not None:
                 storage.release()
