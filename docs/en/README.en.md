@@ -54,7 +54,11 @@ Install from [PyPI](https://pypi.org/project/pyv8c/):
 python -m pip install pyv8c
 ```
 
-The ABI3 wheel packages the framework and the V8 engine. Builds cover Windows x64, Linux x64 (glibc 2.35 or newer), and macOS 15 or newer on arm64. You can also download the appropriate wheel from GitHub Actions and run `python -m pip install <wheel-file>`. The bundled native engine can also be used on its own:
+The ABI3 wheel packages the framework and the V8 engine. Builds cover Windows x64, Linux x64 (glibc 2.35 or newer), and macOS 15 or newer on arm64.
+
+Download the latest wheel from **Artifacts** on GitHub Actions. Extract the archive and run `python -m pip install <wheel-file>`. [GitHub Actions wheel builds](https://github.com/ConlinH/pyv8c/actions/workflows/wheels.yml)
+
+The bundled native engine can also be used on its own:
 
 ```python
 from pyv8c import pyv8

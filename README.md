@@ -54,7 +54,11 @@ flowchart LR
 python -m pip install pyv8c
 ```
 
-发行包将框架与 V8 引擎打包为单个 ABI3 wheel，覆盖 Windows x64、Linux x64（glibc 2.35 或更新版本）和 macOS 15 及以上的 arm64。也可以从 GitHub Actions 下载对应的 wheel，再运行 `python -m pip install <wheel 文件>`。发行包中的原生引擎也可单独使用：
+发行包将框架与 V8 引擎打包为单个 ABI3 wheel，覆盖 Windows x64、Linux x64（glibc 2.35 或更新版本）和 macOS 15 及以上的 arm64。
+
+可在 GitHub Actions 的 **Artifacts** 下载最新安装包。解压后运行 `python -m pip install <wheel 文件>`。[GitHub Actions 构建下载](https://github.com/ConlinH/pyv8c/actions/workflows/wheels.yml)
+
+发行包中的原生引擎也可单独使用：
 
 ```python
 from pyv8c import pyv8

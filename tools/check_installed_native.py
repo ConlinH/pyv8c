@@ -13,7 +13,9 @@ if package.is_relative_to(root):
 tests = root / 'pyv8c' / 'tests'
 print(f'Native component tests against installed package: {package}', flush=True)
 raise SystemExit(pytest.main([
-    '-q', '-o', 'pythonpath=', '-o', 'addopts=',
+    # Tests import checkout helpers such as tools.dom_source. Resolve the
+    # installed pyv8c above before exposing the checkout to pytest.
+    '-q', '-c', str(root / 'pytest.ini'), '-o', 'addopts=',
     str(tests / 'unit' / 'test_audio_compressor_precision.py'),
     str(tests / 'unit' / 'test_audio_native.py'),
     str(tests / 'browser' / 'test_dom_native.py'),
