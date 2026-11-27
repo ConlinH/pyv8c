@@ -76,7 +76,7 @@ class _ListItems:
 
 @interface('NodeList', None)
 class NodeList(_ListItems, ReadOnlyIndexedPropertyMixin):
-    """A live list view. The owner remains the source of truth."""
+    """A live view from a getter or a static snapshot from supplied values."""
 
 
 @interface('NamedNodeMap', None)

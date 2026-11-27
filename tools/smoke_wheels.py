@@ -1,8 +1,9 @@
 """Exercise the installed wheels outside the source tree."""
 
-from pathlib import Path
+from base64 import b64decode
 from importlib import metadata
 import importlib
+from pathlib import Path
 import sys
 
 from pyv8c import pyv8
@@ -48,6 +49,36 @@ async def check_runtime():
     async with Browser(real_network=False) as runtime:
         page = runtime.new_page()
         assert page.evaluate("[1, 2, 3].reduce((a, b) => a + b, 0)") == 6
+        await page.set_content('''<div style="display:grid;grid-template-columns:40px 60px">
+            <span data-cell="one" style="height:12px"></span><span data-cell="two"></span>
+        </div>''')
+        assert page.evaluate("""(() => {
+            const cells = document.querySelectorAll('[data-cell]');
+            const first = cells.item(0), second = cells[1];
+            const old = first.getBoundingClientRect();
+            first.parentElement.style.gridTemplateColumns = '50px 60px';
+            const fresh = first.getBoundingClientRect();
+            return [cells instanceof NodeList, cells[0] === first,
+                    old instanceof DOMRect, old.width, fresh.width,
+                    second.getBoundingClientRect().left - fresh.left];
+        })()""") == [True, True, True, 40, 50, 50]
+        pixel, *urls = page.evaluate("""(() => {
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = 8;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'red';
+            ctx.fillRect(0, 0, 8, 8);
+            return [Array.from(ctx.getImageData(0, 0, 1, 1).data),
+                    ...['image/png', 'image/jpeg', 'image/webp'].map(type => canvas.toDataURL(type))];
+        })()""")
+        assert pixel == [255, 0, 0, 255]
+        for url, kind in zip(urls, ('image/png', 'image/jpeg', 'image/webp'), strict=True):
+            header, payload = url.split(',', 1)
+            assert header == f'data:{kind};base64'
+            image = binary.RasterImage.decode(b64decode(payload, validate=True))
+            assert image.size == (8, 8)
+            red, green, blue, alpha = image.read(0, 0, 1, 1)
+            assert red >= 250 and green <= 4 and blue <= 4 and alpha == 255
         page.evaluate("globalThis.timerDone=false;setTimeout(()=>timerDone=true,1)")
         await page.wait_for("timerDone", timeout=2)
 
@@ -64,5 +95,11 @@ with SyncBrowser(real_network=False) as browser:
             page.wait_for("ready", timeout=2)
             assert page.evaluate("document.title") == "sync wheel"
             assert page.evaluate("document.body.firstChild.textContent") == "native DOM"
+            assert page.evaluate("""(() => {
+                const ctx = new OffscreenCanvas(1, 1).getContext('2d');
+                ctx.fillStyle = 'blue';
+                ctx.fillRect(0, 0, 1, 1);
+                return Array.from(ctx.getImageData(0, 0, 1, 1).data);
+            })()""") == [0, 0, 255, 255]
 
 print(f"Wheel smoke test passed: {pyv8.__file__}")

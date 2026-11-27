@@ -316,23 +316,25 @@ class Window(_SchedulingMixin, WindowProperties):
     def navigator(self):
         return self._features.value("navigator")
 
-    def _viewport_dimension(self, axis):
+    def _viewport_size(self):
         frame = self._frame_element
         if frame is None:
-            return self._inner_width if axis == 'width' else self._inner_height
-        from ..dom.layout import positioned_box
-        box = positioned_box(frame)
-        sides = ('left', 'right') if axis == 'width' else ('top', 'bottom')
-        extent = box.width if axis == 'width' else box.height
-        return max(0, int(round(extent - sum(box.border.get(side, 0) + box.padding.get(side, 0)
-                                           for side in sides))))
+            return float(self._inner_width), float(self._inner_height)
+        from ..dom.layout import layout
+        box = layout(frame)
+        border, padding = box.border, box.padding
+        horizontal = (border['left'] + padding['left']) + (border['right'] + padding['right'])
+        vertical = (border['top'] + padding['top']) + (border['bottom'] + padding['bottom'])
+        return max(0, round(box.width - horizontal)), max(0, round(box.height - vertical))
 
     @property
-    def innerWidth(self): return self._viewport_dimension('width')
+    def innerWidth(self):
+        return self._inner_width if self._frame_element is None else self._viewport_size()[0]
     @innerWidth.setter
     def innerWidth(self, value): self._inner_width = value
     @property
-    def innerHeight(self): return self._viewport_dimension('height')
+    def innerHeight(self):
+        return self._inner_height if self._frame_element is None else self._viewport_size()[1]
     @innerHeight.setter
     def innerHeight(self, value): self._inner_height = value
 
@@ -845,15 +847,10 @@ class Window(_SchedulingMixin, WindowProperties):
             raise missing_error("Window", "getComputedStyle", 1, 0, constructor=False)
         from ..dom.element import Element
         if not isinstance(element, Element):
-            raise TypeError("The provided value is not an Element")
+            raise PageTypeError("Failed to execute 'getComputedStyle' on 'Window': parameter 1 is not of type 'Element'.")
         from ..css.cascade import computed_style_object
         from ..dom.layout import layout_snapshot
-        document = getattr(element, "ownerDocument", None)
-        # Nothing is rendered in a tree no window owns, and CSSOM answers empty
-        # values for one: that is what a document built by ``DOMParser`` is.
-        rendered = (element.isConnected and document is not None
-                    and document.get_defaultView() is not pyv8.Null)
-        return computed_style_object(element, rendered=rendered, layout_snapshot=layout_snapshot)
+        return computed_style_object(element, layout_snapshot=layout_snapshot)
 
     def _post_message(self, source, message, target_origin="/", transfer=()):
         from ..page_errors import PageSyntaxError

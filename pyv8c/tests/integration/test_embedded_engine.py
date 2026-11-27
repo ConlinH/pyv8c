@@ -14,7 +14,7 @@ async def test_public_engine_and_browser_share_native_module():
     from pyv8c.engine import binder
 
     assert engine is pyv8 is binder.pyv8
-    assert engine.__version__ == pyv8c.__version__ == '0.1.0'
+    assert engine.__version__ == pyv8c.__version__
     assert engine.IdlSpec is binder.IdlSpec
     assert engine.Context.__module__ == 'pyv8c.pyv8'
     assert engine.IdlSpec.__module__ == 'pyv8c.pyv8'

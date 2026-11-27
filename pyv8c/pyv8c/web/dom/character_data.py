@@ -25,7 +25,9 @@ class CharacterData(_ChildNodeMixin, _NonDocumentTypeChildNodeMixin, Node):
             data = dom_string(data)
         if services is pyv8.Undefined:
             services = None
-        super().__init__(services=services, node_type=Node.TEXT_NODE, node_name='#text', value=str(data), **kw)
+        # Ordinary text nodes have no children in the parser's output.
+        super().__init__(services=services, node_type=Node.TEXT_NODE, node_name='#text', value=str(data),
+                         _defer_children=type(self) is Text, **kw)
     def get_data(self): return self.nodeValue or ""
     def set_data(self, value):
         self.nodeValue = str(value)

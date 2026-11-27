@@ -180,7 +180,9 @@ async def compared():
     url = f"http://127.0.0.1:{server.server_port}/doc"
     try:
         try:
-            async with chrome_reference() as reference:
+            # With a microphone present, headless Chrome exercises permission denial.
+            # A machine without one otherwise answers NotFoundError before checking permission.
+            async with chrome_reference(launch_args=("--use-fake-device-for-media-stream",)) as reference:
                 chrome, device_kinds = await _chrome_probe(reference, url)
         except ReferenceUnavailable as unavailable:
             pytest.skip(str(unavailable))

@@ -465,6 +465,9 @@ async def measure(case, runs):
     first = dict(samples[0])
     first["median"] = statistics.median(sample["median"] for sample in samples)
     first["min"] = min(sample["min"] for sample in samples)
+    for metric in ("p95_us", "batches_per_second", "private_loaded", "private_warm", "private_end"):
+        if first.get(metric) is not None:
+            first[metric] = statistics.median(sample[metric] for sample in samples)
     first["runs"] = runs
     first["samples"] = samples
     return first, None
@@ -475,7 +478,9 @@ def measurement_identity(native_build_record=None):
     from pyv8c import pyv8
     from pyv8c._native import _native, dom
 
-    dom_source_hash = hashlib.sha256((REPO / 'pyv8c/native/dom/builder.cpp').read_bytes()).hexdigest()
+    from tools.dom_source import dom_source_sha256
+
+    dom_source_hash = dom_source_sha256(REPO / 'pyv8c/native/dom')
     if dom.SOURCE_SHA256 != dom_source_hash:
         raise RuntimeError('rebuild _native before benchmarking: DOM source and binary differ')
     binary = Path(pyv8._pyv8.__file__)
@@ -566,6 +571,10 @@ def compare(results):
             continue
         recorded = baseline["cases"].get(name)
         now, unit, detail = result["median"], result["unit"], result["detail"]
+        if "batches_per_second" in result and "p95_us" in result:
+            detail += f"; {result['batches_per_second']:.1f} op/s, P95 {result['p95_us'] / 1000:.2f} ms"
+            if result.get("private_end") is not None:
+                detail += f", private {result['private_end'] / 2**20:.1f} MiB"
         if recorded is None:
             print(f"{name:18s}{'new':>10s}{now:10.2f}{'':9s}  {unit:10s}{detail}")
             continue
@@ -601,6 +610,7 @@ async def main(argv=None):
     parser.add_argument('--web-worker', help=argparse.SUPPRESS)
     parser.add_argument('--startup-worker', help=argparse.SUPPRESS)
     parser.add_argument('--style-worker', help=argparse.SUPPRESS)
+    parser.add_argument('--dom-selector-worker', choices=('1', '2', '4'), help=argparse.SUPPRESS)
     parser.add_argument('--javascript-worker', help=argparse.SUPPRESS)
     parser.add_argument('--entrypoint-worker', help=argparse.SUPPRESS)
     parser.add_argument('--lifecycle-worker', help=argparse.SUPPRESS)
@@ -612,6 +622,9 @@ async def main(argv=None):
     parser.add_argument('--javascript-warmup', type=int, default=JS_WARMUP, help='warmup calls before each JS compute workload')
     parser.add_argument('--javascript-engine', choices=JS_ENGINE_NAMES, default='pyv8c')
     parser.add_argument('--style-iterations', type=int, default=12, help='batches in each style/layout workload')
+    parser.add_argument('--dom-selector-iterations', type=int, default=70,
+                        help='queries per Browser thread in each DOM selector workload')
+    parser.add_argument('--dom-selector-workload', choices=('repeat', 'mutate', 'replace'), default='repeat')
     parser.add_argument('--web-iterations', type=int, default=20, help='batches in each Web API workload')
     parser.add_argument('--web-profile-dir', type=Path, help='save owner-thread profiles after Web API measurements')
     parser.add_argument('--bridge-iterations', type=int, default=60,
@@ -628,6 +641,8 @@ async def main(argv=None):
         parser.error('--web-iterations must be positive')
     if arguments.style_iterations < 1:
         parser.error('--style-iterations must be positive')
+    if arguments.dom_selector_iterations < 1:
+        parser.error('--dom-selector-iterations must be positive')
     if arguments.javascript_iterations < 1:
         parser.error('--javascript-iterations must be positive')
     if arguments.javascript_warmup < 0:
@@ -643,6 +658,11 @@ async def main(argv=None):
     if arguments.style_worker:
         from benchmarks.cases.style import run_case
         print(json.dumps((await run_case(arguments.style_worker, arguments.style_iterations))))
+        return 0
+    if arguments.dom_selector_worker:
+        from benchmarks.cases.dom_selector import run_case
+        print(json.dumps(run_case(arguments.dom_selector_worker, arguments.dom_selector_iterations,
+                                  arguments.dom_selector_workload)))
         return 0
     if arguments.startup_worker:
         from benchmarks.cases.startup import run_case
@@ -687,6 +707,7 @@ async def main(argv=None):
     from benchmarks.cases.web_api import CASE_NAMES as WEB_CASE_NAMES
     from benchmarks.cases.startup import CASE_NAMES as STARTUP_CASE_NAMES
     from benchmarks.cases.style import CASE_NAMES as STYLE_CASE_NAMES
+    from benchmarks.cases.dom_selector import CASE_NAMES as DOM_SELECTOR_CASE_NAMES
     from benchmarks.cases.js_compute import CASE_NAMES as JS_CASE_NAMES
     from benchmarks.cases.entrypoints import CASE_NAMES as ENTRYPOINT_CASE_NAMES
     from benchmarks.cases.lifecycle import CASE_NAMES as LIFECYCLE_CASE_NAMES
@@ -714,6 +735,9 @@ async def main(argv=None):
         ('web', 'web', WEB_CASE_NAMES, web_options),
         ('startup', 'startup', tuple(name for name in STARTUP_CASE_NAMES if name != 'compile'), []),
         ('style', 'style', STYLE_CASE_NAMES, ['--style-iterations', str(arguments.style_iterations)]),
+        ('dom_selector', 'dom-selector', DOM_SELECTOR_CASE_NAMES,
+         ['--dom-selector-iterations', str(arguments.dom_selector_iterations),
+          '--dom-selector-workload', arguments.dom_selector_workload]),
         ('javascript', 'javascript', JS_CASE_NAMES,
          ['--javascript-iterations', str(arguments.javascript_iterations),
           '--javascript-warmup', str(arguments.javascript_warmup),

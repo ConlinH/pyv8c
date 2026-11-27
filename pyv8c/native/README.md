@@ -1,10 +1,20 @@
-# Audio and DOM native components
+# Native components
 
-Cargo builds the `pyv8c-native` crate and compiles `dom/builder.cpp` as C++17.
+Cargo builds the `pyv8c-native` crate and compiles the DOM kernel in `dom/` as C++17.
+The DOM sources separate module registration, node storage, tree construction,
+fragment tokenization and attribute matching. The loaded module exposes a
+fingerprint of the C++ sources and headers.
 The C++ library links into the Rust PyO3 extension inside the
-`pyv8c._native` package. The package exposes the internal `audio` and `dom`
-components. Both use the CPython 3.12 stable ABI.
-Project code imports the components with `from pyv8c._native import audio, dom`.
+`pyv8c._native` package alongside Rust audio, Canvas and layout. The extension
+uses the CPython 3.12 stable ABI. Python integration lives in `pyv8c._native`.
+
+`src/canvas.rs` provides CPU raster surfaces and PNG, JPEG and WebP encoding
+through Skia. PNG encoding releases the GIL around the Skia call.
+
+Rust document layout lives in `src/layout_document.rs` and `src/layout_document/`.
+Each document's `LayoutDocument` applies versioned DOM and style batches, routes
+Flex/Grid to Taffy, and publishes an immutable geometry snapshot. The Rust
+update and solve run with the GIL released.
 
 The Rust component in `src/audio` generates the Chromium 157 FFT wave tables
 on first use. The result is cached in memory; the old waveform ZIP is not needed
@@ -13,7 +23,7 @@ x86 oscillators in batches. Batch and single-sample rendering share the same
 native phase and FFT interpolation code. Waveforms outside that FFT path,
 including custom periodic waves, use their respective waveform implementations.
 
-To build both components in a source checkout, use CPython 3.12, a Rust
+To build the extension in a source checkout, use CPython 3.12, a Rust
 toolchain with 2024 edition support, and a C++17 compiler:
 
 ```console

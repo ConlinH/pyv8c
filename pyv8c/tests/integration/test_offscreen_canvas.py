@@ -1,12 +1,10 @@
 """``OffscreenCanvas`` hands out a working 2D surface with no element behind it."""
-import pytest
 from loguru import logger
 
 from pyv8c.async_api import Browser
 
 
 async def test_bitmap_uses_live_image_data_and_offscreen_webgl_encodes():
-    pytest.importorskip('PIL')
     browser = (await Browser(real_network=False, stub_logging='off').__aenter__())
     try:
         page = browser.new_profile().new_page()
@@ -34,7 +32,6 @@ async def test_bitmap_uses_live_image_data_and_offscreen_webgl_encodes():
 
 
 async def test_an_offscreen_canvas_draws_and_reports_its_pixels():
-    pytest.importorskip("PIL", reason="Pillow backs the canvas drawing surface")
     browser = (await Browser(stub_logging="off").__aenter__())
     try:
         page = browser.new_profile().new_page()

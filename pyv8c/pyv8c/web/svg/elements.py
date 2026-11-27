@@ -184,7 +184,7 @@ class SVGTextContentElement(SVGGraphicsElement):
     """Horizontal SVG text measured by the same font shaper as document text."""
 
     def _text_layout(self):
-        from ..dom import layout
+        from ..dom import font_measurement
         if not self._svg_rendered():
             return '', None, None, (0.0, 0.0)
         style = computed_style(self)
@@ -192,9 +192,9 @@ class SVGTextContentElement(SVGGraphicsElement):
         if style.get('white-space', 'normal') not in ('pre', 'pre-wrap', 'break-spaces'):
             text = re.sub(r'[\t\n\r ]+', ' ', text).strip(' ')
         environment = environment_of(self._services)
-        run, _face = layout._shaped(text, style, environment, layout_units=True)
-        metrics = layout._run_metrics(run, style) if run is not None else None
-        metrics = metrics or layout._font_metrics(style, environment)
+        run, _face = font_measurement._shaped(text, style, environment, layout_units=True)
+        metrics = font_measurement._run_metrics(run, style) if run is not None else None
+        metrics = metrics or font_measurement._font_metrics(style, environment)
         position = tuple(parse_length(str(self.attributes.get(name, '0')).split()[0])[0]
                          for name in ('x', 'y'))
         return text, run, metrics, position

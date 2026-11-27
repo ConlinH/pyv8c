@@ -11,7 +11,7 @@ from ..dom.character_data import Text
 from ..dom.collections import DOMStringMap
 from ..css.cssom import CSSStyleDeclaration
 from ..css.typed import StylePropertyMap
-from ..dom.element import Element, _unrendered
+from ..dom.element import Element
 from . import attributes as html_props
 
 
@@ -23,6 +23,23 @@ _WINDOW_BODY_HANDLERS = frozenset((
     'onrejectionhandled', 'onstorage', 'onunhandledrejection', 'onunload',
     'onblur', 'onerror', 'onfocus', 'onload', 'onresize', 'onscroll',
 ))
+
+def _unrendered(node):
+    """Whether a descendant is laid out away, taking its subtree out of innerText.
+
+    Reading ``innerText`` on such an element itself still reports its text, the way
+    Chrome falls back to the text content for something it does not render.
+    """
+    from ..css.cascade import computed_style
+
+    if not isinstance(node, Element):
+        return False
+    name = str(getattr(node, "localName", "") or "").lower()
+    if name in ("script", "style", "link", "meta", "head", "template", "title", "noscript"):
+        return True
+    if node.attributes.get("hidden") is not None:
+        return True
+    return str(computed_style(node).get("display", "")) == "none"
 
 @interface('HTMLElement', 'Element')
 class HTMLElement(Element):
@@ -207,19 +224,15 @@ class HTMLElement(Element):
         return offset_parent(self) or pyv8.Null
     def _offset_box(self):
         """This element's box, and where its ``offsetParent`` measures from."""
-        from ..dom.layout import layout, layout_snapshot, offset_parent
-        document = self.ownerDocument
-        boxes, styles = layout_snapshot(document) if document is not None else ({}, {})
-        parent = offset_parent(self, styles=styles)
-        box = boxes.get(self)
-        if box is None:
-            box = layout(self)
-        if parent is None:
-            return box, 0.0, 0.0
-        parent_box = boxes.get(parent)
-        if parent_box is None:
-            parent_box = layout(parent)
+        from ..._native._native import EMPTY_BOX
+        from ..dom.layout import layout_snapshot
+
+        boxes, _ = layout_snapshot(self.ownerDocument)
+        box = boxes.get(self, EMPTY_BOX)
+        parent = boxes.offset_parent(self) if boxes else None
+        parent_box = boxes.get(parent, EMPTY_BOX)
         return box, parent_box.padding_box_left, parent_box.padding_box_top
+
     def get_offsetTop(self):
         box, _left, top = self._offset_box()
         return int(round(box.top - top))

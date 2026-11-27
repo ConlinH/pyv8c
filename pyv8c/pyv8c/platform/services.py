@@ -7,13 +7,17 @@ packages reach platform functionality only through them, never through the Page.
 import time
 from functools import partial
 from dataclasses import dataclass
+from types import MethodType
 from typing import Any
 
 from ..foundation.clock import Clock
 from ..foundation.host_errors import HostStateError
 from ..foundation.tasks import TaskSource
 from ..foundation.urls import serialize_origin
+from .navigation import NavigationController
+from .resources.documents import DocumentResourceController
 from .resources.request_headers import same_site
+from .scripting import ScriptController
 from .sessions import BindingSession
 from .state import Ownership
 from .websocket import WebSocketServices
@@ -547,6 +551,27 @@ class _DocumentCapability:
     def check_parser_operation(self):
         self._owner._page_realm.executor.check_operation()
 
+    def has_standard_element_factory(self):
+        from ..web.html.registry import uses_standard_factory
+
+        return (
+            _uses_default_method(self, _DOCUMENT_ELEMENT_CLASS)
+            and _uses_default_method(self._owner._navigation, _NAVIGATION_ELEMENT_CLASS)
+            and uses_standard_factory()
+        )
+
+    def can_batch_fragment(self):
+        owner = self._owner
+        if self.parsing or self.document._mutation_observers or not self.has_standard_element_factory():
+            return False
+        # Ordinary fragment insertion has no host hooks to replay.
+        return (
+            _uses_default_method(self, _DOCUMENT_NODE_ADOPTED)
+            and _uses_default_method(owner._scripts, _SCRIPT_NODE_ADOPTED)
+            and _uses_default_method(owner.resource_services, _RESOURCE_DISCOVER)
+            and _uses_default_method(owner._document_resources, _DOCUMENT_RESOURCE_DISCOVER)
+        )
+
     def write_markup(self, markup):
         return self._owner._navigation.write_markup(markup)
 
@@ -617,6 +642,19 @@ class _DocumentCapability:
         return all(same_site(origin, ancestor)
                    for ancestor in self._owner.realm_services.ancestor_origins())
 
+
+
+_DOCUMENT_ELEMENT_CLASS = _DocumentCapability.element_class
+_NAVIGATION_ELEMENT_CLASS = NavigationController.element_class
+_DOCUMENT_NODE_ADOPTED = _DocumentCapability.node_adopted
+_SCRIPT_NODE_ADOPTED = ScriptController.node_adopted
+_RESOURCE_DISCOVER = _ResourceCapability.discover_element_resource
+_DOCUMENT_RESOURCE_DISCOVER = DocumentResourceController.discover_element_resource
+
+
+def _uses_default_method(receiver, default):
+    hook = getattr(receiver, default.__name__)
+    return type(hook) is MethodType and hook.__func__ is default and hook.__self__ is receiver
 
 
 class _WorkerCapability:

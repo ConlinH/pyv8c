@@ -159,6 +159,59 @@ async def test_a_query_repeated_after_a_mutation_sees_it(page):
     assert result == [[2, 1, 2], 3, 2, 2, True, True]
 
 
+async def test_query_selector_all_returns_a_static_node_list_for_each_root(page):
+    assert page.evaluate("""(() => {
+        const fragment = document.createDocumentFragment();
+        const root = document.createElement('div');
+        const shadow = root.attachShadow({mode: 'open'});
+        return [document, document.body, fragment, shadow].map((scope, index) => {
+            const parent = index === 0 ? document.body : scope;
+            const node = document.createElement('i');
+            node.className = 'collection-case-' + index;
+            const selector = '.' + node.className;
+            const empty = scope.querySelectorAll(selector);
+            parent.appendChild(node);
+            const result = scope.querySelectorAll(selector);
+            const later = scope.querySelectorAll(selector);
+            node.remove();
+            return [
+                empty instanceof NodeList, empty.length,
+                result instanceof NodeList, Object.getPrototypeOf(result) === NodeList.prototype,
+                result.constructor.name, Object.prototype.toString.call(result),
+                Array.isArray(result), result.length, typeof result.item === 'function' &&
+                    result.item(0) === node && result.item(1) === null,
+                result[0] === node && [...result][0] === node,
+                scope.querySelectorAll(selector).length, result === later,
+            ];
+        });
+    })()""") == [[True, 0, True, True, "NodeList", "[object NodeList]",
+                  False, 1, True, True, 0, False]] * 4
+
+
+async def test_empty_class_queries_are_empty_live_collections(page):
+    assert page.evaluate(r"""(() => {
+        const views = [document, document.body].flatMap(root =>
+            ['', ' \t\n'].map(name => root.getElementsByClassName(name)));
+        const added = document.createElement('div');
+        added.className = 'nonempty';
+        document.body.appendChild(added);
+        return views.map(view => [view instanceof HTMLCollection, view.length, view.item(0) === null]);
+    })()""") == [[True, 0, True]] * 4
+
+
+async def test_document_forms_keeps_identity_and_tracks_tree_changes(page):
+    assert page.evaluate("""(() => {
+        const forms = document.forms;
+        const initial = forms.length;
+        const form = document.createElement('form');
+        form.id = 'new-form';
+        document.body.appendChild(form);
+        const live = forms.length === initial + 1 && forms.namedItem('new-form') === form;
+        form.remove();
+        return [forms instanceof HTMLCollection, forms === document.forms, live, forms.length];
+    })()""") == [True, True, True, 0]
+
+
 async def test_html_collection_named_properties_match_web_idl(page):
     result = page.evaluate("""
 (() => {

@@ -50,7 +50,7 @@ The generic `Element` lives in `pyv8c/pyv8c/web/dom/element.py`. HTML tag interf
 
 ## CSS and Layout
 
-The CSS property table, declaration parsing, value computation, selectors, cascade, and CSSOM live in `pyv8c/pyv8c/web/css/`. DOM elements hold style declarations and the document manages stylesheet versions; the layout module reads computed styles and maintains geometry snapshots. `getComputedStyle()` obtains the properties that need used values from the layout snapshot supplied by the caller; the CSS subpackage itself does not import the layout module. Node, stylesheet, and viewport changes still invalidate snapshots through the existing versioning mechanism.
+The CSS property table, declaration parsing, value computation, selectors, cascade, and CSSOM live in `pyv8c/pyv8c/web/css/`. The Python DOM sends versioned node and computed-style updates to Rust's `LayoutDocument`. Rust owns the document tree, measurement, solving, and geometry snapshots, with Taffy solving Flex/Grid. The caller supplies the snapshot that `getComputedStyle()` uses for layout-dependent values. DOM geometry, iframe sizing, and hit testing share the same snapshot.
 
 ## Object and State Ownership
 

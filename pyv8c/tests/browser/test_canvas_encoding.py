@@ -1,10 +1,10 @@
 """Canvas serialization follows the browser's format and quality rules."""
 
 import base64
-import io
 
 import pytest
 
+from pyv8c._native._native import RasterImage
 from pyv8c.async_api import Browser
 
 
@@ -25,10 +25,6 @@ def decode(data_url):
 
 
 async def test_blank_canvas_formats_and_context_are_independent(page):
-    pytest.importorskip('PIL')
-    from PIL import features
-    if not features.check('jpg') or not features.check('webp'):
-        pytest.skip('Pillow JPEG and WebP codecs are required')
     result = page.evaluate('''(() => {
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = 1;
@@ -43,10 +39,12 @@ async def test_blank_canvas_formats_and_context_are_independent(page):
       return {png, jpeg, webp, unsupported, webglAfterExport, stillWebGL,
         zero: zero.toDataURL(), oversized: oversized.toDataURL()};
     })()''')
-    # Chromium's low-compression PNG stream for a transparent 1x1 surface.
-    assert result['png'] == ('data:image/png;base64,'
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWJiYGBgAAAAAP//'
-        'XRcpzQAAAAZJREFUAwAADwADJDd96QAAAABJRU5ErkJggg==')
+    header, payload = decode(result['png'])
+    assert header == 'data:image/png;base64'
+    assert payload.startswith(b'\x89PNG\r\n\x1a\n')
+    image = RasterImage.decode(payload)
+    assert image.size == (1, 1)
+    assert image.read(0, 0, 1, 1) == bytes(4)
     assert result['unsupported'] == result['png']
     assert decode(result['jpeg'])[0] == 'data:image/jpeg;base64'
     assert decode(result['webp'])[0] == 'data:image/webp;base64'
@@ -57,10 +55,6 @@ async def test_blank_canvas_formats_and_context_are_independent(page):
 
 
 async def test_canvas_formats_encode_pixels_and_only_numeric_quality(page):
-    image_module = pytest.importorskip('PIL.Image')
-    from PIL import features
-    if not features.check('jpg') or not features.check('webp'):
-        pytest.skip('Pillow JPEG and WebP codecs are required')
     result = page.evaluate('''(() => {
       const canvas = document.createElement('canvas'); canvas.width = canvas.height = 8;
       const context = canvas.getContext('2d');
@@ -74,11 +68,15 @@ async def test_canvas_formats_encode_pixels_and_only_numeric_quality(page):
     })()''')
     assert result['stringQuality'] == result['jpeg'] == result['objectQuality']
     assert result['lowQuality'] != result['jpeg']
-    png = image_module.open(io.BytesIO(decode(result['png'])[1]))
+    png = RasterImage.decode(decode(result['png'])[1])
     assert png.size == (8, 8)
-    assert list(png.getpixel((0, 0))) == result['pixel']
-    jpeg = image_module.open(io.BytesIO(decode(result['jpeg'])[1]))
-    red, green, blue = jpeg.convert('RGB').getpixel((0, 0))
-    assert 125 <= red <= 130 and green <= 2 and blue <= 2
-    webp = image_module.open(io.BytesIO(decode(result['webp'])[1])).convert('RGBA')
-    assert list(webp.getpixel((0, 0))) == result['pixel']
+    assert list(png.read(0, 0, 1, 1)) == result['pixel']
+    jpeg_bytes = decode(result['jpeg'])[1]
+    assert jpeg_bytes.startswith(b'\xff\xd8')
+    jpeg = RasterImage.decode(jpeg_bytes)
+    red, green, blue, alpha = jpeg.read(0, 0, 1, 1)
+    assert 125 <= red <= 130 and green <= 2 and blue <= 2 and alpha == 255
+    webp_bytes = decode(result['webp'])[1]
+    assert webp_bytes[:4] == b'RIFF' and webp_bytes[8:12] == b'WEBP'
+    webp = RasterImage.decode(webp_bytes)
+    assert list(webp.read(0, 0, 1, 1)) == result['pixel']

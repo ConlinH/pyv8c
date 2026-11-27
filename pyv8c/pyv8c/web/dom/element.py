@@ -1,7 +1,4 @@
 """The DOM Element interface shared by HTML, SVG and MathML."""
-import re
-import math
-import struct
 from html import escape
 
 from pyv8c import pyv8
@@ -14,6 +11,7 @@ from .collections import (
     DOMTokenList,
     HTMLCollection,
     NamedNodeMap,
+    NodeList,
     tag_name_ns_collection,
 )
 from . import aria
@@ -21,6 +19,7 @@ from .events import _install_handler_slots
 from .mixins import _ChildNodeMixin, _NonDocumentTypeChildNodeMixin, _ParentNodeMixin
 from .mutation import record_mutation
 from .nodes import Attr, DocumentFragment, Node, ShadowRoot
+from .rect import DOMRect
 from .utils import _VALID_NAME_RE, XHTML_NAMESPACE
 
 
@@ -29,10 +28,14 @@ _ADJACENT_POSITIONS = ("beforebegin", "afterbegin", "beforeend", "afterend")
 
 
 def _ascii_upper(value):
+    if type(value) is str and value.isascii():
+        return value.upper()
     return value.translate(str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
 
 
 def _ascii_lower(value):
+    if type(value) is str and value.isascii():
+        return value.lower()
     return value.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
 
 
@@ -44,25 +47,32 @@ _VOID_ELEMENTS = frozenset({
 
 
 class _AttributeMap(dict):
-    """Internal writes invalidate the owning tree's ID lookup too."""
+    """Internal writes also keep the owning tree's ID lookups current."""
     __slots__ = ('_owner',)
     def __init__(self, owner, values):
         super().__init__(values)
         self._owner = owner
 
     def _changed(self, key):
-        self._owner._invalidate_layout()
-        if (self._owner.localName in ("style", "link")
-                and key in ("rel", "href", "media", "disabled")):
+        affects_stylesheet = (self._owner.localName in ("style", "link")
+                              and key in ("rel", "href", "media", "disabled"))
+        self._owner._invalidate_layout(style_attribute_edit=not affects_stylesheet)
+        self._owner._invalidate_selector_attributes(key)
+        if affects_stylesheet:
             document = self._owner.ownerDocument
             if document is not None:
                 document.style_version += 1
 
+    def _change_id(self, old, new):
+        if self._owner.attributes is self:
+            self._owner._change_indexed_id(old, new)
+
     def __setitem__(self, key, value):
-        if self.get(key) != value: self._changed(key)
-        if key == 'id' and self.get(key) != value:
-            self._owner._invalidate_id_index()
+        previous = self.get(key)
+        if previous != value:
+            self._changed(key)
         super().__setitem__(key, value)
+        if key == 'id': self._change_id(previous, value)
         nodes = self._owner.__dict__.get('_attribute_nodes')
         if nodes is not None:
             cached = nodes.get(key)
@@ -76,8 +86,9 @@ class _AttributeMap(dict):
 
     def __delitem__(self, key):
         self._changed(key)
-        if key == 'id': self._owner._invalidate_id_index()
+        previous = self.get(key) if key == 'id' else None
         super().__delitem__(key)
+        if key == 'id': self._change_id(previous, None)
         self._detach_node(key)
 
     def update(self, *args, **kwargs):
@@ -89,8 +100,9 @@ class _AttributeMap(dict):
 
     def pop(self, key, *default):
         if key in self: self._changed(key)
-        if key == 'id' and key in self: self._owner._invalidate_id_index()
+        previous = self.get(key) if key == 'id' else None
         value = super().pop(key, *default)
+        if key == 'id': self._change_id(previous, None)
         self._detach_node(key)
         return value
 
@@ -98,15 +110,16 @@ class _AttributeMap(dict):
         if self:
             self._changed(next(reversed(self)))
         key, value = super().popitem()
-        if key == 'id': self._owner._invalidate_id_index()
+        if key == 'id': self._change_id(value, None)
         self._detach_node(key)
         return key, value
 
     def clear(self):
         for key in self:
             self._changed(key)
-        if 'id' in self: self._owner._invalidate_id_index()
+        previous = self.get('id')
         super().clear()
+        if previous: self._change_id(previous, None)
         cached = self._owner.__dict__.get('_attribute_nodes')
         if cached:
             for node in cached.values(): node.ownerElement = None
@@ -251,13 +264,15 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
 
     @attributes.setter
     def attributes(self, values):
-        self._invalidate_id_index()
+        previous = self.attributes.get('id')
         self._invalidate_layout()
         cached = self.__dict__.get('_attribute_nodes')
         if cached:
             for node in cached.values(): node.ownerElement = None
             cached.clear()
         self._attribute_map = _AttributeMap(self, values)
+        self._change_indexed_id(previous, self.attributes.get('id'))
+        self._invalidate_selector_attributes()
 
     def get_namespaceURI(self): return self._namespace or pyv8.Null
     def get_prefix(self): return self._prefix or pyv8.Null
@@ -365,66 +380,16 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
         box = layout(self)
         inside = box.overflow_bottom - box.border.get("top", 0.0) - box.border.get("bottom", 0.0)
         return max(int(round(box.padding_box_height)), int(round(inside)))
+    def _client_rect(self):
+        from pyv8c.web.dom.layout import layout_snapshot
+
+        boxes, _ = layout_snapshot(self.ownerDocument, element=self)
+        return boxes.client_rect(self) if boxes else None
+
     def fn_getBoundingClientRect(self, *_extra):
-        from .layout import layout_snapshot, positioned_box
-        from .rect import DOMRect
-        box = positioned_box(self)
-        left, top, width, height = box.left, box.top, box.width, box.height
-        document = getattr(self, 'ownerDocument', None)
-        if document is not None and self.isConnected:
-            boxes, styles = layout_snapshot(document)
-            if self not in boxes or styles.get(self, {}).get('display') == 'none':
-                return DOMRect(left, top, width, height)
-            corners = [(left, top), (left + width, top),
-                       (left, top + height), (left + width, top + height)]
-            node = self
-            while node is not None:
-                values = styles.get(node, {})
-                transform = str(values.get('transform', 'none'))
-                node_box = boxes.get(node)
-                if node_box is not None and transform.startswith('matrix(') and transform.endswith(')'):
-                    try:
-                        a, b, c, d, e, f = (float(part.strip()) for part in transform[7:-1].split(','))
-                    except ValueError:
-                        pass
-                    else:
-                        raw = str(node.attributes.get('style', ''))
-                        angle = re.search(r'(?:^|;)\s*transform\s*:\s*rotate\(\s*'
-                                          r'([+-]?(?:\d+(?:\.\d*)?|\.\d+))deg\s*\)\s*(?:;|$)', raw, re.I)
-                        if (angle is not None
-                                and abs(a - math.cos(math.radians(float(angle[1])))) < 1e-5
-                                and abs(b - math.sin(math.radians(float(angle[1])))) < 1e-5):
-                            sine = math.sin(math.radians(float(angle[1])))
-                            cosine = math.cos(math.radians(float(angle[1])))
-                            a, b, c, d, e, f = cosine, sine, -sine, cosine, 0.0, 0.0
-                        origin = str(values.get('transform-origin', '50% 50%')).split()
-                        if len(origin) == 1:
-                            if origin[0].lower() in ('top', 'bottom'):
-                                origin.insert(0, '50%')
-                            else:
-                                origin.append('50%')
-                        if (origin[0].lower() in ('top', 'bottom')
-                                or origin[1].lower() in ('left', 'right')):
-                            origin[0], origin[1] = origin[1], origin[0]
-                        def coordinate(value, size):
-                            keywords = {'left': '0%', 'top': '0%', 'center': '50%',
-                                        'right': '100%', 'bottom': '100%'}
-                            value = keywords.get(value.lower(), value)
-                            try:
-                                return float(value[:-1]) * size / 100 if value.endswith('%') else float(value.removesuffix('px'))
-                            except ValueError:
-                                return size / 2
-                        cx = node_box.left + coordinate(origin[0], node_box.width)
-                        cy = node_box.top + coordinate(origin[1], node_box.height)
-                        corners = [(cx + a * (x-cx) + c * (y-cy) + e,
-                                    cy + b * (x-cx) + d * (y-cy) + f) for x, y in corners]
-                node = getattr(node, 'parentElement', None)
-            xs, ys = zip(*corners)
-            left, top = min(xs), min(ys)
-            width, height = max(xs) - left, max(ys) - top
-            width = struct.unpack('f', struct.pack('f', width))[0]
-            height = struct.unpack('f', struct.pack('f', height))[0]
-        return DOMRect(left, top, width, height)
+        rect = self._client_rect()
+        return DOMRect() if rect is None else DOMRect(*rect)
+
     def fn_getAttribute(self, name=MISSING, *_extra):
         if name is MISSING:
             raise missing_error('Element', 'getAttribute', 1, 0, constructor=False)
@@ -584,6 +549,8 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
             raise missing_error('Element', 'getElementsByClassName', 1, 0, constructor=False)
         class_names = dom_string(class_names)
         wanted = set(str(class_names).split())
+        if not wanted:
+            return HTMLCollection(owner=self)
         return HTMLCollection(owner=self, getter=lambda: [
             node for node in self._descendant_elements()
             if wanted.issubset(set(node.get_className().split()))
@@ -659,7 +626,8 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
         if selector is MISSING:
             raise missing_error('Element', 'querySelectorAll', 1, 0, constructor=False)
         selector = dom_string(selector)
-        return self._services.document_services.document.query_selector_all(selector, self) if self._services else []
+        from ..css.selectors import select
+        return NodeList(values=select(self, selector))
     def fn_matches(self, selector=MISSING, *_extra):
         if selector is MISSING:
             raise missing_error('Element', 'matches', 1, 0, constructor=False)
@@ -764,16 +732,8 @@ class Element(_ParentNodeMixin, _ChildNodeMixin, _NonDocumentTypeChildNodeMixin,
 
     def fn_getClientRects(self, *_extra):
         from .rect import DOMRectList
-        from .layout import document_has_layout
-        if not self.isConnected or not document_has_layout(self.ownerDocument):
-            return DOMRectList(values=())
-        node = self
-        while isinstance(node, Element):
-            if _unrendered(node):
-                return DOMRectList(values=())
-            node = node.parentElement
-        # Layout currently provides a single border box, without line fragments.
-        return DOMRectList(values=(self.fn_getBoundingClientRect(),))
+        rect = self._client_rect()
+        return DOMRectList(values=() if rect is None else (DOMRect(*rect),))
 
 
 
@@ -786,23 +746,3 @@ _install_handler_slots(Element, ("onbeforecopy", "onbeforecut", "onbeforepaste",
                                  "onfullscreenchange", "onfullscreenerror",
                                  "onwebkitfullscreenchange", "onwebkitfullscreenerror"))
 aria.install(Element)
-
-
-def _unrendered(node):
-    """Whether a descendant is laid out away, taking its subtree out of innerText.
-
-    Reading ``innerText`` on such an element itself still reports its text, the way
-    Chrome falls back to the text content for something it does not render.
-    """
-    from ..css.cascade import computed_style
-
-    if not isinstance(node, Element):
-        return False
-    name = str(getattr(node, "localName", "") or "").lower()
-    if name in ("script", "style", "link", "meta", "head", "template", "title", "noscript"):
-        return True
-    if node.attributes.get("hidden") is not None:
-        return True
-    return str(computed_style(node).get("display", "")) == "none"
-
-

@@ -297,7 +297,12 @@ impl CompressorDSP {
         self.step(value, parameters)
     }
     /// One parameter tuple for each 32-frame boundary within this block.
-    fn process_block(&mut self, values: Vec<f64>, parameters: Vec<Params>) -> PyResult<Vec<f64>> {
+    fn process_block(
+        &mut self,
+        py: Python<'_>,
+        values: Vec<f64>,
+        parameters: Vec<Params>,
+    ) -> PyResult<Vec<f64>> {
         let needed = (0..values.len())
             .filter(|i| (self.frame + i) % 32 == 0)
             .count();
@@ -306,15 +311,23 @@ impl CompressorDSP {
                 "incorrect number of parameter divisions",
             ));
         }
-        let mut divisions = parameters.into_iter();
-        let mut current = self.parameters.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
-        let mut output = Vec::with_capacity(values.len());
-        for value in values {
-            if self.frame % 32 == 0 {
-                current = divisions.next().unwrap();
+        let count = values.len();
+        let render = || {
+            let mut divisions = parameters.into_iter();
+            let mut current = self.parameters.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+            let mut output = Vec::with_capacity(values.len());
+            for value in values {
+                if self.frame % 32 == 0 {
+                    current = divisions.next().unwrap();
+                }
+                output.push(self.step(value, current));
             }
-            output.push(self.step(value, current));
-        }
-        Ok(output)
+            output
+        };
+        Ok(if count >= 4096 {
+            py.detach(render)
+        } else {
+            render()
+        })
     }
 }

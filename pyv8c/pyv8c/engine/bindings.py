@@ -139,7 +139,7 @@ class Bindings:
         with self._lock:
             if message not in self._order_mismatches:
                 self._order_mismatches.add(message)
-                logger.warning("pyv8c: {}", message)
+                logger.debug("pyv8c: {}", message)
 
     def record_unimplemented_iteration_source(self, name):
         """Record a missing host capability without labelling the baseline inconsistent."""

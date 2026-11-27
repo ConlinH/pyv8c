@@ -24,6 +24,8 @@ python312 -c "import pyv8c; from pyv8c import pyv8; print(pyv8.__file__, pyv8c._
 
 ## 源码构建
 
+Cargo 会下载与目标平台匹配的固定版本 Skia 预编译库，用于原生 Canvas 和布局文字测量。Linux 构建还需要 Fontconfig 和 FreeType 开发包，Ubuntu 上对应 `libfontconfig1-dev` 和 `libfreetype6-dev`。
+
 ### Windows 本地构建
 
 本机构建发行包时，先按 [pyv8 文档](../../pyv8/README.md)准备 V8，然后在仓库根目录使用 CPython 3.12：
@@ -65,7 +67,7 @@ V8 和 Chromium 工具链并耗费较长时间及磁盘空间；可通过 `PYV8_
 只有这些构建输入本身变化时才需要下载并重新构建 V8，耗时较长且需要足够磁盘空间。
 回退还会按旧 key 布局做一次精确匹配，以兼容调整前已保存的缓存（迁移期只需重编一次）。
 恢复的缓存会先校验 GN stamp。可用资源及缓存效果需在 Actions 中确认。
-各平台任务安装 wheel 后运行冒烟测试、音频与 DOM 原生组件回归，以及原生崩溃冒烟；Linux 和 macOS 另检查原生参数桥接，Windows wheel 测试矩阵另跑架构层门禁。这些都不代表浏览器完整测试全部通过。
+各平台安装 wheel 后，在源码目录外验证静态 `NodeList` 的节点身份、Grid 重排、Canvas 和 OffscreenCanvas 像素，以及 PNG、JPEG、WebP 编解码。各平台也运行音频与 DOM 原生组件回归和原生崩溃冒烟。Linux 和 macOS 另检查原生参数桥接，Windows wheel 测试矩阵另跑架构层门禁。
 
 ## 实现接口
 

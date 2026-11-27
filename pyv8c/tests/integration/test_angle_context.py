@@ -213,8 +213,7 @@ async def test_page_webgl_triangle_uses_angle(automatic):
 @pytest.mark.skipif(not os.environ.get('PYV8C_ANGLE_DIR'), reason='ANGLE libraries not supplied')
 async def test_angle_state_shader_buffer_and_canvas_encoding():
     import base64
-    import io
-    from PIL import Image
+    from pyv8c._native._native import RasterImage
     from pyv8c.async_api import Browser
 
     browser = (await Browser(real_network=False, angle_library_dir=os.environ['PYV8C_ANGLE_DIR']).__aenter__())
@@ -238,8 +237,8 @@ async def test_angle_state_shader_buffer_and_canvas_encoding():
                   gl.getShaderParameter(shader, gl.DELETE_STATUS), canvas.toDataURL()];
         })()''')
         assert result[:6] == [[255, 0, 0, 255], [False, True], 3, 12, False, True]
-        image = Image.open(io.BytesIO(base64.b64decode(result[6].split(',')[1])))
-        assert image.getpixel((0, 0)) == (255, 0, 0, 255)
+        image = RasterImage.decode(base64.b64decode(result[6].split(',')[1]))
+        assert image.read(0, 0, 1, 1) == bytes((255, 0, 0, 255))
         page.evaluate('''window.testGL = document.createElement('canvas').getContext('webgl');
           window.testBuffer = testGL.createBuffer(); testGL.bindBuffer(testGL.ARRAY_BUFFER, testBuffer);
           testGL.bufferData(testGL.ARRAY_BUFFER, new Uint8Array([1, 2]), testGL.STATIC_DRAW);''')

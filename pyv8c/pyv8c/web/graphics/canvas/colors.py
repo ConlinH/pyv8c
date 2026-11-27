@@ -1,50 +1,86 @@
-"""Canvas colors implementation."""
+"""Parse CSS colors used for canvas painting."""
 
+import colorsys
 import math
 import re
 
+from ...css.colors import NAMED_COLORS
+
 
 def parses_as_color(value):
-    """Whether the canvas colour parser would take this string."""
-    text = str(value).strip()
-    if not text:
-        return False
-    if text.lower() == "transparent":
-        return True
-    if re.fullmatch(r"rgba?\([^)]*\)|hsla?\([^)]*\)|hwb\([^)]*\)|lab\([^)]*\)|lch\([^)]*\)"
-                    r"|oklab\([^)]*\)|oklch\([^)]*\)|color\([^)]*\)", text, re.I):
-        return True
-    try:
-        from PIL import ImageColor
-        ImageColor.getrgb(text)
-        return True
-    except (ImportError, ValueError):
-        return False
+    return parse_color(value) is not None
 
 
 def canvas_color(value):
-    value = str(value or "").strip().lower()
-    named = {"red": (255, 0, 0, 255), "green": (0, 128, 0, 255), "blue": (0, 0, 255, 255),
-             "black": (0, 0, 0, 255), "white": (255, 255, 255, 255), "transparent": (0, 0, 0, 0)}
-    if value in named: return named[value]
-    if value.startswith("#"):
-        h = value[1:]
-        if len(h) in (3, 4): h = ''.join(c * 2 for c in h)
-        if len(h) == 6: h += "ff"
-        try: return tuple(int(h[i:i+2], 16) for i in (0, 2, 4, 6))
-        except ValueError: return (0, 0, 0, 255)
-    m = re.match(r"rgba?\(([^)]+)\)", value)
-    if m:
-        p = [x.strip() for x in m.group(1).split(',')]
-        try:
-            rgb = [round(float(x[:-1]) * 2.55) if x.endswith('%') else int(float(x)) for x in p[:3]]
-            if len(p) > 3:
-                a = float(p[3]) * 255 if not p[3].endswith('%') else float(p[3][:-1]) * 2.55
+    red, green, blue, alpha = parse_color(value) or (0, 0, 0, 1.0)
+    return red, green, blue, math.floor(alpha * 255 + 0.5)
+
+
+def _fraction(text):
+    value = float(text.removesuffix('%'))
+    if not math.isfinite(value):
+        raise ValueError("non-finite color component")
+    return value / 100 if text.endswith('%') else value
+
+
+def _clamp(value):
+    return max(0.0, min(1.0, value))
+
+
+def _hue(text):
+    angle = re.fullmatch(r'([+-]?(?:\d*\.\d+|\d+\.?)(?:e[+-]?\d+)?)(deg|grad|rad|turn)?', text)
+    if angle is None:
+        raise ValueError("invalid hue")
+    return float(angle[1]) * {None: 1/360, 'deg': 1/360, 'grad': 1/400,
+                              'rad': 1/math.tau, 'turn': 1}[angle[2]] % 1
+
+
+def parse_color(value):
+    """Return straight RGB and an alpha fraction, or None for an invalid color."""
+    text = str(value).strip().lower()
+    if text in NAMED_COLORS:
+        argb = NAMED_COLORS[text]
+        return (argb >> 16 & 255, argb >> 8 & 255, argb & 255, (argb >> 24) / 255)
+    if re.fullmatch(r'#[0-9a-f]+', text):
+        digits = text[1:]
+        if len(digits) in (3, 4):
+            digits = ''.join(channel * 2 for channel in digits)
+        if len(digits) in (6, 8):
+            red, green, blue, alpha = bytes.fromhex(digits.ljust(8, 'f'))
+            return red, green, blue, alpha / 255
+    match = re.fullmatch(r'(rgba?|hsla?|hwb)\(([^()]*)\)', text)
+    if match is None:
+        return None
+    name, arguments = match.groups()
+    if ',' in arguments:
+        components = [part.strip() for part in arguments.split(',')]
+    else:
+        channels, slash, opacity = arguments.partition('/')
+        components = channels.split()
+        if slash:
+            components.append(opacity.strip())
+    if len(components) not in (3, 4):
+        return None
+    try:
+        alpha = _clamp(_fraction(components[3])) if len(components) == 4 else 1.0
+        if name.startswith('rgb'):
+            rgb = [_clamp(_fraction(part) / (1 if part.endswith('%') else 255))
+                   for part in components[:3]]
+        elif name.startswith('hsl'):
+            hue, saturation, lightness = components[:3]
+            rgb = colorsys.hls_to_rgb(_hue(hue), _clamp(_fraction(lightness)),
+                                     _clamp(_fraction(saturation)))
+        else:
+            hue, white, black = components[:3]
+            white, black = _clamp(_fraction(white)), _clamp(_fraction(black))
+            if white + black >= 1:
+                rgb = [white / (white + black)] * 3
             else:
-                a = 255
-            return tuple(max(0, min(255, int(x))) for x in (*rgb, a))
-        except (ValueError, IndexError): pass
-    return (0, 0, 0, 255)
+                rgb = [channel * (1 - white - black) + white
+                       for channel in colorsys.hsv_to_rgb(_hue(hue), 1, 1)]
+        return (*(math.floor(channel * 255 + 0.5) for channel in rgb), alpha)
+    except (ValueError, OverflowError):
+        return None
 
 
 def number_text(value):
@@ -52,35 +88,6 @@ def number_text(value):
     if math.isnan(value): return "NaN"
     if math.isinf(value): return "Infinity" if value > 0 else "-Infinity"
     return f"{value:g}"
-
-
-def parse_color(value):
-    """The RGBA a canvas colour string parses to (alpha 0..1), or ``None`` when refused."""
-    text = str(value).strip()
-    if not text: return None
-    if text.lower() == "transparent": return (0, 0, 0, 0.0)
-    match = re.fullmatch(r"rgba?\(([^)]*)\)", text, re.I)
-    if match:
-        parts = [part.strip() for part in match.group(1).split(",")]
-        if len(parts) not in (3, 4): return None
-        try:
-            channels = [round(float(part[:-1]) * 2.55) if part.endswith("%") else int(float(part))
-                        for part in parts[:3]]
-            alpha = 1.0 if len(parts) == 3 else (
-                float(parts[3][:-1]) / 100 if parts[3].endswith("%") else float(parts[3]))
-        except ValueError:
-            return None
-        return (*(max(0, min(255, channel)) for channel in channels), max(0.0, min(1.0, alpha)))
-    if re.fullmatch(r"hsla?\([^)]*\)", text, re.I):
-        red, green, blue, alpha = canvas_color(text)
-        return (red, green, blue, alpha / 255)
-    try:
-        from PIL import ImageColor
-        parts = ImageColor.getrgb(text)
-    except (ImportError, ValueError):
-        return None
-    channels = tuple(parts) + (255,) * (4 - len(parts))
-    return (channels[0], channels[1], channels[2], channels[3] / 255)
 
 
 def serialize_color(rgba):

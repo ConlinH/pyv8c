@@ -83,6 +83,13 @@ def class_for_tag(tag):
     return TAG_CLASSES.get(name) or _unknown_or_custom(name)
 
 
+_DEFAULT_CLASS_FOR_TAG = class_for_tag
+
+
+def uses_standard_factory():
+    return class_for_tag is _DEFAULT_CLASS_FOR_TAG
+
+
 def class_for_local_name(local_name):
     """The class for a local name *as written*: ``createElementNS`` does not lower-case
     the name it was given, so ``DIV`` is an unknown element to it.

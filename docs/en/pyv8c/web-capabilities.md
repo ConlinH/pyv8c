@@ -54,7 +54,9 @@ The V8 built-in global segment (`Object`, `Function`, `SuppressedError`, etc.) i
 
 ## Canvas and SVG
 
-The 2D context of Canvas/OffscreenCanvas supports linear and radial gradients and color stops, rect paths, size resets, and context attributes. Pillow provides the drawing surface, and font measurement uses existing text capabilities. Assigning a size resets pixels and drawing state while preserving the context object and creation options. Framework drawing is not equivalent to Chrome's full rasterization, color management, or GPU rendering.
+The 2D context of Canvas/OffscreenCanvas supports linear and radial gradients and color stops, rect paths, size resets, and context attributes. The native Skia CPU backend handles drawing, bitmap operations, and PNG, JPEG, and WebP encoding. Font measurement uses the existing text engine. Assigning a size resets pixels and drawing state while preserving the context object and creation options. Framework drawing is not equivalent to Chrome's full rasterization, color management, or GPU rendering.
+
+Compare exported Canvas PNGs by decoding them to pixels first. Encoders can produce different compressed bytes from the same pixels.
 
 SVGPoint and SVGRect provide mutable single-precision numbers, while SVGMatrix retains double precision; these attributes reject non-finite values. getCTM combines ancestor transform, viewBox, and the implemented preserveAspectRatio alignment. The validation scope of getBBox and isPointInFill is rectangles and rectangle descendants and does not represent full path/text geometry or filter effects.
 

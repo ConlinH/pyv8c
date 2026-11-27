@@ -1,6 +1,6 @@
 # pyv8c 基准
 
-本目录测量框架自身的性能：原生桥接、执行调度、Web API、样式布局、JS 计算、启动装配、页面生命周期，以及同步/异步两套公开入口。**唯一入口是 `benchmark.py`**；`cases/` 下的模块是它的测量后端，由子进程逐个调用，不单独作为命令行工具使用。运行前先安装本仓库的 `pyv8c`（含已构建的原生扩展），从仓库根目录执行。
+本目录测量原生桥接、执行调度、Web API、样式布局、JS 计算、启动装配、页面生命周期和同步/异步入口。常规基准入口是 `benchmark.py`，由它在子进程里调用 `cases/` 下的测量模块。全文档布局的并发基准使用独立入口 `python -m benchmarks.layout_document`。运行前先安装本仓库的 `pyv8c`（含已构建的原生扩展），从仓库根目录执行。
 
 ## 快速开始
 
@@ -32,7 +32,7 @@ python benchmarks/benchmark.py --runs 5 --output "$env:TEMP/run.json"   # 与基
 | 执行调度 | `execution_*`（dispatch/routed/evaluate/result/native/script/idle/ua/dom/concurrent/timer_load） | `cases/execution.py` | 队列往返、owner 内调度、标量/对象求值、原生执行、空闲 CPU、协作并发、timer 干扰 |
 | 原生桥接 | `bridge_*`（callback/method/getter/setter/参数/python_call/exec_cached/snapshot 系列） | `cases/native_bridge.py` | 函数/IDL 成员、对象与字符串参数、JS 回调、缓存脚本、对象快照 |
 | Web API | `web_*`（getter/属性读写/转换/观察/id 查询/选择器/matches/事件/mixed） | `cases/web_api.py` | 128 组 DOM 节点上的分项与混合操作 |
-| 样式布局 | `style_*`（layout/computed/cached/universal/cold/shadow） | `cases/style.py` | 128 元素 × 300 规则，重排、计算样式、缓存命中、Shadow DOM |
+| 样式布局 | `style_*`（layout/computed/cached/universal/cold/shadow/color/color_cached/color_width） | `cases/style.py` | 128 元素 × 300 规则，重排、计算样式、缓存命中、Shadow DOM |
 | JS 计算 | `javascript_*`（trig/hoisted_trig/integer/float × fresh/retained） | `cases/js_compute.py` | sin/cos、整数与浮点循环，fresh/retained 生命周期，pyv8c 与裸 Context |
 | 公开入口 | `entrypoint_sync_*`、`entrypoint_async_*`（evaluate/result/ua/dom/wait） | `cases/entrypoints.py` | 同一负载下同步门面与异步门面的延迟 |
 
@@ -53,8 +53,17 @@ python benchmarks/benchmark.py --cases web_selector,web_attribute_write --runs 5
 python benchmarks/benchmark.py --cases web_selector --runs 1 --web-profile-dir build/web-api-profiles
 python -c "import pstats; pstats.Stats('build/web-api-profiles/selector.pstats').strip_dirs().sort_stats('cumulative').print_stats(20)"
 
+# DOM 解析与失效：无网络，分别测文档解析、属性修改后查询和修改后读取布局
+python benchmarks/benchmark.py --cases style_parse_first,style_mutation_query,style_mutation_layout --style-iterations 25 --runs 3 --output "$env:TEMP/dom-query-layout.json"
+
+# DOM 批量属性选择器：每线程一个 Browser，分别测重复查询、单点修改和整片替换
+python benchmarks/benchmark.py --cases dom_selector_1,dom_selector_2,dom_selector_4 --dom-selector-workload repeat --dom-selector-iterations 400 --runs 3
+python benchmarks/benchmark.py --cases dom_selector_1,dom_selector_2,dom_selector_4 --dom-selector-workload mutate --dom-selector-iterations 400 --runs 3
+python benchmarks/benchmark.py --cases dom_selector_1,dom_selector_2,dom_selector_4 --dom-selector-workload replace --dom-selector-iterations 16 --runs 3
+
 # 样式布局
 python benchmarks/benchmark.py --cases style_layout,style_computed,style_cached,style_shadow --style-iterations 12 --runs 5 --output "$env:TEMP/style.json"
+python benchmarks/benchmark.py --cases style_universal,style_color,style_color_cached,style_color_width --style-iterations 12 --runs 5
 
 # JS 计算：pyv8c 页面 与 裸 Context 两套引擎
 python benchmarks/benchmark.py --cases javascript_integer_retained,javascript_float_retained --javascript-engine pyv8c --runs 5 --output "$env:TEMP/js-page.json"
@@ -78,7 +87,11 @@ python benchmarks/benchmark.py --cases lifecycle_pages --lifecycle-count 1000 --
 
 ## 口径与复现
 
+Rust 全文档布局的复现命令、历史对照和多线程剖析见
+[Rust Layout 报告](rust-layout-results.md)。
+
 - 独立的 WebSocket 回环基准在一个进程中输出逐轮 JSON，记录连接就绪时间、消息往返 p50/p95、连接打开时新增的线程和 RSS，以及 Browser 关闭耗时。安装了 `psutil` 时才测量 RSS。
+- DOM 批量属性选择器使用同一份 4,000 节点离线页面。每次操作包含所选修改和随后的查询。吞吐按所有线程合计，P95 按单次端到端操作计算。Windows 和 Linux 在页面加载后、计时前和计时后分别采样整进程私有内存，计时后采样时 Browser 仍打开。
 - 每轮在**独立子进程**中测量，避免 V8 热身与内存状态串扰；重负载项（冷编译、内存、JS 计算、原生桥接、生命周期）尤其如此。正式比较在同一机器串行交替运行至少五轮。
 - 输出保留源码树 SHA-256、加载二进制 SHA-256、V8 版本、原生构建指纹与 worktree 摘要。DOM 源码与实际加载的 `_native` 构建摘要不符、或 `_pyv8` 与构建记录不符时拒绝测量；需先 `python setup.py build_ext --inplace` 重建。
 - `us/crossing`、`us/iteration`、`us/op`、`us/batch` 是整轮耗时除以各自的操作数；延迟样本、p99、最大值保留原批次口径，不要混读。

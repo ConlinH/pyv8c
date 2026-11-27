@@ -204,14 +204,22 @@ fn oscillator_block<'py>(
     if kind >= 4 || high >= 36 || low >= 36 || !increment.is_finite() || increment <= 0.0 {
         return Err(PyValueError::new_err("invalid oscillator parameters"));
     }
-    let mut out = Vec::with_capacity(count.saturating_mul(4));
-    let mut state = OscillatorState::default();
-    for frame in 0..count {
-        let phase = state.step(frame, increment, frame >= 128);
-        out.extend_from_slice(
-            &wave_sample(kind, phase * SIZE as f64, high, low, mix).to_le_bytes(),
-        );
-    }
+    let render = || {
+        let mut out = Vec::with_capacity(count.saturating_mul(4));
+        let mut state = OscillatorState::default();
+        for frame in 0..count {
+            let phase = state.step(frame, increment, frame >= 128);
+            out.extend_from_slice(
+                &wave_sample(kind, phase * SIZE as f64, high, low, mix).to_le_bytes(),
+            );
+        }
+        (out, state)
+    };
+    let (out, state) = if count >= 4096 {
+        py.detach(render)
+    } else {
+        render()
+    };
     Ok((
         PyBytes::new(py, &out),
         state.phase,

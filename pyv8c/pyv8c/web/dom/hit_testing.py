@@ -9,30 +9,11 @@ deepest first.  Measured against Chrome 153.
 
 from pyv8c import pyv8
 
-from .element import Element
-from .layout import Box, _child_elements, layout_snapshot, positioned_box
+from .layout import layout_snapshot
 
 
 #: Viewport used when a document has no environment to ask, matching ``dom.layout``.
 _DEFAULT_VIEWPORT = (1280, 720)
-
-_COLLAPSED_VISIBILITY = ("hidden", "collapse")
-
-
-def border_box(element):
-    """The element's box in viewport coordinates, as ``getBoundingClientRect`` reports it."""
-    return positioned_box(element)
-
-
-def _inside(box, x, y):
-    """Whether the point is in the box, half-open as Chromium tests it."""
-    return (box.left <= x < box.left + box.width
-            and box.top <= y < box.top + box.height)
-
-
-def contains(element, x, y):
-    """Whether the point is inside *element*'s box, positioned as the hit test reads it."""
-    return _inside(border_box(element), x, y)
 
 
 def viewport_size(document):
@@ -49,41 +30,6 @@ def viewport_size(document):
     )
 
 
-def _hit_testable(style):
-    """Whether a box is a hit-test target at all, before its children are tried."""
-    return (
-        style.get("visibility", "visible") not in _COLLAPSED_VISIBILITY
-        and style.get("pointer-events", "auto") != "none"
-    )
-
-
-def _collect(element, boxes, styles, x, y, found):
-    """Append the elements under the point in *element*'s subtree, deepest first.
-    Positioned siblings use their stack levels; equal levels keep tree order."""
-    box = boxes.get(element)
-    if box is None:
-        return
-    hit = _hit_testable(styles.get(element, {})) and _inside(box, x, y)
-    parent_display = styles.get(element, {}).get('display', 'block')
-
-    def stack_level(child):
-        style = styles.get(child, {})
-        if (style.get('position', 'static') == 'static'
-                and parent_display not in ('flex', 'inline-flex', 'grid', 'inline-grid')):
-            return 0
-        try:
-            return int(style.get('z-index', 'auto'))
-        except (TypeError, ValueError):
-            return 0
-
-    children = sorted(_child_elements(element), key=stack_level)
-    for child in reversed(children):
-        if isinstance(child, Element) and styles.get(child, {}).get("display") != "none":
-            _collect(child, boxes, styles, x, y, found)
-    if hit:
-        found.append(element)
-
-
 def elements_from_point(document, x, y, *, deep=False):
     """The elements under a point, topmost first, as ``elementsFromPoint`` reports them."""
     width, height = viewport_size(document)
@@ -92,9 +38,8 @@ def elements_from_point(document, x, y, *, deep=False):
     root = document.get_documentElement()
     if root is None or root is pyv8.Null:
         return []
-    boxes, styles = layout_snapshot(document)
-    found = []
-    _collect(root, boxes, styles, x, y, found)
+    boxes, _ = layout_snapshot(document)
+    found = boxes.elements_at(x, y) if boxes else []
     if not any(node is root for node in found):
         # Chromium reports the root for every point in the viewport, whatever
         # its content box measured.
@@ -124,6 +69,6 @@ def deep_element_from_point(document, x, y):
     return stack[0] if stack else None
 
 __all__ = [
-    "Box", "border_box", "contains", "element_from_point", "elements_from_point",
+    "element_from_point", "elements_from_point",
     "viewport_size",
 ]

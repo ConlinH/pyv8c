@@ -11,7 +11,7 @@ from pyv8c.async_api import Browser
 from pyv8c.foundation import system_fonts
 from pyv8c.foundation import text as text_engine
 from pyv8c.foundation.environment import PROFILE, BrowserEnvironment, profile_path
-from pyv8c.web.dom import layout
+from pyv8c.web.dom import font_measurement
 
 TEXT = "mmmmmmmmmm"
 
@@ -49,7 +49,7 @@ async def test_a_canvas_width_is_the_width_the_same_text_has_in_a_box():
     family = _latin_family()
     windows = BrowserEnvironment.from_file(PROFILE)
     measured = (await _measure(environment=windows, font=f'16px "{family}"'))
-    expected = layout.text_width(TEXT, {"font-size": "16px", "font-family": family},
+    expected = font_measurement.text_width(TEXT, {"font-size": "16px", "font-family": family},
                                  windows)
     assert measured == pytest.approx(expected, abs=0.5), (measured, expected)
 
@@ -61,7 +61,7 @@ async def test_a_canvas_follows_a_profile_that_carries_its_own_fonts():
             "path": r"C:\Windows\Fonts\consola.ttf", "index": 0}
     environment = BrowserEnvironment({"fonts.records": [fake]})
     measured = (await _measure(environment={"fonts.records": [fake]}, font='16px "FakeOnly"'))
-    expected = layout.text_width(TEXT, {"font-size": "16px", "font-family": "FakeOnly"},
+    expected = font_measurement.text_width(TEXT, {"font-size": "16px", "font-family": "FakeOnly"},
                                  environment)
     assert measured == pytest.approx(expected, abs=0.5), (measured, expected)
     # The same canvas with the machine's own table measures something else for that name:
@@ -72,7 +72,7 @@ async def test_a_canvas_follows_a_profile_that_carries_its_own_fonts():
 async def test_a_family_no_table_knows_uses_the_environment_default():
     """The configured browser default supplies the fallback for an unknown family."""
     windows = BrowserEnvironment.from_file(PROFILE)
-    record = layout._face_for(["sans-serif"], windows)
+    record = font_measurement._face_for(["sans-serif"], windows)
     if system_fonts.file_for(record) is None:
         pytest.skip("the profile default face is not installed")
     unknown = (await _measure(environment=windows, font='16px "Definitely Not A Font 123"'))
@@ -140,7 +140,7 @@ async def test_the_boxes_come_from_the_face_that_was_measured_with():
     # The family comes from this machine. Measure it with the host table, which names it.
     host = BrowserEnvironment.from_file(profile_path())
     answer = (await _boxes(f'16px "{family}"', environment=host))
-    record = layout._face_for([family], host)
+    record = font_measurement._face_for([family], host)
     path = system_fonts.file_for(record)
     assert path is not None
     found = text_engine.metrics(path, index=record.index, size=16.0)

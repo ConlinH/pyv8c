@@ -25,14 +25,15 @@ def test_compressor_matches_chrome_for_fixed_signal(rate, expected):
 
 
 def test_blocks_and_single_samples_share_state_across_division_boundaries():
-    values = [((i % 31) - 15) / 15 for i in range(850)]
+    lengths = (1, 17, 46, 127, 511, 4096, 148)
+    values = [((i % 31) - 15) / 15 for i in range(sum(lengths))]
     params = [(-50 + i * .001, 20 + i * .002, 4 + i * .001, .003, .25)
               for i in range(len(values))]
     single, blocks = audio.CompressorDSP(44100), audio.CompressorDSP(44100)
     expected = [single.process(value, p) for value, p in zip(values, params)]
     actual = []
     start = 0
-    for length in (1, 17, 46, 127, 511, 148):
+    for length in lengths:
         end = start + length
         actual.extend(blocks.process_block(values[start:end],
                                           [params[i] for i in range(start, end) if i % 32 == 0]))

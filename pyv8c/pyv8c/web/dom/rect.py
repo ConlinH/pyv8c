@@ -20,6 +20,9 @@ def rect_values(value):
 @interface('DOMRectReadOnly', None)
 class DOMRectReadOnly:
     def __init__(self, x=MISSING, y=MISSING, width=MISSING, height=MISSING, *_extra, **_):
+        if type(x) is type(y) is type(width) is type(height) is float:
+            self._x, self._y, self._width, self._height = x, y, width, height
+            return
         self._x = double(x)
         self._y = double(y)
         self._width = double(width)

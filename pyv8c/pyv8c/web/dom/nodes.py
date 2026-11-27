@@ -5,6 +5,8 @@
 modules sit above this one.
 """
 
+from types import MethodType
+
 from pyv8c import pyv8
 from ..._native import dom
 from ...idl import interface
@@ -21,6 +23,7 @@ from ..page_errors import HierarchyRequestError, NotFoundError, PageTypeError
 from .collections import NodeList
 from .events import EVENT_TARGET_SETATTR, EventTarget
 from .mixins import _ParentNodeMixin
+from .query_cache import IdIndex, invalidate_ancestors, publish
 from .utils import XHTML_NAMESPACE, is_element
 
 
@@ -47,13 +50,13 @@ def _contains_style(node):
     """
     if _is_style_element(node):
         return True
-    children = list(getattr(node, "_children", ()))
+    children = getattr(node, "_children", ())
     shadow = getattr(node, '_shadow_root', None)
-    if shadow is not None:
-        children.append(shadow)
-    if not children:
+    if not children and shadow is None:
         return False
     pending = list(children)
+    if shadow is not None:
+        pending.append(shadow)
     while pending:
         current = pending.pop()
         if _is_style_element(current):
@@ -63,6 +66,9 @@ def _contains_style(node):
         if shadow is not None:
             pending.append(shadow)
     return False
+
+
+_EMPTY_CHILDREN = ()
 
 
 class _ChildList(list):
@@ -89,29 +95,6 @@ class _ChildList(list):
     def __imul__(self, count): self._owner._invalidate_tree(); super().__imul__(count); return self
     def reverse(self): self._owner._invalidate_tree(); super().reverse()
     def sort(self, *args, **kwargs): self._owner._invalidate_tree(); super().sort(*args, **kwargs)
-
-
-class _IdIndex:
-    """Index only as far as a lookup needs, preserving cheap early matches."""
-    __slots__ = ('_first', '_remaining')
-
-    def __init__(self, descendants):
-        self._first = {}
-        self._remaining = descendants
-
-    def get(self, value):
-        found = self._first.get(value)
-        if found is not None or self._remaining is None:
-            return found
-        for node in self._remaining:
-            if node.nodeType == Node.ELEMENT_NODE:
-                name = node.attributes.get('id')
-                if name:
-                    self._first.setdefault(name, node)
-                    if name == value:
-                        return self._first[name]
-        self._remaining = None
-        return None
 
 
 def _subtree_nodes(node):
@@ -196,6 +179,7 @@ class Node(EventTarget):
     _on_removed_from_document = None
     _shadow_root = None
     _parser_created = False
+    _child_nodes_view = None
 
     #: ``nodeType`` reads as a constant: it is not enumerated on an instance.
     __idl_overrides__ = {"members": {"nodeType": {"property_flags": "dont_enum"}}}
@@ -211,10 +195,11 @@ class Node(EventTarget):
     DOCUMENT_POSITION_CONTAINED_BY = 16
     DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 32
 
-    def __init__(self, services=None, node_type=0, node_name="", value=None, **kw):
+    def __init__(self, services=None, node_type=0, node_name="", value=None, *, _defer_children=False, **kw):
         super().__init__(services=services, **kw)
+        children = _EMPTY_CHILDREN if _defer_children else _ChildList
         dom.initialize_node(self, node_type, node_name, value,
-                                    _ChildList, NodeList, EVENT_TARGET_SETATTR)
+                            children, NodeList, EVENT_TARGET_SETATTR)
 
     @property
     def parentElement(self):
@@ -230,8 +215,11 @@ class Node(EventTarget):
         detached node keeps its creating document, hence the realm lookup."""
         if self.nodeType == Node.DOCUMENT_NODE:
             return None
-        document_services = getattr(getattr(self, "_services", None), "document_services", None)
-        return getattr(document_services, "document", None)
+        try:
+            document_services = getattr(self._services, "document_services", None)
+            return None if document_services is None else document_services.document
+        except AttributeError:
+            return None
 
     @property
     def isConnected(self):
@@ -312,7 +300,7 @@ class Node(EventTarget):
         cached = self.__dict__.get("_descendants_cache")
         if cached is None:
             cached = tuple(self._walk_descendants())
-            self.__dict__["_descendants_cache"] = cached
+            publish(self, "_descendants_cache", cached)
         return cached
 
     def _tag_index_snapshot(self):
@@ -320,51 +308,79 @@ class Node(EventTarget):
 
         A tag query reads the same groups far more often than it changes the tree,
         and filtering the whole snapshot for one name visits every text node besides.
-        Built from the descendant snapshot, so it keeps tree order and the same
-        shadow-including reach; a local name never changes, so only tree edits
-        invalidate it.
+        Reuse a descendant snapshot if a caller already needed one. A tag-only
+        query can build the index without retaining the whole walk as well.
         """
         cached = self.__dict__.get("_tag_index_cache")
         if cached is None:
             index = {}
-            for node in self._descendant_snapshot():
+            descendants = self.__dict__.get("_descendants_cache")
+            if descendants is None:
+                descendants = self._descendants()
+            for node in descendants:
                 if node.nodeType == Node.ELEMENT_NODE:
                     index.setdefault(node.localName, []).append(node)
-            cached = index
-            self.__dict__["_tag_index_cache"] = cached
+            cached = {name: tuple(nodes) for name, nodes in index.items()}
+            publish(self, "_tag_index_cache", cached)
         return cached
 
     def _invalidate_tree(self):
-        # Only this subtree and its ancestors changed. Discard cached references
-        # immediately, including removed nodes, rather than retaining old snapshots.
-        node = self
-        while node is not None:
-            node.__dict__.pop('_descendants_cache', None)
-            node.__dict__.pop('_tag_index_cache', None)
-            node.__dict__.pop('_id_index', None)
-            node = node.parentNode
+        invalidate_ancestors(self)
         self._invalidate_layout()
 
-    def _invalidate_id_index(self):
-        node = self
-        while node is not None:
-            node.__dict__.pop('_id_index', None)
-            node = node.parentNode
+    def _invalidate_selector_attributes(self, key=None):
+        projection = self.root_node().__dict__.get('_selector_projection')
+        if projection is not None:
+            projection.invalidate(self, key)
 
-    def _invalidate_layout(self):
+    def _change_indexed_id(self, old, new):
+        if old == new:
+            return
+        # The indexes list descendants only, so the element itself is skipped.
+        for root in self.parentNode._ancestors() if self.parentNode is not None else ():
+            index = root.__dict__.get('_id_index')
+            if index is not None and not index.change(self, old, new):
+                root.__dict__.pop('_id_index')
+
+    def _invalidate_layout(self, *, style_attribute_edit=False):
         document = self if self.nodeType == Node.DOCUMENT_NODE else self.ownerDocument
-        if document is not None and hasattr(document, "layout_version"):
-            document.layout_version += 1
-            document._layout_snapshot = None
+        if document is None:
+            return
+        try:
+            version = document.layout_version
+        except AttributeError:
+            return
+        document.layout_version = version + 1
+        layout_engine = document.__dict__.get('_native_layout_document')
+        if layout_engine is not None:
+            layout_engine.invalidate(self, version, style_attribute_edit)
+        cached = document._layout_snapshot
+        partial = getattr(document, "_computed_style_snapshot", None)
+        if style_attribute_edit and (cached is not None or partial is not None):
+            from ..css.invalidation import retain_after_attribute_edit
 
-    def _find_element_by_id(self, value):
-        if not value:
-            return None
+            document._computed_style_snapshot = retain_after_attribute_edit(
+                document, self, version, cached, partial,
+            )
+        elif partial is not None:
+            document._computed_style_snapshot = None
+        document._layout_snapshot = None
+
+    def _id_lookup(self):
         index = self.__dict__.get('_id_index')
         if index is None:
-            index = _IdIndex(self._descendants())
-            self.__dict__['_id_index'] = index
-        return index.get(value)
+            index = IdIndex(self._descendants())
+            publish(self, "_id_index", index)
+        return index
+
+    def _find_element_by_id(self, value):
+        return self._id_lookup().get(value) if value else None
+
+    def _id_candidates(self, value, *, finish):
+        if finish:
+            return self._id_lookup().candidates(value, finish=True)
+        index = self.__dict__.get('_id_index')
+        return index.candidates(value, finish=False) if index is not None else None
 
     def get_nodeType(self): return self.nodeType
     def get_nodeName(self): return self.nodeName
@@ -375,7 +391,11 @@ class Node(EventTarget):
     def get_nextSibling(self): return self.nextSibling or pyv8.Null
     def get_parentNode(self): return self.parentNode or pyv8.Null
     def get_parentElement(self): return self.parentElement or pyv8.Null
-    def get_childNodes(self): return self._child_nodes_view
+    def get_childNodes(self):
+        view = self._child_nodes_view
+        if view is None:
+            view = dom.create_child_nodes_view(self, NodeList, EVENT_TARGET_SETATTR)
+        return view
     def get_firstChild(self): return self.firstChild
     def get_lastChild(self): return self.lastChild
     def get_textContent(self):
@@ -429,10 +449,13 @@ class Node(EventTarget):
             previous = children[position - 1] if position else None
             next_ = (children[position + 1]
                      if position is not None and position + 1 < len(children) else None)
-            try:
-                children.remove(node)
-            except ValueError:
-                pass
+            if children is _EMPTY_CHILDREN:
+                parent._invalidate_tree()
+            else:
+                try:
+                    children.remove(node)
+                except ValueError:
+                    pass
             node.parentNode = None
             if position is not None:
                 _record_mutation(parent, "childList", removed=[node],
@@ -442,22 +465,34 @@ class Node(EventTarget):
         if not isinstance(node, Node): raise PageTypeError("The new child is not a Node")
         # HierarchyRequestError fires only when ``node`` is an inclusive ancestor of
         # ``self``; re-inserting an existing descendant is a plain move.
-        if node is self or node.fn_contains(self):
-            raise HierarchyRequestError("The new child element contains the parent.")
+        if node is not self:
+            contains = node.fn_contains
+            # A leaf's ordinary contains implementation only compares identity after
+            # converting its WebIDL argument. Both arguments are already Node objects.
+            ordinary_leaf = (not node._children and type(contains) is MethodType
+                             and contains.__func__ is _NODE_CONTAINS and contains.__self__ is node)
+            if ordinary_leaf or not contains(self):
+                return
+        raise HierarchyRequestError("The new child element contains the parent.")
 
     def _adopt_child(self, node, index=None):
         self._ensure_adoptable(node)
         self._detach_from_parent(node)
         _adopt_subtree(node, getattr(self, "_services", None))
         node.parentNode = self
+        children = self._children
+        if children is _EMPTY_CHILDREN:
+            children = self._children = _ChildList(self)
         if index is None:
-            self._children.append(node)
+            children.append(node)
             position = len(self._children) - 1
         else:
             position = index if index >= 0 else max(len(self._children) + index, 0)
             position = min(position, len(self._children))
-            self._children.insert(position, node)
-        for inserted in (node, *_subtree_nodes(node)):
+            children.insert(position, node)
+        has_descendants = node._children or node._shadow_root is not None
+        inserted_nodes = (node, *_subtree_nodes(node)) if has_descendants else (node,)
+        for inserted in inserted_nodes:
             callback = getattr(inserted, '_on_tree_inserted', None)
             if callback is not None:
                 callback()
@@ -481,7 +516,7 @@ class Node(EventTarget):
                 callback(node)
                 # A subtree can arrive in one insertion, so its detached frames and scripts
                 # said nothing: the steps run per shadow-including descendant.
-                if node.isConnected:
+                if (node._children or node._shadow_root is not None) and node.isConnected:
                     for descendant in _subtree_nodes(node):
                         callback(descendant)
         return node
@@ -494,7 +529,11 @@ class Node(EventTarget):
             self._notify_removed(child)
         if removed:
             _record_mutation(self, "childList", removed=removed)
-        self._children.clear()
+        children = self._children
+        if children is _EMPTY_CHILDREN:
+            self._invalidate_tree()
+        else:
+            children.clear()
         for node in nodes:
             self._adopt_child(node)
 
@@ -670,6 +709,9 @@ class Node(EventTarget):
     def outer_html(self): return self.get_textContent()
 
 
+_NODE_CONTAINS = Node.fn_contains
+
+
 @interface('DocumentFragment', 'Node')
 class DocumentFragment(_ParentNodeMixin, Node):
     def __init__(self, *_extra, services=None, **kw):
@@ -701,8 +743,8 @@ class DocumentFragment(_ParentNodeMixin, Node):
         if selector is MISSING:
             raise missing_error('DocumentFragment', 'querySelectorAll', 1, 0, constructor=False)
         selector = dom_string(selector)
-        document = self._document()
-        return document.query_selector_all(selector, self) if document is not None else []
+        from ..css.selectors import select
+        return NodeList(values=select(self, selector))
     def _clone_shallow(self): return DocumentFragment(services=self._services)
 
 

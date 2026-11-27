@@ -24,6 +24,8 @@ For core rules, see [Architecture](architecture.md): fixes go into the layer tha
 
 ## Building from Source
 
+Cargo downloads pinned Skia binaries for the target platform. Native Canvas and layout text measurement use these binaries. Linux builds also need the Fontconfig and FreeType development packages, named `libfontconfig1-dev` and `libfreetype6-dev` on Ubuntu.
+
 ### Windows Local Build
 
 When building a distribution package locally, first prepare V8 according to the [pyv8 documentation](../../../pyv8/README.md), then use CPython 3.12 at the repository root:
@@ -66,7 +68,7 @@ the same SDK, GN args, and sources, avoiding a V8 rebuild. V8 is downloaded and 
 inputs change, which takes considerable time and disk space. Fallback also tries the old exact key layout to
 reuse caches saved before the key change (one rebuild per platform during migration). Restored caches are
 checked against the GN stamp. Verify available resources and cache effectiveness in GitHub Actions.
-All platform jobs run an installed-wheel smoke test, audio and DOM component regressions, and a native crash smoke; Linux and macOS also check the native parameter bridge, and the Windows wheel test matrix also runs the architecture layering gate. None of this means the full browser test suite passes.
+All platforms exercise the installed wheel outside the source tree. The smoke script checks static `NodeList` identity, Grid reflow, Canvas and OffscreenCanvas pixels, and PNG, JPEG, and WebP encoding and decoding. All platforms also run audio and DOM component regressions and a native crash smoke. Linux and macOS check the native parameter bridge, and the Windows wheel test matrix runs the architecture layering gate.
 
 ## Implementing an Interface
 

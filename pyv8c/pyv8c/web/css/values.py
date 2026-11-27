@@ -211,6 +211,45 @@ def length_math(text, reference=0.0):
         return None
 
 
+def affine_length(text):
+    """Compile length arithmetic to absolute pixels and a containing-size coefficient."""
+    expression = re.sub(r'calc\(', '(', text, flags=re.I)
+    expression = re.sub(
+        r'((?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px|%)',
+        lambda m: m[1] if m[2].lower() == 'px' else f'({m[1]}/100*basis)',
+        expression, flags=re.I,
+    )
+
+    def coefficients(node):
+        if isinstance(node, ast.Name) and node.id == 'basis':
+            return 0.0, 1.0
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            pixels, ratio = coefficients(node.operand)
+            return (-pixels, -ratio) if isinstance(node.op, ast.USub) else (pixels, ratio)
+        if isinstance(node, ast.BinOp):
+            left, left_ratio = coefficients(node.left)
+            right, right_ratio = coefficients(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right, left_ratio + right_ratio
+            if isinstance(node.op, ast.Sub):
+                return left - right, left_ratio - right_ratio
+            if isinstance(node.op, ast.Mult) and not (left_ratio and right_ratio):
+                return left * right, left * right_ratio + right * left_ratio
+            if isinstance(node.op, ast.Div) and not right_ratio:
+                return left / right, left_ratio / right
+        return _arithmetic(ast.unparse(node)), 0.0
+
+    try:
+        tree = ast.parse(expression.strip(), mode='eval')
+        if sum(1 for _ in ast.walk(tree)) <= 128:
+            result = coefficients(tree.body)
+            if all(map(math.isfinite, result)):
+                return result
+    except (ValueError, SyntaxError, ArithmeticError, RecursionError):
+        pass
+    return None
+
+
 def numeric_calcs(text):
     # Work from the innermost calc outward, without evaluating arbitrary code.
     for _ in range(32):

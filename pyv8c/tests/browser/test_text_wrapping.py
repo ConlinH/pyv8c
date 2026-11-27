@@ -9,7 +9,7 @@ import pytest
 
 from pyv8c.async_api import Browser
 from pyv8c.foundation.environment import PROFILE, BrowserEnvironment
-from pyv8c.web.dom import layout
+from pyv8c.web.dom import font_measurement
 
 
 @pytest.fixture(scope="module")
@@ -240,4 +240,4 @@ async def test_letter_spacing_is_charged_after_every_character(page):
         "[document.getElementById('t').offsetWidth]"))
     assert answer == [32], answer
     style = {"font-family": "Arial", "font-size": "16px", "letter-spacing": "2px"}
-    assert layout.text_width("abc", style) == pytest.approx(31.797, abs=0.01)
+    assert font_measurement.text_width("abc", style) == pytest.approx(31.797, abs=0.01)

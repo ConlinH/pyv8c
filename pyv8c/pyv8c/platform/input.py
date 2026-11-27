@@ -35,7 +35,8 @@ from pyv8c import pyv8
 from ..foundation.host_errors import HostStateError
 from ..web.dom.activation import accepts_mouse_events, prepare_activation, complete_activation
 from ..web.dom.focus import focus_on_mousedown
-from ..web.dom.hit_testing import border_box, deep_element_from_point as element_from_point
+from ..web.dom.hit_testing import deep_element_from_point as element_from_point
+from ..web.dom.layout import layout_snapshot
 
 #: The DOM's button index and the ``buttons`` mask bit, per button name.
 BUTTON_INDEX = {"left": 0, "middle": 1, "right": 2}
@@ -232,15 +233,19 @@ class MouseInput:
             return action(x, y, None)
         if not delay:
             return self._call(dispatch, lambda x, y, known: self._click(x, y, button, click_count, known))
+        target_override = None
         def press(x, y, known):
+            nonlocal target_override
+            if known is not None and len(known) > 2:
+                target_override = known[2]
             if x is not None and y is not None:
                 self._move_to(float(x), float(y), 1, known)
-            self._down(button, click_count)
+            self._down(button, click_count, target_override)
         self._call(dispatch, press)
         try:
             await asyncio.sleep(max(0.0, float(delay)))
             self._page._check_document_generation(generation)
-            self._call(self._up, button, click_count)
+            self._call(self._up, button, click_count, target_override)
         except BaseException:
             # A cancelled press cannot synthesize a click on a replacement document.
             self._pressed = None
@@ -317,9 +322,11 @@ class MouseInput:
             frame = page.window._frame_element
             if frame is None:
                 break
-            box = border_box(frame)
-            x += box.left + box.border.get('left', 0.0) + box.padding.get('left', 0.0)
-            y += box.top + box.border.get('top', 0.0) + box.padding.get('top', 0.0)
+            boxes, _ = layout_snapshot(frame.ownerDocument)
+            if boxes:
+                point = boxes.frame_point(frame, x, y)
+                if point is not None:
+                    x, y = point
             page = page.parent_page
         viewport = page.window._environment.viewport
         return x + viewport.screen_x, y + viewport.screen_y
@@ -419,7 +426,7 @@ class MouseInput:
             self._moved = True
         self._x, self._y = x, y
         # One hit test per position: it walks the whole tree, so both answers come from it.
-        hit, target = self._hit(x, y) if known is None else known
+        hit, target = self._hit(x, y) if known is None else known[:2]
         self._cross(target, hit is not None)
         pointer = self._emit("pointermove", target, coalesced=coalesced)
         self._emit("mousemove", target)
@@ -481,8 +488,8 @@ class MouseInput:
         self._last_click = (time.monotonic(), self._x, self._y, target)
         return self._count
 
-    def _down(self, button, click_count):
-        target = self._target()
+    def _down(self, button, click_count, target_override=None):
+        target = target_override if target_override is not None else self._target()
         count = self._count_for(target, click_count)
         self._bits |= BUTTON_BIT[button]
         self._pressed, self._press_count = target, count
@@ -494,12 +501,18 @@ class MouseInput:
         if event is None or not event.defaultPrevented:
             focus_on_mousedown(target)
 
-    def _up(self, button, click_count):
-        target = self._target()
+    def _up(self, button, click_count, target_override=None):
         count = self._press_count if click_count is None else max(1, int(click_count))
         pressed = self._pressed
         self._pressed = None
         self._bits &= ~BUTTON_BIT[button]
+        if target_override is not None:
+            if (not target_override.isConnected or target_override.ownerDocument is not self._page.document
+                    or target_override._client_rect() is None):
+                return
+            if not self._has_zero_frame_viewport():
+                target_override = None
+        target = target_override if target_override is not None else self._target()
         self._emit("pointerup", target, button=BUTTON_INDEX[button])
         if not accepts_mouse_events(target):
             return
@@ -517,28 +530,48 @@ class MouseInput:
             self._emit("dblclick", clicked, detail=count)
 
     def _click(self, x, y, button, click_count, known=None):
+        target_override = (known[2] if known is not None and len(known) > 2 else None)
         if x is not None and y is not None:
             self._move_to(float(x), float(y), 1, known)
-        self._down(button, click_count)
-        self._up(button, click_count)
+        self._down(button, click_count, target_override)
+        self._up(button, click_count, target_override)
+
+    def _has_zero_frame_viewport(self):
+        window = self._page.window
+        return (window._frame_element is not None
+                and (window.innerWidth <= 0 or window.innerHeight <= 0))
 
     def _point_in(self, element, force, action):
         """The centre of *element*, once it is the element a click would reach there."""
         if element.ownerDocument is not self._page.document or not element.isConnected:
             raise HostStateError("input element belongs to a retired or detached document")
-        box = border_box(element)
-        if box.width <= 0 or box.height <= 0:
+        # Hit testing consumes transformed client coordinates, whereas layout()
+        # exposes the untransformed box used for CSS sizing.
+        rect = element._client_rect()
+        if rect is None or rect[2] <= 0 or rect[3] <= 0:
             raise HostStateError(
                 f"{describe(element)} has no box to click: it is not rendered"
             )
-        x, y = box.left + box.width / 2, box.top + box.height / 2
+        left, top, width, height = rect
+        x, y = left + width / 2, top + height / 2
         # Nothing runs between this read and the action, so the landing the check saw is
         # the one the action starts from.
         known = None if force else self._hit(x, y)
         if known is not None:
             hit = known[0]
-            covered = hit is not element and not any(
-                node is element for node in _ancestors(hit)
+            if hit is None:
+                # A zero-sized embedding can expose a deep control to the host
+                # selector API even though its child viewport cannot hit-test
+                # the control's coordinates. Keep selector-driven input aimed
+                # at the requested node in that case. For an ordinary viewport,
+                # an absent hit means the requested centre is outside its bounds.
+                zero_viewport = self._has_zero_frame_viewport()
+                if zero_viewport:
+                    known = (hit, element, element)
+            covered = (hit is None and not zero_viewport) or (
+                hit is not None and hit is not element and not any(
+                    node is element for node in _ancestors(hit)
+                )
             )
             if covered:
                 raise HostStateError(

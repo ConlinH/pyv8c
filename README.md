@@ -82,7 +82,7 @@ python312 -c "from pyv8c import pyv8; print(pyv8.__file__)"
 
 源码开发前须配置 V8 构建目录，详见[原生项目文档](pyv8/README.md)。
 
-默认 HTTP 和 WebSocket 引擎随基础依赖安装。`dev` 安装测试工具，`canvas` 提供 Pillow 绘图，`cronet` 提供可选网络引擎，`benchmark` 提供可选进程监测，`reference` 安装驱动本机 Chrome 的工具，不下载浏览器。原生扩展构建要求见 [pyv8 文档](pyv8/README.md)。
+默认 HTTP 和 WebSocket 引擎随基础依赖安装，Canvas 2D 随原生扩展提供。`dev` 安装测试工具，`cronet` 提供可选网络引擎，`benchmark` 提供可选进程监测，`reference` 安装驱动本机 Chrome 的工具，不下载浏览器。原生扩展构建要求见 [pyv8 文档](pyv8/README.md)。
 
 ## 快速开始
 

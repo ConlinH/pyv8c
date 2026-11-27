@@ -1,6 +1,8 @@
 use pyo3::{ffi, prelude::*};
 
 mod audio;
+mod canvas;
+mod layout_document;
 
 unsafe extern "C" {
     fn pyv8c_create_dom_module() -> *mut ffi::PyObject;
@@ -16,5 +18,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // The C++ initializer returns a new reference or sets a Python exception.
     let dom_module = unsafe { Bound::from_owned_ptr_or_err(py, pyv8c_create_dom_module()) }?;
     module.add("dom", dom_module)?;
+    module.add_class::<canvas::RasterCanvas>()?;
+    module.add_class::<canvas::RasterImage>()?;
+    layout_document::register(module)?;
     Ok(())
 }

@@ -36,8 +36,6 @@ Security = "https://github.com/ConlinH/pyv8c/security/advisories/new"
 # Keep the upper bound on the next major so a new Chrome TLS profile series is
 # opted into deliberately; 157 is needed to match current Chrome for TLS tests.
 cronet = ["cycronet>=144.4.7,<158"]
-# The drawing surface behind CanvasRenderingContext2D and OffscreenCanvas pixels.
-canvas = ["Pillow>=10"]
 # ANGLE libraries for the experimental opt-in WebGL backend.
 angle = ["comfy-angle==0.1.1"]
 dev = [
@@ -46,7 +44,6 @@ dev = [
     "pytest-timeout>=2.2",
     "pytest-repeat>=0.9",
     "pytest-xdist>=3.6",
-    "Pillow>=10",
     "cryptography>=42",
 ]
 # Process-memory measurements can use psutil; the benchmark also has a fallback.

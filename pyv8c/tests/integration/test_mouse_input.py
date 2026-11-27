@@ -725,3 +725,19 @@ async def test_other_pointer_events_carry_none(page):
         addEventListener(type, (e) => shapes.push([type, e.getCoalescedEvents().length])); })()""")
     (await page.mouse.click(50, 20))
     assert page.evaluate("globalThis.shapes") == [["pointerdown", 0], ["pointerup", 0]]
+
+
+@pytest.mark.parametrize('transform_target', ['input', 'div'])
+async def test_element_click_uses_transformed_client_geometry(page, transform_target):
+    await page.set_content('''<body style="margin:0"><div>
+      <input type="checkbox" style="position:absolute;left:20px;top:20px;
+        width:24px;height:24px;margin:0"></div></body>''', wait_until='commit')
+    page.evaluate(f'''document.querySelector('{transform_target}').style.transform =
+        'translate(120px, 80px)';
+      globalThis.clicked = null;
+      document.querySelector('input').addEventListener('click', e => {{
+        clicked = [e.clientX, e.clientY, e.isTrusted];
+      }});''')
+    await page.click('input')
+    assert page.evaluate("document.querySelector('input').checked") is True
+    assert page.evaluate('clicked') == [152, 112, True]

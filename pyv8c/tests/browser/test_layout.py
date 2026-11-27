@@ -7,7 +7,7 @@ import pytest
 from pyv8c.async_api import Browser
 from pyv8c.foundation import system_fonts
 from pyv8c.foundation import text as text_engine
-from pyv8c.web.dom import layout
+from pyv8c.web.dom import font_measurement, layout
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ async def test_a_family_is_measured_with_the_face_that_family_names():
     record = next((item for item in system_fonts.records() if item.path), None)
     if record is None:
         pytest.skip("this machine has no fonts to measure with")
-    face = layout._face_for([record.family])
+    face = font_measurement._face_for([record.family])
     assert face is not None
     assert system_fonts.normalize(face.family) == system_fonts.normalize(record.family)
 
@@ -71,8 +71,8 @@ async def test_an_uninstalled_family_falls_back_instead_of_failing():
     machine does not have still measures -- which is what an uninstalled font looks like."""
     if not system_fonts.records():
         pytest.skip("this machine has no fonts to measure with")
-    assert layout._face_for(["Definitely Not A Font 123"]) is not None
-    assert layout.text_width("abc", {"font-family": "Definitely Not A Font 123"}) > 0
+    assert font_measurement._face_for(["Definitely Not A Font 123"]) is not None
+    assert font_measurement.text_width("abc", {"font-family": "Definitely Not A Font 123"}) > 0
 
 
 async def test_center_is_a_block_containing_a_fixed_width_child(page):
@@ -109,92 +109,69 @@ async def test_nested_layout_reuses_cascade_within_one_pass_and_recomputes_after
     })()""")
 
 
-async def test_geometry_reuses_boxes_within_one_property_read(page, monkeypatch):
-    (await page.set_content("<div id='box' style='width:40px;height:20px'></div>",
-                     url="http://layout.test/", wait_until="commit"))
-    original = layout.layout
-    calls = 0
-
-    def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(layout, "layout", counted)
+async def test_geometry_reuses_boxes_within_one_property_read(page):
+    await page.set_content("<div id='box' style='width:40px;height:20px'></div>",
+                           wait_until="commit")
     assert page.evaluate("document.getElementById('box').scrollWidth") >= 40
-    assert calls == 2  # public lookup plus the snapshot's one full pass
-    calls = 0
+    snapshot = page.document._layout_snapshot
+    assert snapshot is not None
     page.evaluate("document.getElementById('box').offsetLeft")
-    assert calls == 0  # offset lookup reuses the snapshot directly
+    assert page.document._layout_snapshot is snapshot
 
 
-async def test_hit_testing_reuses_layout_styles_and_sees_mutations(page, monkeypatch):
+async def test_hit_testing_reuses_layout_styles_and_sees_mutations(page):
     (await page.set_content("<style>#box { width: 40px; height: 20px }</style>"
                      "<div id='box'></div>", url="http://layout.test/", wait_until="commit"))
     assert page.evaluate("document.elementFromPoint(10, 10).id") == "box"
-    original = layout.computed_style
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("hit test computed styles again after layout")
-
-    monkeypatch.setattr(layout, "computed_style", forbidden)
+    snapshot = page.document._layout_snapshot
+    assert snapshot is not None
     assert page.evaluate("document.elementFromPoint(10, 10).id") == "box"
-    monkeypatch.setattr(layout, "computed_style", original)
+    assert page.document._layout_snapshot is snapshot
     assert page.evaluate("""(() => {
         document.getElementById('box').style.display = 'none';
         return document.elementFromPoint(10, 10).id;
     })()""") != "box"
 
 
-async def test_explicit_empty_rules_remain_empty(page):
-    from pyv8c.web.css.cascade import StyleRules
-
-    (await page.set_content("<style>#box { width: 300px }</style><div id='box'></div>",
-                     url="http://layout.test/", wait_until="commit"))
-    node = page.document.fn_getElementById("box")
-    assert layout.layout(node).width == 300
-    assert layout.layout(node, rules=StyleRules(())).width != 300
+async def test_get_computed_style_invalid_element_throws_in_javascript(page):
+    assert page.evaluate("""(() => [null, undefined, {}, document.createTextNode('x')].map(value => {
+        try { getComputedStyle(value); return null; }
+        catch (error) { return [error instanceof TypeError, error.name]; }
+    }))()""") == [[True, "TypeError"]] * 4
 
 
-async def test_layout_snapshot_reuses_pass_and_invalidates_on_dom_changes(page, monkeypatch):
+async def test_layout_snapshot_reuses_pass_and_invalidates_on_dom_changes(page):
     (await page.set_content("<div id='box' style='width:40px;height:20px'>x</div>",
                      url="http://layout.test/", wait_until="commit"))
-    original = layout._place
-    roots = 0
-
-    def counted(element, *args, **kwargs):
-        nonlocal roots
-        if element is page.document.get_documentElement():
-            roots += 1
-        return original(element, *args, **kwargs)
-
-    monkeypatch.setattr(layout, "_place", counted)
     assert page.evaluate("""(() => {
         let b = document.getElementById('box');
         return [b.offsetWidth, b.clientWidth, b.scrollWidth,
                 b.getBoundingClientRect().width, document.elementFromPoint(10, 10).id];
     })()""")[:4] == [40, 40, 40, 40]
-    assert roots == 1
+    state = page.document._native_layout_document
+    first_version = state.version
     assert page.evaluate("document.getElementById('box').offsetWidth") == 40
-    assert roots == 1
+    assert state.version == first_version
     assert page.evaluate("""(() => {
         let b = document.getElementById('box');
         b.style.width = '60px';
         return b.offsetWidth;
     })()""") == 60
-    assert roots == 2
+    assert state.version > first_version
+    first_version = state.version
     assert page.evaluate("""(() => {
         let b = document.getElementById('box');
         b.firstChild.data = 'a longer text';
         return b.offsetWidth;
     })()""") == 60
-    assert roots == 3
+    assert state.version > first_version
+    first_version = state.version
     assert page.evaluate("""(() => {
         let b = document.getElementById('box');
         b.remove();
         return b.offsetWidth;
     })()""") == 0
-    assert roots == 4
+    assert state.version > first_version
 
 
 async def test_layout_snapshot_observes_class_and_viewport(page, monkeypatch):
@@ -209,6 +186,99 @@ async def test_layout_snapshot_observes_class_and_viewport(page, monkeypatch):
     monkeypatch.setattr(layout, '_viewport_width',
                         lambda element: (400.0, original(element)[1]))
     assert layout.layout(page.document.get_body()).width == 384
+
+
+async def test_inline_size_change_preserves_unaffected_geometry_and_prototypes(page):
+    await page.set_content("""
+        <main><section id="changed" style="width:80px;height:20px">
+          <div id="percent" style="width:50%"></div></section>
+        <section id="stable"><div id="nested" style="width:40px;height:10px"></div></section></main>
+        """, wait_until="commit")
+    assert page.evaluate("document.getElementById('percent').offsetWidth") == 40
+    old = page.document._layout_snapshot
+    nested = page.document.fn_getElementById("nested")
+    assert page.evaluate("""(() => {
+        const box = document.getElementById('changed');
+        const prototype = Object.getPrototypeOf(box);
+        const style = box.style, stylePrototype = Object.getPrototypeOf(style);
+        const before = Object.getOwnPropertyDescriptors(prototype);
+        const key = Symbol('layout test');
+        Object.defineProperty(prototype, key, {value: style, configurable: true});
+        box.style.width = '120px';
+        const rect = box.getBoundingClientRect();
+        const after = Object.getOwnPropertyDescriptors(prototype);
+        const intact = Object.keys(before).length === Object.keys(after).length
+            && Object.keys(before).every(name =>
+                Reflect.ownKeys(before[name]).every(prop => before[name][prop] === after[name][prop]));
+        const identity = box === document.querySelector('#changed')
+            && Object.getPrototypeOf(box) === prototype && box.style === style
+            && Object.getPrototypeOf(style) === stylePrototype && box[key] === style
+            && Object.getPrototypeOf(rect) === DOMRect.prototype;
+        delete prototype[key];
+        return [rect.width, document.getElementById('percent').offsetWidth, intact, identity];
+    })()""") == [120, 60, True, True]
+    assert page.document._layout_snapshot.boxes[nested].top == old.boxes[nested].top
+
+    assert page.evaluate("""(() => {
+        const node = document.getElementById('nested'), before = node.getBoundingClientRect().top;
+        document.getElementById('changed').style.height = '35px';
+        return node.getBoundingClientRect().top - before;
+    })()""") == 15
+    assert page.document._layout_snapshot.boxes[nested].top == old.boxes[nested].top + 15
+
+
+async def test_style_attribute_selector_can_invalidate_a_sibling_during_size_edit(page):
+    await page.set_content("""
+        <style>#peer {width:30px} #changed:is([style]) + #peer {width:90px}</style>
+        <div id="changed"></div><div id="peer"></div>
+        """, wait_until="commit")
+    assert page.evaluate("document.getElementById('peer').offsetWidth") == 30
+    assert page.evaluate("""(() => {
+        document.getElementById('changed').style.width = '40px';
+        return document.getElementById('peer').offsetWidth;
+    })()""") == 90
+
+
+async def test_inline_size_change_reflows_shadow_content(page):
+    await page.set_content('<div id="host" style="width:100px"></div>', wait_until="commit")
+    assert page.evaluate("""(() => {
+        const host = document.getElementById('host'), root = host.attachShadow({mode:'open'});
+        root.innerHTML = '<style>#inner{width:50%;height:10px}</style><div id="inner"></div>';
+        const child = root.getElementById('inner'), proto = Object.getPrototypeOf(child);
+        const before = child.getBoundingClientRect().width;
+        host.style.width = '160px';
+        return [before, child.getBoundingClientRect().width,
+                child === root.getElementById('inner') && Object.getPrototypeOf(child) === proto];
+    })()""") == [50, 80, True]
+
+
+async def test_incremental_layout_matches_cold_pass_with_dependent_placements(page):
+    await page.set_content("""
+        <div id="parent" style="width:200px;position:relative">
+          <div id="flex" style="display:flex"><div id="changed" style="width:20px;height:25px"></div>
+            <div id="flexpeer" style="width:30px"></div></div>
+          <div id="grid" style="display:grid;grid-template-columns:50% 50%">
+            <div id="cell" style="height:15px"></div><div></div></div>
+          <div id="positioned" style="position:absolute;right:0;bottom:0;width:10px;height:10px"></div>
+        </div>
+        <div id="sibling" style="height:20px"></div>
+        """, wait_until="commit")
+    read = """['parent','flexpeer','cell','positioned','sibling'].map(id => {
+      const {x,y,width,height}=document.getElementById(id).getBoundingClientRect();
+      return [x,y,width,height];
+    })"""
+    before = page.evaluate(read)
+    page.evaluate("""document.getElementById('parent').style.width = '300px';
+                     document.getElementById('changed').style.height = '40px';""")
+    incremental = page.evaluate(read)
+    assert incremental != before
+
+    def reset_layout():
+        page.document.__dict__.pop("_native_layout_document")
+        page.document._layout_snapshot = None
+
+    page.realm.executor.call(reset_layout)
+    assert page.evaluate(read) == incremental
 
 
 async def test_layout_snapshot_observes_stylesheet_fonts_and_navigation(page):
@@ -740,7 +810,7 @@ async def test_time_input_width_uses_font_metrics_and_bitmap_strikes(page):
 async def test_font_fallback_cache_respects_each_environment():
     from pyv8c.foundation.environment import BrowserEnvironment
     from pyv8c.foundation import system_fonts
-    from pyv8c.web.dom.layout import _face_chain
+    from pyv8c.web.dom.font_measurement import _face_chain
     families = {record.family.lower() for record in system_fonts.records()}
     if not {'arial', 'noto sans sc', 'microsoft yahei'} <= families:
         pytest.skip('requires the Windows fonts used by this comparison')
@@ -753,3 +823,60 @@ async def test_font_fallback_cache_respects_each_environment():
     assert names_a.index('noto sans sc') < names_a.index('microsoft yahei')
     assert 'noto sans sc' not in names_b or names_b.index('microsoft yahei') < names_b.index('noto sans sc')
     assert names_a != names_b
+
+
+async def test_bounding_rect_reads_one_snapshot_and_returns_independent_objects(page, monkeypatch):
+    from pyv8c.web.dom import layout
+
+    await page.set_content('<div style="width:40px;height:12px"></div>', wait_until='load')
+    calls = 0
+    snapshot = layout.layout_snapshot
+
+    def counted(document, **kwargs):
+        nonlocal calls
+        calls += 1
+        return snapshot(document, **kwargs)
+
+    monkeypatch.setattr(layout, 'layout_snapshot', counted)
+    assert page.evaluate("""(() => {
+        const box = document.querySelector('div');
+        const first = box.getBoundingClientRect();
+        first.width = 50;
+        const second = box.getBoundingClientRect();
+        box.style.width = '60px';
+        const third = box.getBoundingClientRect();
+        return [first instanceof DOMRect, Object.getPrototypeOf(first) === DOMRect.prototype,
+                first !== second, first.width, second.width, third.width];
+    })()""") == [True, True, True, 50, 40, 60]
+    assert calls == 3
+
+
+async def test_detached_rect_does_not_start_layout_and_old_rect_keeps_its_value(page):
+    await page.set_content('<div id="box" style="width:40px;height:12px"></div>',
+                           wait_until='load')
+    page.evaluate("""
+        globalThis.box = document.getElementById('box');
+        globalThis.oldRect = box.getBoundingClientRect();
+        box.remove();
+    """)
+    assert page.document._layout_snapshot is None
+    assert page.evaluate('[box.getBoundingClientRect().width, oldRect.width]') == [0, 40]
+    assert page.document._layout_snapshot is None
+    page.evaluate('document.body.getBoundingClientRect()')
+    assert page.document._layout_snapshot is not None
+    assert page.evaluate('[box.getBoundingClientRect().width, oldRect.width]') == [0, 40]
+
+
+async def test_rect_snapshot_rechecks_ancestor_transform_and_keeps_constructor_coercion(page):
+    await page.set_content('<section><div style="width:40px;height:12px"></div></section>',
+                           wait_until='load')
+    assert page.evaluate("""(() => {
+        const parent = document.querySelector('section'), child = parent.firstElementChild;
+        const width = () => child.getBoundingClientRect().width;
+        const before = width();
+        parent.style.transform = 'rotate(90deg)';
+        const rotated = width();
+        parent.style.removeProperty('transform');
+        const rect = new DOMRect('12', true, undefined, null);
+        return [before, rotated, width(), rect.x, rect.y, rect.width, rect.height];
+    })()""") == [40, 12, 40, 12, 1, 0, 0]

@@ -54,7 +54,9 @@ V8 内置全局段（`Object`、`Function`、`SuppressedError` 等）由本仓�
 
 ## Canvas 与 SVG
 
-Canvas/OffscreenCanvas 的 2D 上下文支持线性、径向渐变和颜色节点、rect 路径、尺寸重置及上下文属性。Pillow 提供绘制表面，字体测量使用现有文本能力。尺寸赋值重置像素与绘图状态，保留上下文对象和创建选项。框架绘制不等于 Chrome 完整光栅化、色彩管理或 GPU 渲染。
+Canvas/OffscreenCanvas 的 2D 上下文支持线性、径向渐变和颜色节点、rect 路径、尺寸重置及上下文属性。原生 Skia CPU 后端负责绘制、位图处理以及 PNG、JPEG 和 WebP 编码，字体测量使用现有文本引擎。尺寸赋值重置像素与绘图状态，保留上下文对象和创建选项。框架绘制不等于 Chrome 完整光栅化、色彩管理或 GPU 渲染。
+
+比较 Canvas 导出的 PNG 时应先解码，再比较像素。编码器可为同一像素数据生成不同的压缩字节。
 
 SVGPoint、SVGRect 提供可变单精度数值，SVGMatrix 保留双精度；这些属性拒绝非有限值。getCTM 组合祖先 transform、viewBox 和已实现的 preserveAspectRatio 对齐。getBBox 与 isPointInFill 的验收范围为矩形及矩形后代，不代表完整 path/text 几何和滤镜效果。
 

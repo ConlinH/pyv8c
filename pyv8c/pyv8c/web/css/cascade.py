@@ -1,6 +1,8 @@
 """Stylesheet collection, cascade and computed CSS values."""
 import math
 import re
+
+from pyv8c import pyv8
 from functools import lru_cache
 from ...foundation.environment import environment_of
 from ...foundation.font_sizes import (font_size_px as _font_size_px,
@@ -108,6 +110,46 @@ def _specificity(group):
     return tuple(counts)
 
 
+def _selector_has_siblings(group):
+    """Check sibling combinators, including those inside functional pseudos."""
+    pending = [group]
+    while pending:
+        compounds, relations = pending.pop()
+        if '+' in relations or '~' in relations:
+            return True
+        for simple in compounds:
+            for name, argument in simple.pseudos:
+                if name in ("is", "where", "not"):
+                    try:
+                        pending.extend(parse_selector(argument or ""))
+                    except PageSyntaxError:
+                        return True
+    return False
+
+
+def _where_attribute_anchors(simple):
+    """Find a :where() whose every alternative requires an attribute on the subject."""
+    for name, argument in simple.pseudos:
+        if name != 'where':
+            continue
+        anchors = set()
+        for compounds, _relations in parse_selector(argument or ''):
+            subject = compounds[-1]
+            if subject.attrs:
+                attr, operator, value = subject.attrs[0]
+                # Other operators still require the attribute to be present.
+                anchors.add((attr, value if operator == '=' else None))
+            else:
+                nested = _where_attribute_anchors(subject)
+                if not nested:
+                    break
+                anchors.update(nested)
+        else:
+            if anchors:
+                return anchors
+    return ()
+
+
 class StyleRules:
     """A tree's rules indexed by required terms of each rightmost compound.
 
@@ -115,25 +157,36 @@ class StyleRules:
     decides applicability and specificity using the current tree and attributes.
     """
 
-    __slots__ = ('_entries', '_buckets', '_universal')
+    __slots__ = ('_entries', '_buckets', '_attribute_buckets', '_universal',
+                 'has_sibling_dependencies')
 
     def __init__(self, entries):
         self._entries = tuple(entries)
-        buckets, universal = {}, set()
+        self.has_sibling_dependencies = False
+        buckets, attribute_buckets, universal = {}, {}, set()
         for position, (selectors, _declarations, _counts) in enumerate(self._entries):
-            for compounds, _relations in selectors:
+            for group in selectors:
+                if not self.has_sibling_dependencies:
+                    self.has_sibling_dependencies = _selector_has_siblings(group)
+                compounds, _relations = group
                 simple = compounds[-1]
                 if simple.ids:
                     key = ('id', simple.ids[0])
                 elif simple.classes:
                     key = ('class', simple.classes[0])
-                elif simple.tag != '*':
-                    key = ('tag', simple.tag)
                 else:
-                    universal.add(position)
-                    continue
+                    anchors = _where_attribute_anchors(simple)
+                    if anchors:
+                        for attr, value in anchors:
+                            attribute_buckets.setdefault(attr, {}).setdefault(value, set()).add(position)
+                        continue
+                    if simple.tag == '*':
+                        universal.add(position)
+                        continue
+                    key = ('tag', simple.tag)
                 buckets.setdefault(key, set()).add(position)
         self._buckets = {key: frozenset(positions) for key, positions in buckets.items()}
+        self._attribute_buckets = attribute_buckets
         self._universal = frozenset(universal)
 
     def candidates(self, element):
@@ -146,6 +199,17 @@ class StyleRules:
         positions.update(self._buckets.get(('id', attributes.get('id', '')), ()))
         for name in str(attributes.get('class', '')).split():
             positions.update(self._buckets.get(('class', name), ()))
+        for attr, buckets in self._attribute_buckets.items():
+            actual = attributes.get(attr)
+            if actual is None:
+                continue
+            if type(actual) is str:
+                positions.update(buckets.get(None, ()))
+                positions.update(buckets.get(actual, ()))
+            else:
+                # Host-supplied values can implement equality differently from strings.
+                for bucket in buckets.values():
+                    positions.update(bucket)
         return (self._entries[position] for position in sorted(positions))
 
 
@@ -226,12 +290,13 @@ def _cascade(element, rules, cache=None):
         values[name] = value
         if name == 'font':
             values.update(_font_longhands(value))
-        elif name in ('margin', 'padding'):
+        elif name in ('margin', 'padding', 'inset'):
             resolved = variables(value, values) if 'var(' in value.lower() else value
             parts = _box_values(resolved) if resolved is not None else None
             if parts is not None:
                 for side, part in zip(('top', 'right', 'bottom', 'left'), parts):
-                    values[name + '-' + side] = part
+                    longhand = side if name == 'inset' else name + '-' + side
+                    values[longhand] = part
         elif name in ('border-width', 'border-style'):
             parts = _box_values(value)
             if parts is not None:
@@ -279,6 +344,9 @@ def _cascade(element, rules, cache=None):
     # declarations applied here need conversion, with the full map as var input.
     if matched:
         values = resolve_computed_values(values, changed)
+    if str(values.get("color", "")).lower() == "currentcolor":
+        fallback = "rgb(0, 0, 0)"
+        values["color"] = inherited.get("color", fallback) if parent is not None else fallback
     for name in ("color", "background-color", "border-top-color", "border-right-color",
                  "border-bottom-color", "border-left-color", "outline-color", "caret-color"):
         value = values.get(name)
@@ -291,24 +359,30 @@ def _cascade(element, rules, cache=None):
                 values[name] = 'rgba(0, 0, 0, 0)'
             elif alpha == 255:
                 values[name] = f'rgb({(color >> 16) & 255}, {(color >> 8) & 255}, {color & 255})'
-    values["font-size"] = _px_text(_font_size_px(values.get("font-size", "16px"),
-                                                 parent_size, _root_font_size(element, cache)))
+    declared_size = values.get("font-size", "16px")
+    root_size = _root_font_size(element, cache) if 'rem' in str(declared_size).lower() else None
+    values["font-size"] = _px_text(_font_size_px(declared_size, parent_size, root_size))
     # Chrome exposes the normal word-spacing computed value as zero length.
     if str(values.get('word-spacing', '')).lower() in ('normal', 'initial'):
         values['word-spacing'] = '0px'
-    # A length that counts on the font is resolved here, where both sizes are known:
-    # ``10em`` under ``font-size: 20px`` is 200px, and a property left as "10em" would
-    # otherwise be read as 10.  Chrome's computed value is absolute for all of these.
+
+    # UA defaults use absolute sizes and inherited lengths have already been
+    # computed. Shorthands can also write longhands absent from the declarations.
+    # Animation overlays on a parent can supply fresh inherited lengths.
+    candidates = changed
+    if not changed.isdisjoint(_LENGTH_SHORTHANDS) or getattr(parent, '_animations', None):
+        candidates = values
     font_size = _px(values["font-size"], 16)
-    root_size = _root_font_size(element, cache)
-    for name, value in tuple(values.items()):
+    for name in candidates:
         if not _font_relative_property(name):
             continue
-        terms = str(value).split()
+        terms = str(values[name]).split()
         resolved_any = False
         for index, term in enumerate(terms):
             if not _FONT_RELATIVE_TERM.fullmatch(term):
                 continue
+            if root_size is None and term.lower().endswith('rem'):
+                root_size = _root_font_size(element, cache)
             resolved = _font_size_term(term, font_size, root_size)
             if resolved is not None:
                 terms[index] = _px_text(resolved)
@@ -321,6 +395,10 @@ def _cascade(element, rules, cache=None):
     if cache is not None:
         cache[element] = values
     return values
+
+
+_LENGTH_SHORTHANDS = frozenset(('font', 'margin', 'padding', 'inset', 'border-width', 'border',
+                                'border-top', 'border-right', 'border-bottom', 'border-left'))
 
 
 #: The properties whose values are read as lengths, so a font-relative term in them has
@@ -403,22 +481,72 @@ def computed_style(element):
     return _cascade(element, rules_for(element))
 
 
-def computed_style_object(element, *, rendered=True, layout_snapshot):
-    """The cascade as a declaration block: the same interface, and nothing may write it back."""
-    if not rendered:
-        return CSSStyleDeclaration(element=element, computed={})
-    document = getattr(element, 'ownerDocument', None)
-    boxes, styles = layout_snapshot(document) if document is not None else ({}, {})
-    values = dict(styles.get(element) or computed_style(element))
-    # Supply this initial value only in the computed view: inserting longhands
-    # into the cascade itself can mask user-agent and author shorthands.
-    if 'background' not in values:
-        values.setdefault('background-color', 'rgba(0, 0, 0, 0)')
-    box = boxes.get(element)
-    if values.get('display') == 'inline' or (box is None and element.isConnected):
+def has_running_animations(document):
+    elements = getattr(document, '_animated_elements', None)
+    if not elements:
+        return False
+    return any(element.isConnected and any(
+        animation._play_state == 'running' and animation._playback_rate != 0
+        for animation in getattr(element, '_animations', ()))
+        for element in elements)
+
+
+def _document_style(element, document):
+    """Read a computed value or populate the styles that a later layout can reuse."""
+    if has_running_animations(document):
+        return _cascade(element, rules_for(element), {})
+    version = (document.layout_version, document.style_version)
+    layout = document._layout_snapshot
+    if layout is not None and layout.version[:2] == version and element in layout.styles:
+        return layout.styles[element]
+    snapshot = document._computed_style_snapshot
+    if snapshot is None or snapshot[0] != version:
+        snapshot = document._computed_style_snapshot = (version, {})
+    cache = snapshot[1]
+    if element in cache:
+        return cache[element]
+    return _cascade(element, rules_for(element), cache)
+
+
+def computed_style_object(element, *, layout_snapshot):
+    """Return a live declaration. Only resolved sizes and full serialization need boxes."""
+    def read(name):
+        document = element.ownerDocument
+        if (document is None or not element.isConnected
+                or document.get_defaultView() is pyv8.Null):
+            return {}
+        if name is None or name in ('width', 'height'):
+            boxes, styles = layout_snapshot(document)
+            return _resolved_view(element, styles.get(element) or _document_style(element, document),
+                                  boxes.get(element), name)
+        values = _document_style(element, document)
+        if name == 'background-color' and 'background' not in values and name not in values:
+            return {**values, name: 'rgba(0, 0, 0, 0)'}
+        if _uses_current_color(name, values.get(name)):
+            return {**values, name: values.get('color', 'rgb(0, 0, 0)')}
+        return values
+
+    return CSSStyleDeclaration(element=element, computed=read)
+
+
+def _uses_current_color(name, value):
+    return (name.endswith('-color') and not name.startswith('--')
+            and isinstance(value, str) and value.lower() == 'currentcolor')
+
+
+def _resolved_view(element, computed, box, property_name):
+    values = dict(computed)
+    if property_name is None:
+        # These view defaults must stay out of the cascade and layout.
+        if 'background' not in values:
+            values.setdefault('background-color', 'rgba(0, 0, 0, 0)')
+        for name, value in values.items():
+            if _uses_current_color(name, value):
+                values[name] = values.get('color', 'rgb(0, 0, 0)')
+    if values.get('display') == 'inline' or box is None:
         values.setdefault('width', 'auto')
         values.setdefault('height', 'auto')
-    if (box is not None and element.isConnected and values.get('display') != 'none'
+    if (box is not None and values.get('display') != 'none'
             and (values.get('display') != 'inline'
                  or str(getattr(element, 'localName', '')).lower() in
                  ('img', 'canvas', 'iframe', 'video', 'audio', 'input', 'object', 'embed'))):
@@ -430,5 +558,4 @@ def computed_style_object(element, *, rendered=True, layout_snapshot):
                 extent -= sum(box.padding.get(side, 0) + box.border.get(side, 0)
                               for side in sides)
             values[name] = f'{max(0.0, extent):.12g}px'
-    return CSSStyleDeclaration(element=element, computed=values)
-
+    return values

@@ -82,7 +82,7 @@ python312 -c "from pyv8c import pyv8; print(pyv8.__file__)"
 
 Before working from source, set up the V8 build directory as described in the [native project documentation](../../pyv8/README.md).
 
-The default HTTP and WebSocket engines ship with the base dependencies. `dev` adds test tooling, `canvas` adds Pillow-backed drawing, `cronet` adds an optional HTTP engine (WebSockets stay on `websockets`), `benchmark` adds optional process monitoring, and `reference` installs tooling that drives the Chrome already on your machine; no browser is downloaded. See the [pyv8 documentation](../../pyv8/README.md) for native extension build requirements.
+The default HTTP and WebSocket engines ship with the base dependencies. Canvas 2D ships with the native extension. `dev` adds test tooling, `cronet` adds an optional HTTP engine (WebSockets stay on `websockets`), `benchmark` adds optional process monitoring, and `reference` installs tooling that drives the Chrome already on your machine; no browser is downloaded. See the [pyv8 documentation](../../pyv8/README.md) for native extension build requirements.
 
 ## Quick Start
 

@@ -291,3 +291,94 @@ async def test_box_shorthands_follow_stylesheet_cascade_and_important(page):
         return [cascade, e.style.marginLeft, e.style.marginRight,
                 e.style.getPropertyPriority('margin-left'), getComputedStyle(e).marginLeft];
     })()''') == ['2px', '1px', '3px', 'important', '1px']
+
+
+
+async def test_computed_color_is_live_and_width_reuses_the_cascade(page, monkeypatch):
+    from pyv8c.web.css import cascade
+
+    await page.set_content("""
+        <style>
+            #parent[data-theme="dark"] { color: blue }
+            #parent { color: red; width: 200px }
+            #child { color: currentColor; background-color: currentColor; width: 50% }
+        </style>
+        <div id="parent"><div id="child"></div></div>
+    """, wait_until="commit")
+    matches = []
+    match = cascade._selector_matches
+
+    def match_rule(element, group):
+        matches.append(element)
+        return match(element, group)
+
+    monkeypatch.setattr(cascade, "_selector_matches", match_rule)
+
+    assert page.evaluate("""(() => {
+        globalThis.styleChild = document.getElementById('child');
+        const container = document.getElementById('parent');
+        globalThis.styleView = getComputedStyle(styleChild);
+        const before = styleView.color;
+        container.setAttribute('data-theme', 'dark');
+        const after = styleView.getPropertyValue('color');
+        styleView.color = 'green';
+        styleView.setProperty('width', '1px');
+        styleView.cssText = 'width: 2px';
+        return [before, after, styleView.backgroundColor, styleChild.getAttribute('style') === null,
+                styleView instanceof CSSStyleDeclaration,
+                'color' in styleView, styleView.unrecognizedProperty === undefined];
+    })()""") == ["rgb(255, 0, 0)", "rgb(0, 0, 255)", "rgb(0, 0, 255)", True, True, True, True]
+    assert page.document._layout_snapshot is None
+    child = page.executor.call(lambda: page.document.fn_getElementById('child'))
+    assert matches.count(child) == 2
+    preceding_matches = tuple(matches)
+
+    assert page.evaluate("""[
+        styleView.width, styleChild.getBoundingClientRect().width,
+        styleView.cssText.includes('width: 100px'),
+        styleView.length > 0, styleView.item(0) === styleView[0]
+    ]""") == ["100px", 100, True, True, True]
+    assert page.document._layout_snapshot is not None
+    assert tuple(matches) == preceding_matches
+    assert page.evaluate("styleChild.remove(); [styleView.color, styleView.width, styleView.length]") == ["", "", 0]
+
+
+async def test_shadow_computed_color_inherits_from_host_without_layout(page):
+
+    await page.set_content("""
+        <style>article { color: green } #host { color: red } #host.active { color: blue }</style>
+        <section id="host"></section><article id="outer"></article>
+    """, wait_until="commit")
+
+    assert page.evaluate("""(() => {
+        const host = document.getElementById('host');
+        const root = host.attachShadow({mode: 'open'});
+        root.innerHTML = '<style>article { background-color: currentColor; width: 45px }</style><article></article>';
+        const inner = root.querySelector('article');
+        globalThis.shadowStyle = getComputedStyle(inner);
+        const before = shadowStyle.color;
+        host.className = 'active';
+        return [before, shadowStyle.color, shadowStyle.getPropertyValue('background-color'),
+                getComputedStyle(document.getElementById('outer')).color];
+    })()""") == ["rgb(255, 0, 0)", "rgb(0, 0, 255)", "rgb(0, 0, 255)", "rgb(0, 128, 0)"]
+    assert page.document._layout_snapshot is None
+    assert page.evaluate("shadowStyle.width") == "45px"
+    assert page.document._layout_snapshot is not None
+
+
+async def test_shadow_font_lengths_follow_root_size_and_shorthand_variables(page):
+    await page.set_content("""<html style="font-size:10px">
+        <div id="host" style="font-size:2rem;letter-spacing:0.5em;--pad:1em 2rem"></div>
+        </html>""", wait_until="commit")
+    assert page.evaluate("""(() => {
+        const root = document.getElementById('host').attachShadow({mode: 'open'});
+        root.innerHTML = '<div style="font-size:1.5em;padding:var(--pad)"></div>';
+        const view = getComputedStyle(root.firstElementChild);
+        const read = () => [view.fontSize, view.letterSpacing, view.paddingTop, view.paddingRight];
+        const before = read();
+        document.documentElement.style.fontSize = '12px';
+        return [before, read()];
+    })()""") == [
+        ["30px", "10px", "30px", "20px"],
+        ["36px", "12px", "36px", "24px"],
+    ]

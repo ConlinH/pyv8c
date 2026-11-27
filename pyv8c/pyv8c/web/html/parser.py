@@ -7,7 +7,7 @@ from ..dom.element import Element
 from ..dom.nodes import _bump_style_version
 from ..dom.utils import MATHML_NAMESPACE, SVG_NAMESPACE
 from .document_elements import HTMLTemplateElement
-from .construction import build_batch
+from .construction import build_batch, build_fragment, build_fragment_batch, fragment_classes
 
 
 class _TreeBuilderMixin:
@@ -157,6 +157,91 @@ class DOMParser(_TreeBuilderMixin, HTMLParser):
             parts = decl.split(None, 1)
             name = parts[1].strip() if len(parts) > 1 else "html"
             self._append(DocumentType(name=name, services=self.services))
+
+
+class _BatchFragmentParser(DOMParser):
+    """Build ordinary fragment runs using native or HTMLParser tokens."""
+
+    def __init__(self, services, root, classes):
+        super().__init__(services, root)
+        self.classes = classes
+        self.tokens = []
+        self.index = 0
+
+    def _native_prefix(self, html):
+        """Consume native batches and return any suffix for HTMLParser."""
+        offset = 0
+        while True:
+            progress = build_fragment(self, html, offset)
+            if progress is None:
+                break
+            offset, fallback, tree_boundary = progress
+            if offset < 0:
+                return None
+            if fallback:
+                if tree_boundary:
+                    self.classes = None
+                break
+        # Offsets refer to the UTF-8 buffer, including any multibyte text or
+        # attribute values in the prefix that was just published.
+        return html if not offset else str.encode(html, 'utf-8')[offset:].decode('utf-8')
+
+    def _queue(self, kind, data):
+        self.tokens.append((kind, data))
+        if len(self.tokens) == 1024:
+            self.flush()
+
+    def flush(self):
+        if not self.tokens:
+            return
+        tokens, self.tokens = self.tokens, []
+        self.index = 0
+        end = build_fragment_batch(self, tokens, self.classes)
+        if end == len(tokens):
+            return
+        # A native guard stopped before an observable callback. Replay the
+        # unconsumed suffix and continue streaming through the ordinary parser.
+        self.classes = None
+        for kind, data in tokens[end:]:
+            if kind == "start":
+                tag, attrs, _ = data
+                super().handle_starttag(tag, attrs)
+            elif kind == "end":
+                super().handle_endtag(data)
+            else:
+                super().handle_data(data)
+
+    def _stop_batching(self):
+        self.flush()
+        self.classes = None
+
+    def handle_starttag(self, tag, attrs):
+        if self.classes is not None and tag in self.classes:
+            self._queue("start", (tag, attrs, False))
+        else:
+            self._stop_batching()
+            super().handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if self.classes is not None and tag in self.classes:
+            self._queue("end", tag)
+        else:
+            self._stop_batching()
+            super().handle_endtag(tag)
+
+    def handle_data(self, data):
+        if self.classes is None:
+            super().handle_data(data)
+        elif data:
+            self._queue("data", data)
+
+    def handle_comment(self, data):
+        self._stop_batching()
+        super().handle_comment(data)
+
+    def handle_decl(self, decl):
+        self._stop_batching()
+        super().handle_decl(decl)
 
 
 _DOCTYPE_START = re.compile(r"<!doctype\b", re.I)
@@ -412,4 +497,20 @@ class IncrementalDOMParser(_TreeBuilderMixin):
 
 
 def parse_fragment(html, services, parent):
-    parser = DOMParser(services, parent); parser.feed(html); parser.close(); return parent
+    # Small fragments do not amortize the capability and class checks.
+    classes = fragment_classes(parent, services) if len(html) >= 4096 else None
+    if classes:
+        parser = _BatchFragmentParser(services, parent, classes)
+        remainder = parser._native_prefix(html)
+        if remainder is None:
+            return parent
+        try:
+            parser.feed(remainder)
+            parser.close()
+        finally:
+            parser.flush()
+    else:
+        parser = DOMParser(services, parent)
+        parser.feed(html)
+        parser.close()
+    return parent

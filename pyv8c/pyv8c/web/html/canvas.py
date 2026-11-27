@@ -64,9 +64,6 @@ class HTMLCanvasElement(HTMLElement):
         return self._webgl
     def fn_toDataURL(self, kind=MISSING, quality=MISSING, *_):
         mime = normalize_encoding_type(kind)
-        if (not self._width or not self._height or self._width > 65535
-                or self._height > 65535 or self._width * self._height > 32768 * 8192):
-            return 'data:,'
         mime, encoded = encode_canvas(self, mime, normalize_encoding_quality(quality))
         if encoded is None:
             return 'data:,'

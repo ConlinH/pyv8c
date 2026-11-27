@@ -61,22 +61,25 @@ class CSSStyleDeclaration:
         #: the two read from different places and only one of them is ever set.
         self._block = None if block is None else parse_declarations(str(block))
         #: A computed style reads the cascade instead, and nothing writes it back.
-        self._computed_values = None if computed is None else dict(computed)
+        self._computed = computed
         self._inline_cache = None
     def _declarations(self):
         if self._block is not None:
             return list(self._block)
-        if self._computed_values is not None:
-            return [(name, serialize_computed_length(name, value), "")
-                    for name, value in self._computed_values.items()
-                    if value not in ("", None)]
+        if self._computed is not None:
+            return self._computed_declarations(self._computed(None))
         raw = str(self._element.attributes.get("style", "")) if self._element is not None else ""
         cached = self._inline_cache
         if cached is None or cached[0] != raw:
             cached = self._inline_cache = (raw, tuple(parse_declarations(raw)))
         return list(cached[1])
+    @staticmethod
+    def _computed_declarations(values):
+        return [(name, serialize_computed_length(name, value), "")
+                for name, value in values.items() if value not in ("", None)]
+
     def _write(self, declarations):
-        if self._computed_values is not None:
+        if self._computed is not None:
             return
         if self._block is not None:
             self._block = list(declarations)
@@ -102,6 +105,8 @@ class CSSStyleDeclaration:
                          if any(n == name and v == pair[0] for n, v, _ in declarations)}
         self._element._inline_math_values = (text, retained_math)
     def _set(self, name, value, priority=""):
+        if self._computed is not None:
+            return
         name = _property_name(name)
         if not name: return
         priority = str(dom_string(priority)).strip().lower()
@@ -124,10 +129,19 @@ class CSSStyleDeclaration:
             math_values[name] = (value, exact_math)
     def _value(self, name):
         name = _property_name(name)
-        declarations = self._declarations()
-        direct = next((v for n, v, _ in declarations if n == name), None)
-        if direct is not None:
-            return direct
+        computed = self._computed(name) if self._computed is not None else None
+        if computed is None:
+            declarations = self._declarations()
+            direct = next((v for n, v, _ in declarations if n == name), None)
+            if direct is not None:
+                return direct
+        else:
+            direct = computed.get(name)
+            if direct not in ("", None):
+                return serialize_computed_length(name, direct)
+            declarations = (self._computed_declarations(computed)
+                            if name in ('margin', 'padding') or name.startswith(('margin-', 'padding-'))
+                            else ())
         if name in ('margin', 'padding'):
             items = [next(((v, p) for n, v, p in declarations if n == name + '-' + side), None)
                      for side in _BOX_SIDES]
@@ -144,7 +158,7 @@ class CSSStyleDeclaration:
                 parts = _box_values(value) if value is not None else None
                 if parts is not None:
                     return parts[_BOX_SIDES.index(name[len(shorthand)+1:])]
-        if self._computed_values:
+        if computed:
             if name in ('min-width', 'min-height'):
                 parent = getattr(self._element, 'parentElement', None)
                 if parent is not None:
@@ -152,15 +166,15 @@ class CSSStyleDeclaration:
                     if computed_style(parent).get('display') in ('flex', 'inline-flex', 'grid', 'inline-grid'):
                         return 'auto'
                 return '0px'
-            if name.startswith('background-') and 'background' in self._computed_values:
+            if name.startswith('background-') and 'background' in computed:
                 return ''
-            if name in ('top', 'right', 'bottom', 'left') and 'inset' in self._computed_values:
+            if name in ('top', 'right', 'bottom', 'left') and 'inset' in computed:
                 return ''
-            if name == 'transition-duration' and 'transition' in self._computed_values:
+            if name == 'transition-duration' and 'transition' in computed:
                 return ''
-            if name == 'animation-duration' and 'animation' in self._computed_values:
+            if name == 'animation-duration' and 'animation' in computed:
                 return ''
-            if name == 'flex-direction' and 'flex-flow' in self._computed_values:
+            if name == 'flex-direction' and 'flex-flow' in computed:
                 return ''
             blocked_by = {
                 'border-radius': ('border-top-left-radius', 'border-top-right-radius',
@@ -172,14 +186,14 @@ class CSSStyleDeclaration:
                 'gap': ('row-gap', 'column-gap'),
                 'inset': ('top', 'right', 'bottom', 'left'),
             }
-            if any(key in self._computed_values for key in blocked_by.get(name, ())):
+            if any(key in computed for key in blocked_by.get(name, ())):
                 return ''
-            if name == 'outline-color' and not any(key.startswith('outline') for key in self._computed_values):
+            if name == 'outline-color' and not any(key.startswith('outline') for key in computed):
                 return self._value('color')
             if name.startswith('border-') and not any(
                     key in ('border', 'border-width', 'border-style', 'border-color')
                     or any(key == f'border-{side}' or key.startswith(f'border-{side}-')
-                           for side in _BOX_SIDES) for key in self._computed_values):
+                           for side in _BOX_SIDES) for key in computed):
                 if name.endswith('-style'):
                     return 'none'
                 if name.endswith('-width'):
@@ -192,7 +206,7 @@ class CSSStyleDeclaration:
         return _serialize_declarations(self._declarations())
     def set_cssText(self, value):
         self._write(parse_declarations(dom_string(value)))
-        if self._element is not None and self._computed_values is None:
+        if self._element is not None and self._computed is None:
             self._element._inline_math_values = (
                 str(self._element.attributes.get('style', '')), {})
     def _indexed_names(self):
@@ -210,6 +224,8 @@ class CSSStyleDeclaration:
     def fn_getPropertyPriority(self, name=MISSING, *_extra):
         if name is MISSING: raise missing_error("CSSStyleDeclaration", "getPropertyPriority", 1, 0)
         name = _property_name(name)
+        if self._computed is not None:
+            return ""
         declarations = self._declarations()
         direct = next((p for n, _, p in declarations if n == name), None)
         if direct is not None:
@@ -230,6 +246,8 @@ class CSSStyleDeclaration:
         if name is MISSING: raise missing_error("CSSStyleDeclaration", "removeProperty", 1, 0)
         name = _property_name(name)
         old = self._value(name)
+        if self._computed is not None:
+            return old
         declarations = self._declarations()
         for shorthand in ('margin', 'padding'):
             if name.startswith(shorthand + '-') and name[len(shorthand)+1:] in _BOX_SIDES:
@@ -256,6 +274,8 @@ class CSSStyleDeclaration:
         if not _NAME_RE.match(dashed): return False
         if supported(dashed): return True
         declared = _property_name(dashed)
+        if self._computed is not None:
+            return self._computed(declared).get(declared) not in ("", None)
         return any(_property_name(declared_name) == declared for declared_name, _, _ in self._declarations())
     def __v8_name_get__(self, name): return self._named(name)
     def __v8_name_set__(self, name, value):

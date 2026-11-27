@@ -2,8 +2,15 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
+from pyv8c._native import dom
+
 from ..page_errors import PageSyntaxError
-from ..dom.element import Element
+from ..dom.element import Element, _AttributeMap
+from ..dom.events import EventTarget, EVENT_TARGET_SETATTR
+from ..dom.nodes import Node, ShadowRoot
+from ..dom.query_cache import publish
+
+_DEFAULT_ATTRIBUTE_ACCESS = (Element.attributes, object.__getattribute__, EventTarget.__getattr__)
 
 
 # Selector parser failures cross the Python/V8 binding boundary; raising the
@@ -351,30 +358,119 @@ def _match_at(current, compounds, relations, index):
 def matches(node, selector): return any(matches_group(node, group) for group in parse(selector))
 
 
+class _AttributeProjection:
+    """One bounded, replaceable projection per document or shadow scope."""
+
+    def __init__(self, nodes, tag, keys):
+        self.nodes = nodes
+        self.tag = tag
+        self.keys = keys
+        self.native = None
+        self.attempted = False
+        self.offsets = None
+        self.dirty = set()
+
+    def invalidate(self, node, key):
+        if (self.native is not None and (key is None or key in self.keys)
+                and node.localName == self.tag):
+            self.dirty.add(node)
+            if len(self.dirty) > 64:
+                self.native = None
+                self.offsets = None
+                self.attempted = False
+                self.dirty.clear()
+
+    def _row(self, node):
+        attributes = node.attributes
+        if type(attributes) is _AttributeMap:
+            return tuple(attributes.get(key) for key in self.keys)
+        return None
+
+    def match(self, simple, ordinary_type):
+        if not self.attempted:
+            self.attempted = True
+            if not all(type(node) is ordinary_type and node.localName == simple.tag
+                       for node in self.nodes):
+                return None
+            rows = tuple(self._row(node) for node in self.nodes)
+            self.native = dom.create_attribute_projection(rows, len(self.keys))
+        if self.native is None:
+            return None
+        if self.dirty:
+            if self.offsets is None:
+                self.offsets = {node: i for i, node in enumerate(self.nodes)}
+            for node in self.dirty:
+                offset = self.offsets.get(node)
+                if offset is not None and not dom.update_attribute_projection(
+                    self.native, offset, self._row(node)
+                ):
+                    self.native = None
+                    break
+            self.dirty.clear()
+        if self.native is None:
+            return None
+        return dom.match_attribute_projection(self.native, self.nodes, simple.attrs)
+
+
+def _match_attribute_projection(root, candidates, simple):
+    if len(candidates) > 16384 or not (root.nodeType == Node.DOCUMENT_NODE or isinstance(root, ShadowRoot)):
+        return None
+    from ..html.elements import HTMLElement
+
+    if ((getattr(HTMLElement, "attributes", None), HTMLElement.__getattribute__,
+         getattr(HTMLElement, "__getattr__", None))
+            != _DEFAULT_ATTRIBUTE_ACCESS or HTMLElement.__setattr__ is not EVENT_TARGET_SETATTR
+            or hasattr(HTMLElement, "localName") or hasattr(HTMLElement, "_attribute_map")):
+        root.__dict__.pop('_selector_projection', None)
+        return None
+    keys = tuple(dict.fromkeys(name for name, _op, _wanted in simple.attrs))
+    projection = root.__dict__.get('_selector_projection')
+    if projection is None or projection.nodes is not candidates or projection.keys != keys:
+        # Wait for a second query before paying to project the whole scope.
+        publish(root, "_selector_projection", _AttributeProjection(candidates, simple.tag, keys),
+                use_setter=True)
+        return None
+    return projection.match(simple, HTMLElement)
+
+
 def select(root, selector, *, first=False):
     """Match descendants in tree order; the query root is never a result.
 
-    A first-result query walks lazily. Repeated full scans reuse the existing
-    tree-versioned snapshot, with no result cache to invalidate on attributes.
+    Use the rightmost required ID or tag to narrow a single group's candidates.
+    Cold first-result queries keep the lazy walk.
     """
     ast = parse(selector)
-    candidates = root._descendants() if first else root._descendant_snapshot()
-    if len(ast) == 1 and len(ast[0][0]) == 1:
-        simple = ast[0][0][0]
-        if (first and simple.tag == '*' and len(simple.ids) == 1
-                and not (simple.classes or simple.attrs or simple.pseudos)):
-            return root._find_element_by_id(simple.ids[0])
-        if first:
-            return next((node for node in candidates if _simple_match(node, simple)), None)
-        if simple.tag != "*":
-            candidates = root._tag_index_snapshot().get(simple.tag, ())
-        return [node for node in candidates if _simple_match(node, simple)]
+    candidates = None
     if len(ast) == 1:
         group = ast[0]
-        if not first and group[0][-1].tag != '*':
-            candidates = root._tag_index_snapshot().get(group[0][-1].tag, ())
-        selected = (node for node in candidates if matches_group(node, group))
+        simple = group[0][-1]
+        if (first and len(group[0]) == 1 and simple.tag == '*' and len(simple.ids) == 1
+                and not (simple.classes or simple.attrs or simple.pseudos)):
+            return root._find_element_by_id(simple.ids[0])
+        if simple.ids:
+            candidates = root._id_candidates(simple.ids[0], finish=not first)
+        if candidates is None and simple.tag != '*':
+            tags = root.__dict__.get('_tag_index_cache') if first else root._tag_index_snapshot()
+            if tags is not None:
+                candidates = tags.get(simple.tag, ())
+        if candidates is None:
+            candidates = root._descendants() if first else root._descendant_snapshot()
+        if len(group[0]) == 1:
+            if (not first and simple.tag != "*" and not (simple.ids or simple.classes or simple.pseudos)
+                    and 2 <= len(simple.attrs) <= 16 and len(candidates) >= 256
+                    and all(op != "~=" for _name, op, _wanted in simple.attrs)):
+                projected = _match_attribute_projection(root, candidates, simple)
+                if projected is not None:
+                    return projected
+                native = dom.match_attribute_batch(candidates, simple.tag, simple.attrs,
+                                                   Element, _AttributeMap, _DEFAULT_ATTRIBUTE_ACCESS)
+                if native is not None:
+                    return native
+            selected = (node for node in candidates if _simple_match(node, simple))
+        else:
+            selected = (node for node in candidates if matches_group(node, group))
     else:
+        candidates = root._descendants() if first else root._descendant_snapshot()
         tags = {group[0][-1].tag for group in ast}
         if '*' not in tags:
             candidates = (node for node in candidates

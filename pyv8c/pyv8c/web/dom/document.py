@@ -67,6 +67,7 @@ class Document(_ParentNodeMixin, Node):
         self.style_version = 0
         self.layout_version = 0
         self._layout_snapshot = None
+        self._computed_style_snapshot = None
     def get_URL(self): return self.url
     def get_domain(self):
         domain = getattr(self, "_domain", None)
@@ -409,7 +410,11 @@ class Document(_ParentNodeMixin, Node):
         """A live HTMLCollection over the elements matching one of ``names``."""
         return HTMLCollection(owner=self, getter=lambda: [
             node for node in self._descendants() if isinstance(node, Element) and node.localName in names])
-    def get_forms(self): return self._collect({"form"})
+    def get_forms(self):
+        view = getattr(self, "_forms_view", None)
+        if view is None:
+            view = self._forms_view = self._collect({"form"})
+        return view
     def get_images(self): return self._collect({"img"})
     def get_embeds(self):
         """The embed/object collection, cached: ``embeds``/``plugins`` are
@@ -519,6 +524,8 @@ class Document(_ParentNodeMixin, Node):
             raise missing_error('Document', 'getElementsByClassName', 1, 0, constructor=False)
         value = dom_string(value)
         names = set(str(value).split())
+        if not names:
+            return HTMLCollection(owner=self)
         return HTMLCollection(owner=self, getter=lambda: [x for x in self._descendant_snapshot() if isinstance(x, Element) and names.issubset(set(x.get_className().split()))])
     def fn_getElementsByTagNameNS(self, namespace=MISSING, local_name=MISSING, *_extra):
         return tag_name_ns_collection(self, 'Document', namespace, local_name)
@@ -531,7 +538,7 @@ class Document(_ParentNodeMixin, Node):
         if selector is MISSING:
             raise missing_error('Document', 'querySelectorAll', 1, 0, constructor=False)
         selector = dom_string(selector)
-        return self.query_selector_all(selector, self)
+        return NodeList(values=self.query_selector_all(selector, self))
     def fn_write(self, *markup):
         return self._write_markup("".join(dom_string(item) for item in markup))
     def fn_writeln(self, *markup):

@@ -50,7 +50,7 @@ DOM 目录保存节点树与 DOM 接口。文本编码、权限策略与 AI 接�
 
 ## CSS 与布局
 
-CSS 的属性表、声明解析、值计算、选择器、层叠和 CSSOM 位于 `pyv8c/pyv8c/web/css/`。DOM 元素持有样式声明，文档管理样式表版本；布局模块读取计算样式并维护几何快照。`getComputedStyle()` 通过调用方提供的布局快照获取需要使用值的属性，CSS 子包本身不导入布局模块。节点、样式表和视口变化仍通过原有版本机制使快照失效。
+CSS 的属性表、声明解析、值计算、选择器、层叠和 CSSOM 位于 `pyv8c/pyv8c/web/css/`。Python DOM 按版本向 Rust `LayoutDocument` 提交节点和计算样式。Rust 持有整棵布局树，负责测量、求解和几何快照，Flex/Grid 使用 Taffy。`getComputedStyle()` 通过调用方提供的快照获取需要布局的使用值，CSS 子包无需导入布局模块。DOM 几何、iframe 尺寸和命中测试共用同一份快照。
 
 ## 对象与状态归属
 

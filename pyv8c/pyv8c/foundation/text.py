@@ -65,6 +65,7 @@ class ShapedRun:
     extents: tuple[tuple[float, float, float, float], ...] = ()
     prefix: tuple[float, ...] = (0.0,)
     faces: tuple[tuple[str, int], ...] = ()
+    face_spans: tuple[tuple[int, int, tuple[str, int]], ...] = ()
 
     def advance_between(self, start: int, end: int) -> float:
         """The width of the characters ``[start, end)``, in one subtraction."""
@@ -256,12 +257,15 @@ def shape_selection(text, faces, size=16.0, *, features=None, weight=None,
     offsets: list[tuple[float, float]] = []
     extents: list[tuple[float, float, float, float]] = []
     used: list[tuple[str, int]] = []
+    face_spans = []
     for index, (start, candidate) in enumerate(groups):
         end = groups[index + 1][0] if index + 1 < len(groups) else len(text)
         piece = shape(text[start:end], candidate[0], candidate[1], size,
                       features=features, weight=weight, layout_units=layout_units)
         if candidate not in used:
             used.append(candidate)
+        if piece.glyphs:
+            face_spans.append((len(glyphs), len(glyphs) + len(piece.glyphs), candidate))
         glyphs.extend(piece.glyphs)
         clusters.extend(start + cluster for cluster in piece.clusters)
         advances.extend(piece.advances)
@@ -269,7 +273,7 @@ def shape_selection(text, faces, size=16.0, *, features=None, weight=None,
         extents.extend(piece.extents)
     run = ShapedRun(text, sum(advances), tuple(glyphs), tuple(clusters), tuple(advances),
                     tuple(offsets), tuple(extents),
-                    _prefix_widths(clusters, advances, len(text)), tuple(used))
+                    _prefix_widths(clusters, advances, len(text)), tuple(used), tuple(face_spans))
     return _remember(_RUNS, key, run)
 
 

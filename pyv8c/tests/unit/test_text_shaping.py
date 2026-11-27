@@ -77,7 +77,7 @@ def test_a_combining_mark_stays_with_its_letter(face):
 def test_text_presentation_fallback_keeps_explicit_family_first():
     pytest.importorskip("pyv8c.pyv8", reason="layout imports the native browser bindings")
     from pyv8c.foundation.environment import BrowserEnvironment
-    from pyv8c.web.dom.layout import _shaped
+    from pyv8c.web.dom.font_measurement import _shaped
 
     if system_fonts.match_family('Cambria Math') is None:
         pytest.skip('Cambria Math is not installed')

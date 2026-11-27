@@ -22,6 +22,10 @@ LICENSE_FILES = (
     "third_party_licenses/BLINK-AUDIO-LICENSE.txt",
     "third_party_licenses/STRONGTALK-LICENSE.txt",
     "third_party_licenses/AUDIO-RUST-CRATES-LICENSES.txt",
+    "third_party_licenses/SKIA-LICENSE.txt",
+    "third_party_licenses/RUST-SKIA-LICENSE.txt",
+    "third_party_licenses/SKIA-THIRD-PARTY-LICENSES.txt",
+    "third_party_licenses/LAYOUT-RUST-CRATES-LICENSES.txt",
 )
 GOVERNANCE_FILES = (
     ".github/CONTRIBUTING.md",

@@ -104,7 +104,6 @@ V8 源码树各子目录下的 `LICENSE` 文件包含更细的第三方信息，
 | 包 | SPDX | 核对版本 | 说明 |
 | --- | --- | --- | --- |
 | cycronet | MIT | 144.5.2 | 可选 Cronet 传输后端 |
-| Pillow | MIT-CMU | 13.0.0 | Canvas 像素后端 |
 | comfy-angle | BSD-3-Clause（ANGLE）/ MIT（Electron 组件） | 0.1.1 | 实验性 WebGL 后端；wheel 内含 `electron-LICENSE` 与 `LICENSES.chromium.html`，以其为准 |
 | playwright | Apache-2.0 | 1.64.1 | 仅 `reference` extra，用于本机 Chrome 对照 |
 | geoip2 | Apache-2.0 | 5.4.0 | 可选 `geoip` extra。版本取自本机 `.venv` 的 `License-Expression`，不是 `.venv315` |
@@ -128,6 +127,10 @@ pip-licenses --format=markdown --with-urls --with-license-file
 ## 6. 发行前待完成的第三方审计
 
 统一原生扩展的音频组件使用 PyO3 0.27.2、RustFFT 6.4.1 及其运行时依赖。扩展采用 Chromium 的 FFT 数据布局，对应的上游许可证在 `third_party_licenses/CHROMIUM-LICENSE.txt`。所链接的 Rust crate 许可证文本在 `third_party_licenses/AUDIO-RUST-CRATES-LICENSES.txt`。构建脚本使用 `cc` 编译 DOM C++ 源码，并使用 `sha2` 记录源码摘要。这两个 crate 仅在构建期间使用。依赖升级后应重新核对并更新许可证材料。
+
+Canvas 2D 使用 rust-skia 0.156.0 和 Skia m156.5。原文见 [RUST-SKIA-LICENSE.txt](third_party_licenses/RUST-SKIA-LICENSE.txt) 和 [SKIA-LICENSE.txt](third_party_licenses/SKIA-LICENSE.txt)。编解码器及相关依赖的上游许可见 [SKIA-THIRD-PARTY-LICENSES.txt](third_party_licenses/SKIA-THIRD-PARTY-LICENSES.txt)。发布前按目标平台的链接产物审核。
+
+Rust document layout links Taffy 0.11.0, unicode-linebreak 0.1.5 and unicode-segmentation 1.13.3. See [LAYOUT-RUST-CRATES-LICENSES.txt](third_party_licenses/LAYOUT-RUST-CRATES-LICENSES.txt).
 
 V8 的 monolith 和各平台链接输入还可能包含其自身的第三方代码。特别是 Windows 构建会链接 Temporal 的 Rust 库及其传递依赖；不同平台、GN 参数、V8 来源和 ICU 覆盖均可能改变组成。上述文件不是完整物料清单，不能仅凭通过基础检查就认定 wheel 可发布。
 

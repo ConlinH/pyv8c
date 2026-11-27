@@ -328,13 +328,13 @@ class MouseEvent(UIEvent):
     def _layer_coordinates(self):
         """Layer-relative coordinates use the nearest positioned ancestor's origin."""
         from ..css.cascade import computed_style
-        from .layout import positioned_box
+        from .layout import layout
         node = self.target
         while node is not None:
             if getattr(node, 'nodeType', None) == 1:
                 style = computed_style(node)
                 if style.get('position', 'static') != 'static':
-                    box = positioned_box(node)
+                    box = layout(node)
                     return int(self.clientX-box.left), int(self.clientY-box.top)
             parent = getattr(node, 'parentNode', None)
             node = parent if parent is not None else getattr(node, '_host', None)
@@ -962,6 +962,8 @@ class EventTarget:
         document = getattr(document, "document", None)
         if document is not None:
             document._layout_snapshot = None
+            if getattr(document, "_computed_style_snapshot", None) is not None:
+                document._computed_style_snapshot = None
         event._dispatching = True
         try:
             original_target = event._legacy_target_override or self
@@ -1103,6 +1105,10 @@ class EventTarget:
         raise AttributeError(name)
 
     def __setattr__(self, name, value):
+        if name in ("localName", "__class__") and "localName" in self.__dict__:
+            invalidate = getattr(self, "_invalidate_tree", None)
+            if invalidate is not None:
+                invalidate()
         # A plain index beats str.startswith, and almost every assignment fails it.
         if name[:2] == "on" and name != "one" and "_handlers" in self.__dict__:
             self._set_handler(name, value)

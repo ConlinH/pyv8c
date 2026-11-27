@@ -4,12 +4,13 @@ import math
 import re
 
 from pyv8c import pyv8
+from pyv8c._native import RasterCanvas
 
 from ....idl import interface
 from ....foundation.arguments import (MISSING, IdlArgumentError, boolean, dom_string,
                                       is_nullish, missing_error, number, sequence)
 from ...page_errors import IndexSizeError, PageTypeError
-from .bitmap import ImageData, bitmap_source_image, signature_error
+from .bitmap import ImageData, bitmap_source_image, raster_size_supported, signature_error
 from .colors import canvas_color, number_text, parse_color, serialize_color
 from .contexts import enum_error
 from .gradient import CanvasGradient
@@ -127,19 +128,31 @@ class CanvasRenderingContext2D:
         self._direction = "inherit"
         self._smoothing_quality = "low"
         self._line_dash = []
-        #: The faces this context has already opened for drawing, by file, face and size.
-        self._font_handles = {}
         self._path = _CanvasPath(); self._stack = []
         self._composite = "source-over"; self._filter = "none"
         self._transform = _IDENTITY
         self._shadow = "rgba(0, 0, 0, 0)"
         #: The options ``getContext('2d', ...)`` was given, for ``getContextAttributes``.
         self._creation = {}
-        try:
-            from PIL import Image, ImageDraw
-            self._image = Image.new("RGBA", (canvas._width, canvas._height), (0, 0, 0, 0))
-            self._draw = ImageDraw.Draw(self._image)
-        except ImportError: self._image = self._draw = None
+        width, height = canvas._width, canvas._height
+        self._surface = (RasterCanvas(width, height)
+                         if raster_size_supported(width, height) else None)
+
+    def _brush(self, style, transform=_IDENTITY):
+        if not isinstance(style, CanvasGradient):
+            return canvas_color(style), None
+        a, b, c, d, e, f = transform
+        determinant = a*d - b*c
+        if determinant == 0:
+            return (0, 0, 0, 0), None
+        inverse = (d/determinant, -b/determinant, -c/determinant, a/determinant,
+                   (c*f-d*e)/determinant, (b*e-a*f)/determinant)
+        matrix = _multiply_2d(inverse, style._transform)
+        return (0, 0, 0, 0), (style._coordinates, style._stops, matrix)
+
+    def _stroke_state(self):
+        return self._line_cap, self._line_join, self._line_dash
+
     def _reset(self):
         creation = self._creation
         self.__init__(self._canvas)
@@ -224,7 +237,7 @@ class CanvasRenderingContext2D:
     def fn_getLineDash(self, *_extra):
         return list(self._line_dash)
     def _text_anchor(self):
-        """The Pillow anchor this context's baseline and alignment name."""
+        """The raster anchor corresponding to the current alignment and baseline."""
         return (_ALIGN_ANCHORS.get(self._align, "l")
                 + _BASELINE_ANCHORS.get(self._baseline, "s"))
     def _font_style(self):
@@ -253,34 +266,6 @@ class CanvasRenderingContext2D:
             "font-style": "italic" if ("italic" in words or "oblique" in words) else "normal",
         }
 
-    def _font_obj(self):
-        """The face this context's ``font`` asks for, as Pillow needs it to draw with.
-
-        The family list goes through the table layout measures with, so the glyphs on the
-        surface and the width reported for them come from one face.
-        """
-        if self._image is None: return None
-        from PIL import ImageFont
-        from ...dom import layout
-        from ....foundation.environment import environment_of
-        from ....foundation.system_fonts import file_for
-        style = self._font_style()
-        environment = environment_of(getattr(self._canvas, "_services", None))
-        families = [name.strip() for name in str(style["font-family"]).split(",")]
-        record = layout._face_for(families, environment, style["font-weight"], style["font-style"])
-        path = None if record is None else file_for(record)
-        if path is None:
-            return ImageFont.load_default()
-        size = max(1, int(round(float(str(style["font-size"])[:-2]))))
-        key = (path, getattr(record, "index", 0), size)
-        handle = self._font_handles.get(key)
-        if handle is None:
-            try:
-                handle = ImageFont.truetype(path, size, index=getattr(record, "index", 0))
-            except Exception:  # noqa: BLE001 - a face that cannot be opened draws default
-                return ImageFont.load_default()
-            self._font_handles[key] = handle
-        return handle
     def fn_getImageData(self, x=MISSING, y=MISSING, sw=MISSING, sh=MISSING, *_extra):
         """The pixels of one rectangle, transparent black outside the canvas."""
         for position, value in enumerate((x, y, sw, sh)):
@@ -294,8 +279,11 @@ class CanvasRenderingContext2D:
             raise IndexSizeError(
                 "Failed to execute 'getImageData' on 'CanvasRenderingContext2D':"
                 " The source width or height is negative.")
-        pixels = (bytes(4 * width * height) if self._image is None else
-                  self._image.crop((left, top, left + width, top + height)).tobytes())
+        if (self._surface is None or left >= self._canvas._width or top >= self._canvas._height
+                or left + width <= 0 or top + height <= 0):
+            pixels = bytes(4 * width * height)
+        else:
+            pixels = self._surface.read(left, top, width, height)
         return ImageData(pixels, width, height)
 
     def fn_createImageData(self, width=MISSING, height=MISSING, *_extra):
@@ -323,110 +311,81 @@ class CanvasRenderingContext2D:
             raise IdlArgumentError(
                 "Failed to execute 'putImageData' on 'CanvasRenderingContext2D':"
                 " parameter 1 is not of type 'ImageData'.")
-        if self._image is None:
+        if self._surface is None:
             return
-        from PIL import Image
         width, height = data._width, data._height
-        pixels = bytearray(int(data._data[index]) for index in range(4 * width * height))
-        # Chromium's canvas stores premultiplied 8-bit channels. Convert back to
-        # straight RGBA for Pillow, retaining the same rounding as a canvas read.
-        for offset in range(0, len(pixels), 4):
-            alpha = pixels[offset + 3]
-            if alpha == 255:
-                continue
-            for channel in range(3):
-                premultiplied = (pixels[offset + channel] * alpha + 127) // 255
-                pixels[offset + channel] = ((premultiplied * 255 + alpha // 2) // alpha
-                                            if alpha else 0)
-        source = Image.frombytes('RGBA', (width, height), bytes(pixels))
         x, y = int(float(number(dx))), int(float(number(dy)))
+        left, top, right, bottom = 0, 0, width, height
         if len(dirty) >= 4:
             sx, sy, sw, sh = (int(float(number(value))) for value in dirty[:4])
             if sw < 0: sx, sw = sx + sw, -sw
             if sh < 0: sy, sh = sy + sh, -sh
             left, top = max(0, sx), max(0, sy)
             right, bottom = min(width, sx + sw), min(height, sy + sh)
-            if right <= left or bottom <= top:
-                return
-            source = source.crop((left, top, right, bottom))
-            x += left; y += top
-        # putImageData deliberately ignores the current transform and compositing state.
-        self._image.paste(source, (x, y))
+        if (right <= left or bottom <= top or x + right <= 0 or y + bottom <= 0
+                or x + left >= self._canvas._width or y + top >= self._canvas._height):
+            return
+        pixels = bytes(int(data._data[index]) for index in range(4 * width * height))
+        self._surface.write((x + left, y + top), (width, height), pixels,
+                            (left, top, right, bottom))
 
     def _device(self, x, y):
         """A user-space point in device space, through the current transform."""
         a, b, c, d, e, f = self._transform
         return (a * float(x) + c * float(y) + e, b * float(x) + d * float(y) + f)
 
-    def _rect(self, x, y, w, h):
-        x, y, w, h = float(x), float(y), float(w), float(h)
-        points = (self._device(x, y), self._device(x+w, y),
-                  self._device(x+w, y+h), self._device(x, y+h))
-        return (min(point[0] for point in points), min(point[1] for point in points),
-                max(point[0] for point in points), max(point[1] for point in points))
-
-    def _draw_rect_mask(self, draw, x, y, w, h):
-        if float(w) == 0 or float(h) == 0:
+    def _draw_rectangle(self, x, y, width, height, style, blend, stroke=None):
+        if self._surface is None:
             return
-        box = self._rect(x, y, w, h)
-        a, b, c, d, _e, _f = self._transform
-        if (abs(b) < 1e-12 and abs(c) < 1e-12) or (abs(a) < 1e-12 and abs(d) < 1e-12):
-            # ImageDraw's right/bottom endpoints are inclusive. Canvas rectangles
-            # are half-open, so an integral 1x1 rectangle covers exactly one pixel.
-            left, top, right, bottom = box
-            if all(abs(value - round(value)) < 1e-9 for value in box):
-                draw.rectangle((round(left), round(top), round(right)-1, round(bottom)-1), fill=255)
-                return
-        x, y, w, h = float(x), float(y), float(w), float(h)
-        draw.polygon((self._device(x, y), self._device(x+w, y),
-                      self._device(x+w, y+h), self._device(x, y+h)), fill=255)
-
-    def _paint_path(self):
-        """Fill every subpath with the current fillStyle.  Windings are not distinguished."""
-        def polygons(draw):
-            for subpath in self._path:
-                points = subpath
-                if len(points) >= 3:
-                    draw.polygon(points, fill=255)
-        self._paint(self._fill, polygons)
+        x, y, width, height = map(float, (x, y, width, height))
+        if not all(map(math.isfinite, (x, y, width, height))):
+            return
+        left, right = sorted((x, x + width))
+        top, bottom = sorted((y, y + height))
+        rgba, gradient = self._brush(style, self._transform)
+        self._surface.draw_rect((left, top, right, bottom), self._transform,
+                                rgba, gradient, blend, stroke)
 
     def fn_fillRect(self, x=0, y=0, w=0, h=0, *_):
-        self._paint(self._fill, lambda draw: self._draw_rect_mask(draw, x, y, w, h))
+        self._draw_rectangle(x, y, w, h, self._fill, self._composite)
+
     def fn_clearRect(self, x=0, y=0, w=0, h=0, *_):
-        if self._image is not None:
-            from PIL import Image, ImageDraw
-            mask = Image.new('L', self._image.size)
-            self._draw_rect_mask(ImageDraw.Draw(mask), x, y, w, h)
-            self._image.paste((0, 0, 0, 0), mask=mask)
-    def _draw_text(self, text, x, y, *, fill, stroke=None):
-        """Draw one run at *x*/*y* on the named baseline; the bitmap face has no anchors."""
-        font = self._font_obj()
-        if font is None:
+        self._draw_rectangle(x, y, w, h, "transparent", "clear")
+
+    def _draw_text(self, text, x, y, style, stroke=None):
+        if self._surface is None:
             return
-        point = self._device(x, y)
-        anchor = self._text_anchor()
-        try:
-            if stroke is None:
-                self._draw.text(point, text, font=font, fill=fill, anchor=anchor)
-            else:
-                self._draw.text(point, text, font=font, fill=None, stroke_width=1,
-                                stroke_fill=stroke, anchor=anchor)
-        except ValueError:
-            left, top, right, bottom = font.getbbox(text)
-            offset_x = {"l": 0, "m": -(right - left) / 2, "r": -(right - left)}[anchor[0]]
-            offset_y = -bottom if anchor[1] == "s" else 0
-            corner = (point[0] + offset_x, point[1] + offset_y)
-            if stroke is None:
-                self._draw.text(corner, text, font=font, fill=fill)
-            else:
-                self._draw.text(corner, text, font=font, fill=None,
-                                stroke_width=1, stroke_fill=stroke)
+        text, x, y = str(text), float(x), float(y)
+        if not text or not math.isfinite(x) or not math.isfinite(y):
+            return
+        from ...dom import font_measurement
+        from ....foundation.environment import environment_of
+        font_style = self._font_style()
+        environment = environment_of(getattr(self._canvas, "_services", None))
+        run, record = font_measurement._shaped(text, font_style, environment)
+        size = font_measurement._font_size(font_style)
+        path = font_measurement._face_path(record) if record is not None else None
+        index = getattr(record, "index", 0)
+        shaped = None
+        if run is not None and run.faces:
+            pen, positions = 0.0, []
+            for advance, (offset_x, offset_y) in zip(run.advances, run.offsets):
+                positions.append((pen + offset_x, -offset_y))
+                pen += advance
+            spans = run.face_spans or ((0, len(run.glyphs), run.faces[0]),)
+            shaped = (pen, [(face, run.glyphs[start:end], positions[start:end])
+                            for start, end, face in spans])
+        rgba, gradient = self._brush(style, self._transform)
+        self._surface.draw_text(text, (x, y), self._transform, (str(path or ""), index, size),
+                                tuple(self._text_anchor()), rgba, gradient, self._composite,
+                                stroke, shaped)
+
     def fn_fillText(self, text='', x=0, y=0, *_):
-        if self._draw:
-            self._draw_text(str(text), x, y, fill=canvas_color(self._fill))
+        self._draw_text(text, x, y, self._fill)
+
     def fn_strokeText(self, text='', x=0, y=0, *_):
-        if self._draw:
-            self._draw_text(str(text), x, y, fill=None, stroke=canvas_color(self._stroke))
+        self._draw_text(text, x, y, self._stroke, self._stroke_state())
+
     def fn_rect(self, x=MISSING, y=MISSING, width=MISSING, height=MISSING, *_extra):
         x, y, width, height = self._path_numbers('rect', (x, y, width, height))
         if not all(math.isfinite(value) for value in (x, y, width, height)):
@@ -531,16 +490,20 @@ class CanvasRenderingContext2D:
                 rule = args[1]
         if rule not in ("nonzero", "evenodd"):
             raise enum_error(interface, 'fill', rule, "CanvasFillRule")
-        self._paint_path()
+        if self._surface is not None:
+            rgba, gradient = self._brush(self._fill)
+            self._surface.draw_path(list(self._path), rgba, gradient, self._composite,
+                                    None, rule == "evenodd")
+
     def fn_stroke(self, *_):
-        if self._draw:
-            for subpath in self._path:
-                points = subpath
-                if len(points) > 1: self._draw.line(points, fill=canvas_color(self._stroke), width=1)
+        if self._surface is not None:
+            rgba, gradient = self._brush(self._stroke)
+            self._surface.draw_path(list(self._path), rgba, gradient, self._composite,
+                                    self._stroke_state(), False)
+
     def fn_strokeRect(self, x=0, y=0, w=0, h=0, *_):
-        if self._draw:
-            self._draw.rectangle(self._rect(x, y, w, h),
-                                 outline=canvas_color(self._stroke), width=1)
+        self._draw_rectangle(x, y, w, h, self._stroke, self._composite, self._stroke_state())
+
     def fn_scale(self, x=MISSING, y=MISSING, *_extra):
         """Multiply the transform; a non-finite factor is ignored, as Chromium ignores it."""
         interface = type(self).__name__
@@ -626,23 +589,24 @@ class CanvasRenderingContext2D:
             raise InvalidStateError(
                 f"Failed to execute 'drawImage' on '{interface}':"
                 " The image argument is a canvas element with a width or height of 0.")
+        if self._surface is None:
+            return
         image = bitmap_source_image(source)
-        if image is None or self._draw is None or self._image is None: return
-        # A negative source side is read as a rectangle drawn the other way round.
-        if sw is not MISSING:
-            if sw < 0: sx, sw = sx + sw, -sw
-            if sh < 0: sy, sh = sy + sh, -sh
-            if sw == 0 or sh == 0: return
-        width = dw if dw is not MISSING else (sw if sw is not MISSING else int(source._width))
-        height = dh if dh is not MISSING else (sh if sh is not MISSING else int(source._height))
-        if width == 0 or height == 0: return
-        (x0, y0), (x1, y1) = self._device(dx, dy), self._device(dx + width, dy + height)
-        box = (round(min(x0, x1)), round(min(y0, y1)), round(max(x0, x1)), round(max(y0, y1)))
-        piece = image if sw is MISSING else image.crop(
-            (round(sx), round(sy), round(sx + sw), round(sy + sh)))
-        size = (max(1, box[2] - box[0]), max(1, box[3] - box[1]))
-        if piece.size != size: piece = piece.resize(size)
-        self._image.paste(piece, (box[0], box[1]))
+        if image is None:
+            return
+        if sw is MISSING:
+            sw, sh = image.size
+        if dw is MISSING:
+            dw, dh = sw, sh
+        if sw < 0: sx, sw = sx + sw, -sw
+        if sh < 0: sy, sh = sy + sh, -sh
+        if dw < 0: dx, dw = dx + dw, -dw
+        if dh < 0: dy, dh = dy + dh, -dh
+        if not (sw and sh and dw and dh):
+            return
+        self._surface.draw_image(image, (sx, sy, sx + sw, sy + sh),
+                                 (dx, dy, dx + dw, dy + dh), self._transform, self._composite)
+
     def fn_getContextAttributes(self, *_):
         """The settings ``getContext`` was given, under the dictionary's own defaults."""
         return {
@@ -673,13 +637,13 @@ class CanvasRenderingContext2D:
         ``actualBoundingBox`` is the glyph ink counted from the origin, leftwards on the left
         as the spec counts it, and ``fontBoundingBox`` the face's own ascent and descent.
         """
-        from ...dom import layout
+        from ...dom import font_measurement
         boxes = {}
-        found = layout._font_metrics(style, environment)
+        found = font_measurement._font_metrics(style, environment)
         if found is not None:
             boxes["font_ascent"] = found.ascent
             boxes["font_descent"] = found.descent
-        run, _record = layout._shaped(text, style, environment)
+        run, _record = font_measurement._shaped(text, style, environment)
         if run is None or not text:
             return boxes
         left = right = top = bottom = 0.0
@@ -701,12 +665,12 @@ class CanvasRenderingContext2D:
         """A run's width and boxes, from the face and the shaping a box measures with."""
         text = str(text)
         style = self._font_style()
-        from ...dom import layout
+        from ...dom import font_measurement
         from ....foundation.environment import environment_of
         environment = environment_of(getattr(self._canvas, "_services", None))
-        run, _ = layout._shaped(text, style, environment)
+        run, _ = font_measurement._shaped(text, style, environment)
         width = (sum(math.trunc(advance * 65536) / 65536 for advance in run.advances)
-                 if run is not None else layout.text_width(text, style, environment))
+                 if run is not None else font_measurement.text_width(text, style, environment))
         return TextMetrics(width, **self._text_boxes(text, style, environment))
     def fn_save(self, *_):
         self._stack.append((self._fill, self._stroke, self._font, self._baseline,
@@ -736,20 +700,7 @@ class CanvasRenderingContext2D:
                     radius = 'r0' if index == 2 else 'r1'
                     raise IndexSizeError(f"Failed to execute '{member}' on '{interface}': "
                                          f"The {radius} provided is less than 0.")
-        return CanvasGradient(kind, values)
-
-
-    def _paint(self, style, draw_mask):
-        if self._image is None:
-            return
-        from PIL import Image, ImageDraw, ImageChops
-        mask = Image.new('L', self._image.size)
-        draw_mask(ImageDraw.Draw(mask))
-        layer = (style._surface(self._image.size) if isinstance(style, CanvasGradient)
-                 else Image.new('RGBA', self._image.size, canvas_color(style)))
-        layer.putalpha(ImageChops.multiply(layer.getchannel('A'), mask))
-        self._image.alpha_composite(layer)
-
+        return CanvasGradient(values, self._transform)
 
     def fn_createLinearGradient(self, x0=MISSING, y0=MISSING, x1=MISSING, y1=MISSING, *_extra):
         return self._gradient('linear', (x0, y0, x1, y1))
