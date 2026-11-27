@@ -93,7 +93,7 @@ async def main():
     try:
         result = await run(proxy=proxy, timeout=args.timeout)
     except Exception as error:
-        logger.error('挑战失败：{}: {}', type(error).__name__, error)
+        logger.exception('挑战失败：{}: {}', type(error).__name__, error)
         return 1
     logger.success('挑战通过：登录页已就绪（耗时 {}s）', result['elapsed'])
     return 0

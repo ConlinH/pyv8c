@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 import json
 import re
@@ -19,15 +21,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'pyv8c'))
 
 from loguru import logger
-from pyv8c import pyv8, register_transport
+from pyv8c import register_transport
 from pyv8c.async_api import Browser
 from pyv8c.network.curl_cffi import CurlCffiTransport
 
 BASE = 'https://www.southwest.com'
 API = BASE + '/api/air-booking/v1/air-booking/page/air/booking/shopping'
 SHAPE_HEADERS = tuple(f'Ee30zvqlwf-{s}' for s in 'ABCDFZ')
-DEFAULT_PROXY = 'http://127.0.0.1:6696'
-DEFAULT_DATE = '2026-11-30'
+DEFAULT_DATE = (date.today() + timedelta(days=1)).isoformat()  # 明天
 
 
 def show_flights(flights):
@@ -44,8 +45,7 @@ def show_flights(flights):
         logger.info('{} {} → {} | {}', numbers, flight['departureDateTime'], route, fares)
 
 
-async def run(*, date=DEFAULT_DATE, origin='ISP', destination='BUR',
-              proxy=DEFAULT_PROXY, timeout=60):
+async def run(*, date=DEFAULT_DATE, origin='ISP', destination='BUR', proxy=None, timeout=60):
     """查询日期 YYYY-MM-DD、起点/终点 IATA；打印并返回航班列表。"""
     origin, destination = origin.strip().upper(), destination.strip().upper()
     body = {
@@ -131,21 +131,17 @@ async def run(*, date=DEFAULT_DATE, origin='ISP', destination='BUR',
 
 async def main():
     parser = argparse.ArgumentParser(description='在 pyv8c 中查询 Southwest 单程航班。')
-    parser.add_argument('--date', default=DEFAULT_DATE, help=f'出发日期 YYYY-MM-DD；默认 {DEFAULT_DATE}')
+    parser.add_argument('--date', default=DEFAULT_DATE, help='出发日期 YYYY-MM-DD；默认明天')
     parser.add_argument('--origin', default='ISP')
     parser.add_argument('--destination', default='BUR')
-    parser.add_argument('--proxy', default=DEFAULT_PROXY, help='代理地址；传 none 表示直连')
+    parser.add_argument('--proxy', default=None, help='代理地址示例：http://127.0.0.1:6696')
     parser.add_argument('--timeout', type=float, default=60)
     args = parser.parse_args()
-    if args.timeout <= 0:
-        parser.error('--timeout 必须为正数')
-    proxy = None if args.proxy.lower() in {'none', ''} else args.proxy
     logger.remove()
     logger.add(sys.stdout, level='INFO')
     try:
-        flights = await run(date=args.date, origin=args.origin,
-                            destination=args.destination, proxy=proxy, timeout=args.timeout)
-    except (Exception, pyv8.JSException, pyv8.JavaScriptTerminated) as error:
+        flights = await run(date=args.date, origin=args.origin, destination=args.destination, proxy=args.proxy, timeout=args.timeout)
+    except Exception as error:
         logger.error('查询失败：{}: {}', type(error).__name__, error)
         return 1
     logger.success('查询成功，共 {} 个航班方案（时间为各机场当地时间）', len(flights))
